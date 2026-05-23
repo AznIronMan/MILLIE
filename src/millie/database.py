@@ -868,6 +868,17 @@ class MillieDatabase:
         attachment["content"] = self.read_blob(str(attachment["storage_ref"]))
         return attachment
 
+    def attachment_count_for_messages(self, message_ids: list[int]) -> int:
+        if not message_ids:
+            return 0
+        placeholders = ",".join("?" for _ in message_ids)
+        with self.connect() as conn:
+            row = conn.execute(
+                f"SELECT COUNT(*) AS count FROM attachments WHERE message_id IN ({placeholders})",
+                message_ids,
+            ).fetchone()
+            return int(row["count"]) if row else 0
+
     def messages_for_export(
         self,
         mailbox_id: int | None = None,
@@ -885,7 +896,7 @@ class MillieDatabase:
         with self.connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT msg.id, msg.subject, msg.sent_at, msg.raw_message_ref,
+                SELECT msg.id, msg.source_id, msg.subject, msg.sent_at, msg.raw_message_ref,
                        msg.content_hash, mb.id AS mailbox_id, mb.path AS mailbox_path
                 FROM messages msg
                 JOIN message_mailboxes mm ON mm.message_id = msg.id

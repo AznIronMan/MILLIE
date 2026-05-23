@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 import mailbox
+import json
 from email.message import EmailMessage
 from pathlib import Path
 
@@ -56,6 +57,13 @@ class CoreImportExportTests(unittest.TestCase):
             self.assertEqual(export_result.exported, 1)
             self.assertTrue(export_result.manifest_path.exists())
             self.assertEqual(len(list(export_dir.rglob("*.eml"))), 1)
+            manifest = json.loads(export_result.manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["target_profile"], "generic-eml")
+            self.assertEqual(manifest["format"], "eml")
+            self.assertEqual(manifest["folder_count"], 1)
+            self.assertEqual(manifest["attachment_count"], 0)
+            self.assertEqual(manifest["source_ids"], [result.source_id])
+            self.assertEqual(manifest["items"][0]["source_id"], result.source_id)
             self.assertEqual(db.list_migrations()[0]["version"], 1)
             self.assertEqual(db.list_migrations()[-1]["version"], 2)
 
@@ -153,6 +161,27 @@ class CoreImportExportTests(unittest.TestCase):
             export_result = export_messages(db, export_dir, "mbox")
             self.assertEqual(export_result.exported, 2)
             self.assertTrue((export_dir / "fixture.mbox").exists())
+
+    def test_export_profile_auto_selects_recommended_format(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = MillieDatabase(root / "millie.sqlite", root / "data")
+            db.init()
+
+            source = root / "sample.eml"
+            source.write_bytes(SAMPLE_EML)
+            import_path(db, source, "eml", "Unit Test Mail")
+
+            export_dir = root / "exports"
+            export_result = export_messages(db, export_dir, "auto", target_profile="thunderbird")
+
+            self.assertEqual(export_result.exported, 1)
+            manifest = json.loads(export_result.manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["target_profile"], "thunderbird")
+            self.assertEqual(manifest["format"], "mbox")
+            self.assertEqual(manifest["target_profile_display_name"], "Thunderbird Import")
+            self.assertGreater(len(manifest["import_instructions"]), 0)
+            self.assertTrue((export_dir / "Imported.mbox").exists())
 
     def test_import_maildir_and_export_maildir(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

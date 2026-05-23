@@ -287,7 +287,7 @@ label {
 
 .detail-toolbar {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) minmax(110px, 140px) auto;
+  grid-template-columns: minmax(150px, 0.8fr) minmax(180px, 1fr) minmax(110px, 140px) auto;
   gap: 8px;
   align-items: end;
   padding: 14px;
@@ -426,6 +426,24 @@ label {
 .muted {
   color: #5d6a72;
   font-size: 0.84rem;
+}
+
+.profile-summary {
+  display: grid;
+  gap: 3px;
+  border: 1px solid #d9e0e4;
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 9px;
+}
+
+.profile-summary span,
+.profile-summary small {
+  overflow: hidden;
+  color: #5d6a72;
+  font-size: 0.82rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .job-grid {

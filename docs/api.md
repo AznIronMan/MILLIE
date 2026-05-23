@@ -41,6 +41,15 @@ Import responses and job rows distinguish:
 - `duplicates` / `duplicate_count`: source items that matched existing raw MIME content
 - `errors` / `error_count`: failed source items
 
+## Export Jobs
+
+- `GET /api/v1/export-profiles`
+- `POST /api/v1/export`
+- `GET /api/v1/export-jobs`
+- `GET /api/v1/export-jobs/{id}/items`
+
+Export profiles include a target ID, display name, supported formats, recommended format, import instructions, and known limitations. `POST /api/v1/export` accepts `targetProfile` and `format`; use `format: "auto"` to select the profile recommendation.
+
 ## Other Current Endpoints
 
 - `GET /api/v1/health`
@@ -50,6 +59,3 @@ Import responses and job rows distinguish:
 - `GET /api/v1/sources`
 - `GET /api/v1/mailboxes`
 - `GET /api/v1/migrations`
-- `POST /api/v1/export`
-- `GET /api/v1/export-jobs`
-- `GET /api/v1/export-jobs/{id}/items`

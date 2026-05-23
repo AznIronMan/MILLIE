@@ -1,6 +1,6 @@
 # Build Export MVP
 
-Status: PENDING
+Status: COMPLETED
 
 ## Goal
 
@@ -18,6 +18,20 @@ The export path should be raw-message-first. If original MIME content was stored
 - Export manifests include counts, hashes, warnings, errors, source IDs, and unsupported metadata.
 - Export profiles exist for generic EML, generic MBOX, generic Maildir, Thunderbird, Evolution, Apple Mail, and Outlook workflow paths.
 - PST/OLM direct export remains documented as advanced until a reliable writer/toolchain is approved.
+
+## Result
+
+- Implemented raw-MIME-first EML, MBOX, and Maildir exports.
+- Added export jobs, export items, and generated JSON manifests.
+- Added profile-aware export with `generic-eml`, `generic-mbox`, `generic-maildir`, `thunderbird`, `evolution`, `apple-mail`, and `outlook-workflow`.
+- Added `format=auto` to select each profile's recommended format.
+- Added manifest metadata for profile instructions, limitations, source filters, message counts, folder counts, attachment counts, source IDs, hashes, and per-item warnings.
+- Added web export profile controls and export job drill-down integration.
+
+## Verification
+
+- `PYTHONWARNINGS=error PYTHONPATH=src python3 -m unittest discover -s tests`
+- `npm run build` from `web/`
 
 ## Notes
 

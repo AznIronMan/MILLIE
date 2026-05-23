@@ -29,6 +29,7 @@
 - Export folders to `maildir`.
 - Generate an export manifest with counts, hashes, warnings, and unsupported metadata.
 - Add target profiles for Thunderbird, Evolution, Apple Mail, and generic import workflows.
+- Add an Outlook workflow profile while direct PST/OLM writing remains under investigation.
 
 ## Phase 3: Web/API MVP
 

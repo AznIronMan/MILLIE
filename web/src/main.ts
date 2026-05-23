@@ -64,6 +64,16 @@ type ExportJob = {
   manifest_ref: string | null;
 };
 
+type ExportProfile = {
+  id: string;
+  display_name: string;
+  recommended_format: string;
+  formats: string[];
+  description: string;
+  import_instructions: string[];
+  limitations: string[];
+};
+
 type ImportJobError = {
   id: number;
   import_job_id: number;
@@ -137,6 +147,9 @@ type State = {
   migrations: Migration[];
   importJobs: ImportJob[];
   exportJobs: ExportJob[];
+  exportProfiles: ExportProfile[];
+  selectedExportProfileId: string;
+  selectedExportFormat: string;
   mailboxes: Mailbox[];
   messages: MessageSummary[];
   selectedMailboxId: number | null;
@@ -158,6 +171,9 @@ const state: State = {
   migrations: [],
   importJobs: [],
   exportJobs: [],
+  exportProfiles: [],
+  selectedExportProfileId: "generic-eml",
+  selectedExportFormat: "auto",
   mailboxes: [],
   messages: [],
   selectedMailboxId: null,
@@ -318,13 +334,17 @@ function render(): void {
       <section class="detail-pane">
         <div class="detail-toolbar">
           <label>
+            Export target
+            <select id="export-profile">
+              ${state.exportProfiles.map(renderExportProfileOption).join("")}
+            </select>
+          </label>
+          <label>
             Export folder
             <input id="export-path" placeholder="${escapeHtml(defaultExportPath())}" />
           </label>
           <select id="export-format">
-            <option value="eml">EML</option>
-            <option value="mbox">MBOX</option>
-            <option value="maildir">Maildir</option>
+            ${renderExportFormatOptions()}
           </select>
           <button id="export-button">Export</button>
         </div>
@@ -337,6 +357,28 @@ function render(): void {
     </div>
   `;
   bindEvents();
+}
+
+function renderExportProfileOption(profile: ExportProfile): string {
+  return `
+    <option value="${escapeHtml(profile.id)}" ${profile.id === state.selectedExportProfileId ? "selected" : ""}>
+      ${escapeHtml(profile.display_name)}
+    </option>
+  `;
+}
+
+function renderExportFormatOptions(): string {
+  const profile = selectedExportProfile();
+  const formats = profile?.formats ?? ["eml", "mbox", "maildir"];
+  const recommended = profile?.recommended_format ?? "eml";
+  const options = [
+    `<option value="auto" ${state.selectedExportFormat === "auto" ? "selected" : ""}>Recommended (${escapeHtml(recommended.toUpperCase())})</option>`,
+    ...formats.map(
+      (format) =>
+        `<option value="${escapeHtml(format)}" ${state.selectedExportFormat === format ? "selected" : ""}>${escapeHtml(format.toUpperCase())}</option>`,
+    ),
+  ];
+  return options.join("");
 }
 
 function renderAuthScreen(): void {
@@ -434,6 +476,7 @@ function renderOperations(): string {
         <h3>Operations</h3>
         <span>${state.migrations.length ? `schema v${state.migrations.at(-1)?.version}` : "schema pending"}</span>
       </div>
+      ${renderExportProfileSummary()}
       <div class="job-grid">
         <div>
           <h4>Imports</h4>
@@ -446,6 +489,18 @@ function renderOperations(): string {
       </div>
       ${renderSelectedJob()}
     </section>
+  `;
+}
+
+function renderExportProfileSummary(): string {
+  const profile = selectedExportProfile();
+  if (!profile) return "";
+  return `
+    <div class="profile-summary">
+      <strong>${escapeHtml(profile.display_name)}</strong>
+      <span>${escapeHtml(profile.description)}</span>
+      <small>Recommended: ${escapeHtml(profile.recommended_format.toUpperCase())}</small>
+    </div>
   `;
 }
 
@@ -577,6 +632,14 @@ function bindEvents(): void {
 
   document.querySelector<HTMLButtonElement>("#import-button")?.addEventListener("click", importMail);
   document.querySelector<HTMLButtonElement>("#export-button")?.addEventListener("click", exportMail);
+  document.querySelector<HTMLSelectElement>("#export-profile")?.addEventListener("change", (event) => {
+    state.selectedExportProfileId = (event.currentTarget as HTMLSelectElement).value;
+    state.selectedExportFormat = "auto";
+    render();
+  });
+  document.querySelector<HTMLSelectElement>("#export-format")?.addEventListener("change", (event) => {
+    state.selectedExportFormat = (event.currentTarget as HTMLSelectElement).value;
+  });
   document.querySelector<HTMLButtonElement>("#logout-button")?.addEventListener("click", logout);
   document.querySelector<HTMLSelectElement>("#profile-select")?.addEventListener("change", switchProfile);
   document.querySelector<HTMLButtonElement>("#profile-create-button")?.addEventListener("click", createProfile);
@@ -619,6 +682,7 @@ async function loadInitial(): Promise<void> {
     state.auth = state.health.auth;
     await loadProfiles();
     await loadMigrations();
+    await loadExportProfiles();
     await loadJobs();
     await loadMailboxes();
     await loadMessages();
@@ -651,6 +715,14 @@ async function loadJobs(): Promise<void> {
   ]);
   state.importJobs = importPayload.import_jobs;
   state.exportJobs = exportPayload.export_jobs;
+}
+
+async function loadExportProfiles(): Promise<void> {
+  const payload = await api<{ export_profiles: ExportProfile[] }>("/api/v1/export-profiles");
+  state.exportProfiles = payload.export_profiles;
+  if (!state.exportProfiles.some((profile) => profile.id === state.selectedExportProfileId)) {
+    state.selectedExportProfileId = state.exportProfiles[0]?.id ?? "generic-eml";
+  }
 }
 
 async function loadImportJobDetail(id: number): Promise<void> {
@@ -773,6 +845,7 @@ async function refreshActiveProfileData(): Promise<void> {
   state.auth = state.health.auth;
   await loadProfiles();
   await loadMigrations();
+  await loadExportProfiles();
   await loadJobs();
   await loadMailboxes();
   await loadMessages();
@@ -826,21 +899,25 @@ async function logout(): Promise<void> {
 
 async function exportMail(): Promise<void> {
   const outputPath = document.querySelector<HTMLInputElement>("#export-path")?.value.trim() || defaultExportPath();
-  const format = document.querySelector<HTMLSelectElement>("#export-format")?.value ?? "eml";
+  const format = document.querySelector<HTMLSelectElement>("#export-format")?.value ?? state.selectedExportFormat;
+  const targetProfile = document.querySelector<HTMLSelectElement>("#export-profile")?.value ?? state.selectedExportProfileId;
+  state.selectedExportProfileId = targetProfile;
+  state.selectedExportFormat = format;
   state.status = "Exporting...";
   render();
   try {
-    const result = await api<{ exported: number; warnings: number; manifest_path: string }>("/api/v1/export", {
+    const result = await api<{ export_job_id: number; exported: number; warnings: number; manifest_path: string }>("/api/v1/export", {
       method: "POST",
       body: JSON.stringify({
         outputPath,
         format,
         mailboxId: state.selectedMailboxId,
-        profile: "generic",
+        targetProfile,
       }),
     });
     state.status = `Exported ${result.exported} message(s), warnings=${result.warnings}. Manifest: ${result.manifest_path}`;
     await loadJobs();
+    await loadExportJobDetail(result.export_job_id);
     render();
   } catch (error) {
     state.status = error instanceof Error ? error.message : String(error);
@@ -849,7 +926,11 @@ async function exportMail(): Promise<void> {
 }
 
 function defaultExportPath(): string {
-  return `.private/local/exports/${state.activeProfileId ?? "default"}`;
+  return `.private/local/exports/${state.activeProfileId ?? "default"}/${state.selectedExportProfileId}`;
+}
+
+function selectedExportProfile(): ExportProfile | null {
+  return state.exportProfiles.find((profile) => profile.id === state.selectedExportProfileId) ?? null;
 }
 
 function authLabel(): string {

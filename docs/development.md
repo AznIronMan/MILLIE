@@ -113,7 +113,10 @@ MILLIE preserves raw HTML body blobs when available, stores a sanitized HTML cop
 PYTHONPATH=src python3 -m millie export --format eml --output .private/local/exports
 PYTHONPATH=src python3 -m millie export --format mbox --output .private/local/exports
 PYTHONPATH=src python3 -m millie export --format maildir --output .private/local/exports
+PYTHONPATH=src python3 -m millie export --profile thunderbird --format auto --output .private/local/exports/thunderbird
 ```
+
+Export profiles currently include `generic-eml`, `generic-mbox`, `generic-maildir`, `thunderbird`, `evolution`, `apple-mail`, and `outlook-workflow`.
 
 ## Test
 

@@ -10,6 +10,7 @@ from pathlib import Path
 
 from . import __version__
 from .database import MillieDatabase, utc_now
+from .export_profiles import get_export_profile, resolve_export_format
 
 
 @dataclass(slots=True)
@@ -46,10 +47,25 @@ def export_messages(
     db.init()
     output_root = output_root.expanduser().resolve()
     output_root.mkdir(parents=True, exist_ok=True)
-    export_format = export_format.lower()
-    options = {"mailbox_id": mailbox_id, "message_ids": message_ids or []}
-    job_id = db.start_export_job(target_profile, export_format, output_root, options)
+    profile_hint = (target_profile or "generic").strip().lower()
+    format_hint = (export_format or "auto").strip().lower()
+    if profile_hint == "generic" and format_hint in {"mbox", "maildir"}:
+        profile = get_export_profile(f"generic-{format_hint}")
+    else:
+        profile = get_export_profile(target_profile)
+    export_format = resolve_export_format(profile, export_format)
+    options = {
+        "mailbox_id": mailbox_id,
+        "message_ids": message_ids or [],
+        "target_profile": profile.id,
+        "requested_format": export_format,
+    }
+    job_id = db.start_export_job(profile.id, export_format, output_root, options)
     messages = db.messages_for_export(mailbox_id=mailbox_id, message_ids=message_ids)
+    unique_message_ids = sorted({int(item["id"]) for item in messages})
+    mailbox_paths = sorted({str(item.get("mailbox_path") or "Imported") for item in messages})
+    source_ids = sorted({int(item["source_id"]) for item in messages if item.get("source_id") is not None})
+    attachment_count = db.attachment_count_for_messages(unique_message_ids)
     exported = 0
     errors = 0
     warnings = 0
@@ -140,12 +156,24 @@ def export_messages(
         manifest = {
             "millie_version": __version__,
             "export_job_id": job_id,
-            "target_profile": target_profile,
+            "target_profile": profile.id,
+            "target_profile_display_name": profile.display_name,
+            "profile": profile.to_api(),
             "format": export_format,
             "created_at": utc_now(),
+            "source_filters": {
+                "mailbox_id": mailbox_id,
+                "message_ids": message_ids or [],
+            },
             "message_count": exported,
+            "unique_message_count": len(unique_message_ids),
+            "folder_count": len(mailbox_paths),
+            "attachment_count": attachment_count,
+            "source_ids": source_ids,
             "error_count": errors,
             "warning_count": warnings,
+            "import_instructions": list(profile.import_instructions),
+            "known_limitations": list(profile.limitations),
             "items": manifest_items,
         }
         manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
@@ -193,6 +221,7 @@ def manifest_item(
 ) -> dict[str, object]:
     return {
         "message_id": item["id"],
+        "source_id": item.get("source_id"),
         "mailbox_id": item.get("mailbox_id"),
         "mailbox_path": item.get("mailbox_path"),
         "subject": item.get("subject"),

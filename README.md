@@ -96,6 +96,7 @@ MILLIE now has a first runnable foundation slice:
 - Attachment listing and downloads through the local API
 - Local admin/session authentication path with development bypass currently enabled by default
 - Import/export job drill-downs for errors and generated export items
+- Export profiles for generic EML/MBOX/Maildir, Thunderbird, Evolution, Apple Mail, and Outlook workflow bundles
 - TypeScript/Vite web client for mailbox navigation, message viewing, import, and export
 - Basic import/export test coverage
 

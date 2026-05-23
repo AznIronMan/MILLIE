@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, quote, urlparse
 from millie import __version__
 from millie.auth import AuthManager, expired_session_cookie, session_cookie
 from millie.config import AppConfig
+from millie.export_profiles import list_export_profiles
 from millie.exporters import export_messages
 from millie.importers import import_path
 from millie.profiles import ProfileManager
@@ -154,6 +155,8 @@ class MillieRequestHandler(BaseHTTPRequestHandler):
                 self.write_json({"items": self.app.db.list_export_job_items(export_job_id)})
             elif path == "/api/v1/export-jobs":
                 self.write_json({"export_jobs": self.app.db.list_export_jobs()})
+            elif path == "/api/v1/export-profiles":
+                self.write_json({"export_profiles": [profile.to_api() for profile in list_export_profiles()]})
             else:
                 self.serve_static(path)
         except Exception as exc:  # noqa: BLE001
@@ -249,7 +252,12 @@ class MillieRequestHandler(BaseHTTPRequestHandler):
                     self.app.db,
                     output_path,
                     str(payload.get("format") or "eml"),
-                    target_profile=str(payload.get("profile") or "generic"),
+                    target_profile=str(
+                        payload.get("targetProfile")
+                        or payload.get("target_profile")
+                        or payload.get("profile")
+                        or "generic-eml"
+                    ),
                     mailbox_id=payload.get("mailboxId") or payload.get("mailbox_id"),
                     message_ids=message_ids,
                 )

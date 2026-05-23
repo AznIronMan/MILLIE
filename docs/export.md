@@ -39,28 +39,35 @@ Best for Unix-style mail stores, Evolution workflows, Dovecot/testing scenarios,
 
 ## Client Profiles
 
-Export profiles should define target-specific behavior without changing the canonical model.
+Export profiles define target-specific behavior without changing the canonical model. The first profiles are:
 
-Potential profiles:
+- `generic-eml`: EML bundle, one file per message, grouped by mailbox path.
+- `generic-mbox`: MBOX files, one file per mailbox path.
+- `generic-maildir`: Maildir folder tree with `tmp`, `new`, and `cur`.
+- `thunderbird`: Thunderbird-friendly MBOX by default, with EML available.
+- `evolution`: Evolution-oriented Maildir by default, with MBOX available.
+- `apple-mail`: Apple Mail-oriented MBOX by default, with EML available.
+- `outlook-workflow`: EML workflow placeholder until a reliable PST writer or local IMAP copy path is selected.
 
-- Generic EML bundle
-- Generic MBOX folder tree
-- Generic Maildir folder tree
-- Thunderbird import profile
-- Evolution import profile
-- Apple Mail import profile
-- Outlook workflow profile
+Use `format=auto` to select a profile's recommended format.
 
-Each profile should include:
+## Current Client Workflows
 
-- Output format
-- Folder path mapping
-- Filename rules
-- Flag mapping
-- Label/category mapping
-- Timestamp handling
-- Import instructions
-- Known limitations
+### Thunderbird
+
+Export with the `thunderbird` profile. MILLIE recommends MBOX output. Import the generated `.mbox` files through Thunderbird's mailbox import workflow, then compare the imported folder/message counts with the manifest.
+
+### Evolution
+
+Export with the `evolution` profile. MILLIE recommends Maildir output, with MBOX available for import workflows that prefer it. Review manifest warnings for unsupported flag or label mappings.
+
+### Apple Mail
+
+Export with the `apple-mail` profile. MILLIE recommends MBOX output. Use Apple Mail's import mailbox workflow and select the generated `.mbox` files. Compare folder/message counts with the manifest after import.
+
+### Outlook Workflow
+
+Export with the `outlook-workflow` profile. MILLIE currently recommends EML bundles for near-term migration workflows. Direct PST/OLM writing remains advanced until a reliable writer/toolchain is approved.
 
 ## Outlook Notes
 
@@ -92,6 +99,20 @@ Manifest fields should include:
 - Warnings
 - Errors
 - Unsupported metadata
+
+The current manifest includes:
+
+- MILLIE version
+- Export job ID
+- Target profile ID and display name
+- Profile metadata, import instructions, and known limitations
+- Output format
+- Created timestamp
+- Source filters
+- Message, unique message, folder, attachment, error, and warning counts
+- Source IDs
+- Per-output item paths and hashes
+- Per-message source IDs, mailbox IDs, mailbox paths, subjects, hashes, and warnings
 
 ## Non-Goals For The First Export MVP
 

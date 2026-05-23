@@ -17,6 +17,7 @@ The project uses semantic versioning in `major.minor.patch` format.
 - Added exact raw-MIME deduplication accounting, safer SQLite FTS search, and a `/api/v1/search` endpoint.
 - Added sanitized HTML message viewing and attachment download endpoints in the API and web client.
 - Added local admin/session authentication with development bypass enabled by default, plus import/export job drill-down views.
+- Added export profiles, profile-aware export UI controls, and enriched export manifests with folder, attachment, source, and client workflow metadata.
 
 ## [0.1.0] - 2026-05-23
 

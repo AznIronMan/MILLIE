@@ -43,9 +43,9 @@ def build_parser() -> argparse.ArgumentParser:
     import_cmd.add_argument("--source-name", default=None)
 
     export_cmd = subparsers.add_parser("export", help="Export messages to a mailbox format")
-    export_cmd.add_argument("--format", required=True, choices=["eml", "mbox", "maildir"])
+    export_cmd.add_argument("--format", required=True, choices=["auto", "eml", "mbox", "maildir"])
     export_cmd.add_argument("--output", required=True, help="Output directory")
-    export_cmd.add_argument("--profile", default="generic")
+    export_cmd.add_argument("--profile", default="generic-eml")
     export_cmd.add_argument("--mailbox-id", type=int, default=None)
     export_cmd.add_argument("--message-id", action="append", type=int, dest="message_ids")
     return parser
