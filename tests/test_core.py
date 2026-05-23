@@ -12,6 +12,7 @@ from millie.database import MillieDatabase
 from millie.exporters import export_messages
 from millie.importers import detect_format, import_path
 from millie.profiles import ProfileManager
+from millie.source_scanners import scan_source
 
 
 SAMPLE_EML = b"""From: Alice Example <alice@example.com>\r
@@ -203,6 +204,36 @@ class CoreImportExportTests(unittest.TestCase):
             export_result = export_messages(db, export_dir, "maildir")
             self.assertEqual(export_result.exported, 1)
             self.assertEqual(len(list((export_dir / "Maildir" / "new").glob("*"))), 1)
+
+    def test_scan_thunderbird_profile_and_import_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profile = root / "Profiles" / "abc123.default-release"
+            mailbox_root = profile / "Mail" / "Local Folders"
+            mailbox_root.mkdir(parents=True)
+            (profile / "prefs.js").write_text("// Thunderbird fixture\n", encoding="utf-8")
+
+            inbox_path = mailbox_root / "Inbox"
+            box = mailbox.mbox(inbox_path)
+            box.add(build_message("thunderbird@example.com", "Thunderbird Inbox", "Profile mailbox body"))
+            box.flush()
+            box.close()
+            (mailbox_root / "Inbox.msf").write_text("metadata index", encoding="utf-8")
+
+            candidates = scan_source(root, "thunderbird")
+            self.assertEqual(len(candidates), 1)
+            candidate = candidates[0]
+            self.assertEqual(candidate.format, "mbox")
+            self.assertEqual(candidate.source_type, "thunderbird")
+            self.assertEqual(candidate.mailbox_path, "Inbox")
+            self.assertEqual(candidate.message_estimate, 1)
+            self.assertNotIn("Inbox.msf", candidate.path)
+
+            db = MillieDatabase(root / "millie.sqlite", root / "data")
+            db.init()
+            result = import_path(db, Path(candidate.path), candidate.format, candidate.display_name)
+            self.assertEqual(result.imported, 1)
+            self.assertEqual(db.list_messages()[0]["subject"], "Thunderbird Inbox")
 
     def test_profile_manager_remembers_active_profile(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

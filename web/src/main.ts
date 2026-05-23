@@ -74,6 +74,19 @@ type ExportProfile = {
   limitations: string[];
 };
 
+type SourceCandidate = {
+  id: string;
+  source_type: string;
+  format: string;
+  path: string;
+  display_name: string;
+  mailbox_path: string;
+  size_bytes: number;
+  message_estimate: number | null;
+  confidence: string;
+  notes: string[];
+};
+
 type ImportJobError = {
   id: number;
   import_job_id: number;
@@ -150,6 +163,9 @@ type State = {
   exportProfiles: ExportProfile[];
   selectedExportProfileId: string;
   selectedExportFormat: string;
+  sourceScanPath: string;
+  sourceScanType: string;
+  sourceScanCandidates: SourceCandidate[];
   mailboxes: Mailbox[];
   messages: MessageSummary[];
   selectedMailboxId: number | null;
@@ -174,6 +190,9 @@ const state: State = {
   exportProfiles: [],
   selectedExportProfileId: "generic-eml",
   selectedExportFormat: "auto",
+  sourceScanPath: "",
+  sourceScanType: "thunderbird",
+  sourceScanCandidates: [],
   mailboxes: [],
   messages: [],
   selectedMailboxId: null,
@@ -297,6 +316,20 @@ function render(): void {
             </select>
             <button id="import-button">Import</button>
           </div>
+          <div class="panel-rule"></div>
+          <label>
+            Scan path
+            <input id="source-scan-path" value="${escapeHtml(state.sourceScanPath)}" placeholder="/path/to/Thunderbird profile" />
+          </label>
+          <div class="inline-controls">
+            <select id="source-scan-type">
+              <option value="thunderbird" ${state.sourceScanType === "thunderbird" ? "selected" : ""}>Thunderbird</option>
+              <option value="auto" ${state.sourceScanType === "auto" ? "selected" : ""}>Auto</option>
+              <option value="generic" ${state.sourceScanType === "generic" ? "selected" : ""}>Generic</option>
+            </select>
+            <button id="source-scan-button">Scan</button>
+          </div>
+          ${renderSourceCandidates()}
         </section>
         <nav class="folder-list" aria-label="Mailboxes">
           <button class="folder-row ${state.selectedMailboxId === null ? "active" : ""}" data-mailbox-id="">
@@ -379,6 +412,35 @@ function renderExportFormatOptions(): string {
     ),
   ];
   return options.join("");
+}
+
+function renderSourceCandidates(): string {
+  if (!state.sourceScanCandidates.length) return "";
+  return `
+    <div class="source-candidates">
+      ${state.sourceScanCandidates.map(renderSourceCandidate).join("")}
+    </div>
+  `;
+}
+
+function renderSourceCandidate(candidate: SourceCandidate): string {
+  const notes = candidate.notes.length ? `<small>${escapeHtml(candidate.notes.join(" "))}</small>` : "";
+  return `
+    <div class="source-candidate">
+      <div>
+        <strong>${escapeHtml(candidate.mailbox_path || candidate.display_name)}</strong>
+        <span>${escapeHtml(candidate.format.toUpperCase())} · ${escapeHtml(candidate.confidence)} · ${escapeHtml(candidateEstimate(candidate))}</span>
+        <small>${escapeHtml(candidate.path)}</small>
+        ${notes}
+      </div>
+      <button class="candidate-import-button" data-candidate-id="${escapeHtml(candidate.id)}">Import</button>
+    </div>
+  `;
+}
+
+function candidateEstimate(candidate: SourceCandidate): string {
+  if (candidate.message_estimate === null) return "unknown";
+  return `${candidate.message_estimate} message(s)`;
 }
 
 function renderAuthScreen(): void {
@@ -631,6 +693,17 @@ function bindEvents(): void {
   });
 
   document.querySelector<HTMLButtonElement>("#import-button")?.addEventListener("click", importMail);
+  document.querySelector<HTMLButtonElement>("#source-scan-button")?.addEventListener("click", scanSourcePath);
+  document.querySelector<HTMLInputElement>("#source-scan-path")?.addEventListener("keydown", async (event) => {
+    if (event.key === "Enter") {
+      await scanSourcePath();
+    }
+  });
+  document.querySelectorAll<HTMLButtonElement>(".candidate-import-button").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await importSourceCandidate(button.dataset.candidateId ?? "");
+    });
+  });
   document.querySelector<HTMLButtonElement>("#export-button")?.addEventListener("click", exportMail);
   document.querySelector<HTMLSelectElement>("#export-profile")?.addEventListener("change", (event) => {
     state.selectedExportProfileId = (event.currentTarget as HTMLSelectElement).value;
@@ -788,6 +861,60 @@ async function importMail(): Promise<void> {
   }
 }
 
+async function scanSourcePath(): Promise<void> {
+  const path = document.querySelector<HTMLInputElement>("#source-scan-path")?.value.trim() ?? "";
+  const type = document.querySelector<HTMLSelectElement>("#source-scan-type")?.value ?? "auto";
+  state.sourceScanPath = path;
+  state.sourceScanType = type;
+  if (!path) {
+    state.status = "Enter a local source path to scan.";
+    render();
+    return;
+  }
+  state.status = "Scanning source...";
+  render();
+  try {
+    const params = new URLSearchParams({ path, type });
+    const payload = await api<{ candidates: SourceCandidate[] }>(`/api/v1/source-scan?${params.toString()}`);
+    state.sourceScanCandidates = payload.candidates;
+    state.status = `Found ${payload.candidates.length} candidate(s).`;
+    render();
+  } catch (error) {
+    state.sourceScanCandidates = [];
+    state.status = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}
+
+async function importSourceCandidate(candidateId: string): Promise<void> {
+  const candidate = state.sourceScanCandidates.find((item) => item.id === candidateId);
+  if (!candidate) {
+    state.status = "Candidate is no longer available.";
+    render();
+    return;
+  }
+  state.status = `Importing ${candidate.mailbox_path}...`;
+  render();
+  try {
+    const result = await api<{ imported: number; processed: number; duplicates: number; errors: number; format: string }>("/api/v1/import", {
+      method: "POST",
+      body: JSON.stringify({
+        path: candidate.path,
+        format: candidate.format,
+        sourceName: candidate.display_name,
+      }),
+    });
+    await loadMailboxes();
+    await loadJobs();
+    await loadMessages();
+    state.status = `Processed ${result.processed} message(s) as ${result.format}; new=${result.imported}, duplicates=${result.duplicates}, errors=${result.errors}.`;
+    render();
+  } catch (error) {
+    state.status = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}
+
 async function switchProfile(event: Event): Promise<void> {
   const profileId = (event.currentTarget as HTMLSelectElement).value;
   if (!profileId || profileId === state.activeProfileId) return;
@@ -801,6 +928,8 @@ async function switchProfile(event: Event): Promise<void> {
     state.selectedMailboxId = null;
     state.selectedMessageId = null;
     state.selectedMessage = null;
+    state.selectedJob = null;
+    state.sourceScanCandidates = [];
     state.query = "";
     await refreshActiveProfileData();
     state.status = `Profile switched to ${state.health?.profile.name ?? profileId}.`;
@@ -830,6 +959,8 @@ async function createProfile(): Promise<void> {
     state.selectedMailboxId = null;
     state.selectedMessageId = null;
     state.selectedMessage = null;
+    state.selectedJob = null;
+    state.sourceScanCandidates = [];
     state.query = "";
     await refreshActiveProfileData();
     state.status = `Profile created: ${state.health?.profile.name ?? name}.`;

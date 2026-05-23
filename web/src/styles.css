@@ -173,6 +173,60 @@ label {
   gap: 8px;
 }
 
+.panel-rule {
+  height: 1px;
+  margin: 2px 0;
+  background: #d9e0e4;
+}
+
+.source-candidates {
+  display: grid;
+  gap: 8px;
+  max-height: 230px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.source-candidate {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: start;
+  border: 1px solid #d9e0e4;
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 8px;
+}
+
+.source-candidate > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.source-candidate strong,
+.source-candidate span,
+.source-candidate small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-candidate strong {
+  color: #172026;
+}
+
+.source-candidate span,
+.source-candidate small {
+  color: #5d6a72;
+  font-size: 0.78rem;
+}
+
+.candidate-import-button {
+  min-height: 32px;
+  padding: 0 9px;
+}
+
 .folder-list {
   overflow: auto;
   padding: 8px;

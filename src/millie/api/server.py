@@ -15,6 +15,7 @@ from millie.export_profiles import list_export_profiles
 from millie.exporters import export_messages
 from millie.importers import import_path
 from millie.profiles import ProfileManager
+from millie.source_scanners import scan_source
 
 
 class MillieRequestHandler(BaseHTTPRequestHandler):
@@ -53,6 +54,27 @@ class MillieRequestHandler(BaseHTTPRequestHandler):
                     {
                         "active_profile_id": self.app.profile_manager.active_profile_id,
                         "profiles": self.app.profile_manager.list_profiles(),
+                    }
+                )
+            elif path == "/api/v1/source-scan":
+                source_path = query.get("path", [""])[0].strip()
+                source_type = query.get("type", ["auto"])[0].strip() or "auto"
+                if not source_path:
+                    self.write_error(HTTPStatus.BAD_REQUEST, "path is required")
+                    return
+                try:
+                    candidates = scan_source(Path(source_path), source_type)
+                except FileNotFoundError as exc:
+                    self.write_error(HTTPStatus.BAD_REQUEST, f"Path not found: {exc}")
+                    return
+                except ValueError as exc:
+                    self.write_error(HTTPStatus.BAD_REQUEST, str(exc))
+                    return
+                self.write_json(
+                    {
+                        "path": str(Path(source_path).expanduser().resolve()),
+                        "source_type": source_type,
+                        "candidates": [candidate.to_api() for candidate in candidates],
                     }
                 )
             elif path == "/api/v1/sources":

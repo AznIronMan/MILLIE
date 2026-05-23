@@ -18,6 +18,7 @@ The project uses semantic versioning in `major.minor.patch` format.
 - Added sanitized HTML message viewing and attachment download endpoints in the API and web client.
 - Added local admin/session authentication with development bypass enabled by default, plus import/export job drill-down views.
 - Added export profiles, profile-aware export UI controls, and enriched export manifests with folder, attachment, source, and client workflow metadata.
+- Added read-only source scanning for Thunderbird profiles, with API, CLI, web import-panel integration, and candidate import handoff.
 
 ## [0.1.0] - 2026-05-23
 

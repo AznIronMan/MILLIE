@@ -99,6 +99,15 @@ PYTHONPATH=src python3 -m millie import /path/to/archive.pst --format pst
 
 Import output reports processed messages, newly created canonical messages, exact duplicates, errors, and the resolved import format. Exact duplicates are detected by raw MIME content hash, so importing the same archive again should not create duplicate canonical messages.
 
+## Scan Mail Sources
+
+```sh
+PYTHONPATH=src python3 -m millie scan /path/to/Thunderbird --type thunderbird
+PYTHONPATH=src python3 -m millie scan /path/to/Thunderbird --type thunderbird --json
+```
+
+The web app has the same scan path in the import panel. Scanning is read-only and currently focuses on Thunderbird profile roots or directories containing Thunderbird profiles.
+
 ## Search
 
 The web app search box and `/api/v1/search?q=...` use SQLite FTS5 over message subject, participants, and text body. Query text is normalized before it reaches FTS so searches with punctuation or email addresses are safe to run.

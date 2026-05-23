@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 from .config import AppConfig
@@ -9,6 +10,7 @@ from .exporters import export_messages
 from .importers import import_path
 from .api.server import run_server
 from .profiles import ProfileManager
+from .source_scanners import scan_source
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -41,6 +43,11 @@ def build_parser() -> argparse.ArgumentParser:
     import_cmd.add_argument("path", help="Path to .eml, .mbox, maildir, or folder of .eml files")
     import_cmd.add_argument("--format", default="auto", choices=["auto", "eml", "eml-dir", "mbox", "maildir", "pst"])
     import_cmd.add_argument("--source-name", default=None)
+
+    scan_cmd = subparsers.add_parser("scan", help="Scan a source path for importable mailbox candidates")
+    scan_cmd.add_argument("path", help="Path to a mail file, mail folder, or desktop client profile")
+    scan_cmd.add_argument("--type", default="auto", choices=["auto", "generic", "thunderbird"])
+    scan_cmd.add_argument("--json", action="store_true", help="Print scan results as JSON")
 
     export_cmd = subparsers.add_parser("export", help="Export messages to a mailbox format")
     export_cmd.add_argument("--format", required=True, choices=["auto", "eml", "mbox", "maildir"])
@@ -114,6 +121,32 @@ def main(argv: list[str] | None = None) -> int:
             f"errors={result.errors} format={result.format}"
         )
         return 0 if result.errors == 0 else 1
+    if args.command == "scan":
+        candidates = scan_source(Path(args.path), args.type)
+        if args.json:
+            print(
+                json.dumps(
+                    {
+                        "path": str(Path(args.path).expanduser().resolve()),
+                        "source_type": args.type,
+                        "candidates": [candidate.to_api() for candidate in candidates],
+                    },
+                    indent=2,
+                )
+            )
+        else:
+            print(f"Found {len(candidates)} candidate(s)")
+            for candidate in candidates:
+                estimate = (
+                    "unknown"
+                    if candidate.message_estimate is None
+                    else str(candidate.message_estimate)
+                )
+                print(
+                    f"- {candidate.display_name}: {candidate.format}, "
+                    f"{estimate} message(s), {candidate.path}"
+                )
+        return 0
     if args.command == "export":
         result = export_messages(
             db,
