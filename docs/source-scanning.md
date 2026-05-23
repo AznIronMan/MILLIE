@@ -4,7 +4,7 @@ Source scanning is a read-only discovery step before import. It helps users poin
 
 ## Thunderbird
 
-The first scanner supports Thunderbird profile roots and directories that contain Thunderbird profiles.
+The Thunderbird scanner supports Thunderbird profile roots and directories that contain Thunderbird profiles.
 
 It looks for profile markers such as:
 
@@ -21,10 +21,36 @@ Within `Mail/` and `ImapMail/`, it detects:
 
 It ignores Thunderbird metadata files such as `.msf` indexes, `panacea.dat`, `folderTree.json`, `global-messages-db.sqlite`, `msgFilterRules.dat`, and related SQLite or JSON files.
 
+## Evolution
+
+The Evolution scanner supports local mail store roots and account/local folders.
+
+It detects:
+
+- MBOX mailbox files, including extensionless files that begin with an MBOX `From ` separator
+- Maildir-style folders with `cur/` and `new/`
+- Direct folders of `.eml` or `.emlx` files
+
+It ignores common metadata and index files such as `folders.db`, `*.cmeta`, `*.ibex.index`, `*.ev-summary`, and related SQLite or JSON files.
+
+## Apple Mail
+
+The Apple Mail scanner supports `~/Library/Mail` style roots, version folders such as `V10`, and exported `.mbox` packages.
+
+It detects:
+
+- `.mbox` packages that contain a raw `mbox` file
+- `.mbox` packages that contain `Messages/*.emlx`
+- Standalone Apple Mail MBOX files where present
+
+When importing `.emlx` files, MILLIE strips the Apple wrapper line and trailing plist metadata before parsing the RFC822 message content.
+
 ## API
 
 ```http
 GET /api/v1/source-scan?path=/path/to/profile&type=thunderbird
+GET /api/v1/source-scan?path=/path/to/store&type=evolution
+GET /api/v1/source-scan?path=/path/to/Mail&type=apple-mail
 ```
 
 Each candidate includes:
@@ -40,13 +66,15 @@ Each candidate includes:
 - confidence
 - notes
 
-Selected candidates are imported through the normal `POST /api/v1/import` endpoint. The scanner does not write to the MILLIE database.
+Selected candidates are imported through the normal `POST /api/v1/import` endpoint. Candidate imports can pass `mailboxPath` so directory-based sources keep the discovered mailbox path. The scanner does not write to the MILLIE database.
 
 ## CLI
 
 ```sh
 PYTHONPATH=src python3 -m millie scan /path/to/profile --type thunderbird
+PYTHONPATH=src python3 -m millie scan /path/to/evolution/mail --type evolution
+PYTHONPATH=src python3 -m millie scan ~/Library/Mail --type apple-mail
 PYTHONPATH=src python3 -m millie scan /path/to/profile --type thunderbird --json
 ```
 
-`--type auto` falls back to generic file/folder detection when a Thunderbird profile is not found.
+`--type auto` tries known desktop-client layouts before falling back to generic file/folder detection.

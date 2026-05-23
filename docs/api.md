@@ -31,11 +31,15 @@ HTML message viewing uses sanitized stored HTML. Raw HTML remains preserved in b
 ## Import Jobs
 
 - `GET /api/v1/source-scan?path=/path/to/profile&type=thunderbird`
+- `GET /api/v1/source-scan?path=/path/to/store&type=evolution`
+- `GET /api/v1/source-scan?path=/path/to/Mail&type=apple-mail`
 - `POST /api/v1/import`
 - `GET /api/v1/import-jobs`
 - `GET /api/v1/import-jobs/{id}/errors`
 
 Source scanning is read-only. It returns local candidate paths, source type, detected import format, mailbox path, size, message estimate, confidence, and notes. The web app can send a selected candidate to `POST /api/v1/import`.
+
+`POST /api/v1/import` accepts an optional `mailboxPath` value. Source-scan candidate imports use it so directory-based sources such as Apple Mail `Messages/*.emlx` keep the discovered mailbox path.
 
 Import responses and job rows distinguish:
 

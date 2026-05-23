@@ -38,11 +38,34 @@ def detect_format(path: Path) -> str:
     return "mbox"
 
 
+def read_message_file(path: Path) -> bytes:
+    raw = path.read_bytes()
+    if path.suffix.lower() == ".emlx":
+        return normalize_emlx(raw)
+    return raw
+
+
+def normalize_emlx(raw: bytes) -> bytes:
+    first_line_end = raw.find(b"\n")
+    if first_line_end <= 0:
+        return raw
+    declared_size_raw = raw[:first_line_end].strip()
+    if not declared_size_raw.isdigit():
+        return raw
+    message_start = first_line_end + 1
+    declared_size = int(declared_size_raw)
+    message_end = message_start + declared_size
+    if len(raw) >= message_end:
+        return raw[message_start:message_end]
+    return raw[message_start:]
+
+
 def import_path(
     db: MillieDatabase,
     path: Path,
     import_format: str = "auto",
     source_name: str | None = None,
+    mailbox_path_override: str | None = None,
 ) -> ImportResult:
     db.init()
     path = path.expanduser().resolve()
@@ -60,6 +83,13 @@ def import_path(
     processed = 0
     duplicates = 0
     errors = 0
+
+    def resolved_mailbox_path(default: str, relative: str | None = None) -> str:
+        base = (mailbox_path_override or "").strip().strip("/")
+        cleaned_relative = "" if relative in {None, "", "."} else str(relative).strip("/")
+        if base and cleaned_relative:
+            return f"{base}/{cleaned_relative}"
+        return base or cleaned_relative or default
 
     def ingest(raw: bytes, mailbox_path: str, source_uid: str) -> None:
         nonlocal imported, processed, duplicates
@@ -83,13 +113,14 @@ def import_path(
 
     try:
         if resolved_format == "eml":
-            ingest(path.read_bytes(), "Imported", path.name)
+            ingest(read_message_file(path), resolved_mailbox_path("Imported"), path.name)
         elif resolved_format == "eml-dir":
             for item in sorted(path.rglob("*")):
                 if item.is_file() and item.suffix.lower() in {".eml", ".emlx"}:
                     try:
-                        mailbox_path = str(item.parent.relative_to(path)) or "Imported"
-                        ingest(item.read_bytes(), mailbox_path, str(item.relative_to(path)))
+                        relative_parent = str(item.parent.relative_to(path))
+                        target_mailbox_path = resolved_mailbox_path("Imported", relative_parent)
+                        ingest(read_message_file(item), target_mailbox_path, str(item.relative_to(path)))
                     except Exception as exc:  # noqa: BLE001
                         errors += 1
                         db.record_import_error(job_id, str(item), "error", str(exc))
@@ -99,7 +130,7 @@ def import_path(
                 for idx, message in enumerate(box):
                     try:
                         raw = message.as_bytes(policy=policy.SMTP)
-                        ingest(raw, path.stem or "Imported", str(idx))
+                        ingest(raw, resolved_mailbox_path(path.stem or "Imported"), str(idx))
                     except Exception as exc:  # noqa: BLE001
                         errors += 1
                         db.record_import_error(job_id, f"{path}:{idx}", "error", str(exc))
@@ -112,7 +143,7 @@ def import_path(
                     try:
                         message = box.get_message(key)
                         raw = message.as_bytes(policy=policy.SMTP)
-                        ingest(raw, path.name or "Maildir", key)
+                        ingest(raw, resolved_mailbox_path(path.name or "Maildir"), key)
                     except Exception as exc:  # noqa: BLE001
                         errors += 1
                         db.record_import_error(job_id, f"{path}:{key}", "error", str(exc))

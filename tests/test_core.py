@@ -235,6 +235,72 @@ class CoreImportExportTests(unittest.TestCase):
             self.assertEqual(result.imported, 1)
             self.assertEqual(db.list_messages()[0]["subject"], "Thunderbird Inbox")
 
+    def test_scan_evolution_store_and_import_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            mailbox_root = root / "mail" / "local"
+            mailbox_root.mkdir(parents=True)
+            (root / "folders.db").write_bytes(b"sqlite fixture")
+
+            inbox_path = mailbox_root / "Inbox"
+            box = mailbox.mbox(inbox_path)
+            box.add(build_message("evolution@example.com", "Evolution Inbox", "Evolution mailbox body"))
+            box.flush()
+            box.close()
+            (mailbox_root / "Inbox.cmeta").write_text("metadata index", encoding="utf-8")
+
+            candidates = scan_source(root, "evolution")
+            self.assertEqual(len(candidates), 1)
+            candidate = candidates[0]
+            self.assertEqual(candidate.format, "mbox")
+            self.assertEqual(candidate.source_type, "evolution")
+            self.assertTrue(candidate.mailbox_path.endswith("Inbox"))
+            self.assertEqual(candidate.message_estimate, 1)
+            self.assertNotIn("Inbox.cmeta", candidate.path)
+
+            db = MillieDatabase(root / "millie.sqlite", root / "data")
+            db.init()
+            result = import_path(db, Path(candidate.path), candidate.format, candidate.display_name)
+            self.assertEqual(result.imported, 1)
+            self.assertEqual(db.list_messages()[0]["subject"], "Evolution Inbox")
+
+    def test_scan_apple_mail_emlx_folder_and_import_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            messages_dir = root / "V10" / "Mailboxes" / "Archive.mbox" / "Messages"
+            messages_dir.mkdir(parents=True)
+            (root / "V10" / "MailData").mkdir(parents=True)
+            raw = build_message("apple@example.com", "Apple Mail Archive", "Apple Mail body").as_bytes()
+            (messages_dir / "123.emlx").write_bytes(build_emlx(raw))
+            (messages_dir.parent / "Info.plist").write_text("<plist></plist>", encoding="utf-8")
+
+            candidates = scan_source(root, "apple-mail")
+            self.assertEqual(len(candidates), 1)
+            candidate = candidates[0]
+            self.assertEqual(candidate.format, "eml-dir")
+            self.assertEqual(candidate.source_type, "apple-mail")
+            self.assertTrue(candidate.mailbox_path.endswith("Archive"))
+            self.assertEqual(candidate.message_estimate, 1)
+
+            db = MillieDatabase(root / "millie.sqlite", root / "data")
+            db.init()
+            result = import_path(db, Path(candidate.path), candidate.format, candidate.display_name)
+            self.assertEqual(result.imported, 1)
+            self.assertEqual(db.list_messages()[0]["subject"], "Apple Mail Archive")
+            self.assertEqual(db.list_messages()[0]["mailbox_path"], "Imported")
+
+            profile_db = MillieDatabase(root / "profiled.sqlite", root / "profiled-data")
+            profile_db.init()
+            result = import_path(
+                profile_db,
+                Path(candidate.path),
+                candidate.format,
+                candidate.display_name,
+                candidate.mailbox_path,
+            )
+            self.assertEqual(result.imported, 1)
+            self.assertEqual(profile_db.list_messages()[0]["mailbox_path"], "Mailboxes/Archive")
+
     def test_profile_manager_remembers_active_profile(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -329,6 +395,10 @@ def build_multipart_message() -> EmailMessage:
         filename="report.csv",
     )
     return message
+
+
+def build_emlx(raw_message: bytes) -> bytes:
+    return str(len(raw_message)).encode("ascii") + b"\n" + raw_message + b"\n<plist></plist>\n"
 
 
 if __name__ == "__main__":

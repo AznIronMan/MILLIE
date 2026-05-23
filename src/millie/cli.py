@@ -46,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     scan_cmd = subparsers.add_parser("scan", help="Scan a source path for importable mailbox candidates")
     scan_cmd.add_argument("path", help="Path to a mail file, mail folder, or desktop client profile")
-    scan_cmd.add_argument("--type", default="auto", choices=["auto", "generic", "thunderbird"])
+    scan_cmd.add_argument("--type", default="auto", choices=["auto", "generic", "thunderbird", "evolution", "apple-mail"])
     scan_cmd.add_argument("--json", action="store_true", help="Print scan results as JSON")
 
     export_cmd = subparsers.add_parser("export", help="Export messages to a mailbox format")

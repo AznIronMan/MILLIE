@@ -254,6 +254,7 @@ class MillieRequestHandler(BaseHTTPRequestHandler):
                     source_path,
                     str(payload.get("format") or "auto"),
                     payload.get("sourceName") or payload.get("source_name"),
+                    payload.get("mailboxPath") or payload.get("mailbox_path"),
                 )
                 self.write_json(
                     {

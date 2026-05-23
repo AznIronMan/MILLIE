@@ -7,6 +7,40 @@ from pathlib import Path
 
 MBOX_SAMPLE_LIMIT = 16 * 1024 * 1024
 THUNDERBIRD_MAIL_ROOTS = {"Mail", "ImapMail"}
+APPLE_MAIL_MARKERS = {"MailData", "Envelope Index", "Accounts.plist"}
+APPLE_MAIL_METADATA_NAMES = {
+    ".mboxcache.plist",
+    ".mboxentries",
+    "info.plist",
+    "table_of_contents",
+}
+APPLE_MAIL_METADATA_SUFFIXES = {
+    ".plist",
+    ".sqlite",
+    ".sqlite-shm",
+    ".sqlite-wal",
+}
+EVOLUTION_METADATA_NAMES = {
+    "folders.db",
+    "folders.db-shm",
+    "folders.db-wal",
+    "journal",
+    "uidvalidity",
+}
+EVOLUTION_METADATA_SUFFIXES = {
+    ".cmeta",
+    ".dat",
+    ".db",
+    ".ev-summary",
+    ".ibex.index",
+    ".ibex.index.data",
+    ".index",
+    ".json",
+    ".log",
+    ".sqlite",
+    ".sqlite-shm",
+    ".sqlite-wal",
+}
 THUNDERBIRD_METADATA_NAMES = {
     "foldertree.json",
     "global-messages-db.sqlite",
@@ -68,6 +102,10 @@ def scan_source(path: Path, source_type: str = "auto") -> list[SourceCandidate]:
     normalized_type = source_type.lower().strip() or "auto"
     if normalized_type == "thunderbird":
         return scan_thunderbird(root)
+    if normalized_type == "evolution":
+        return scan_evolution(root)
+    if normalized_type in {"apple-mail", "apple_mail", "applemail", "apple"}:
+        return scan_apple_mail(root)
     if normalized_type == "generic":
         return scan_generic(root)
     if normalized_type != "auto":
@@ -78,9 +116,13 @@ def scan_source(path: Path, source_type: str = "auto") -> list[SourceCandidate]:
         thunderbird_profiles = find_thunderbird_profiles(root)
         if thunderbird_profiles:
             candidates.extend(scan_thunderbird(root, thunderbird_profiles))
+        if looks_like_evolution_root(root):
+            candidates.extend(scan_evolution(root))
+        if looks_like_apple_mail_root(root):
+            candidates.extend(scan_apple_mail(root))
     if not candidates:
         candidates.extend(scan_generic(root))
-    return candidates
+    return sort_candidates(unique_candidates(candidates))
 
 
 def scan_thunderbird(
@@ -94,7 +136,7 @@ def scan_thunderbird(
             mail_root = profile_root / mail_root_name
             if mail_root.exists() and mail_root.is_dir():
                 candidates.extend(scan_thunderbird_mail_root(profile_root, mail_root))
-    return sorted(candidates, key=lambda item: (item.mailbox_path.lower(), item.path.lower()))
+    return sort_candidates(unique_candidates(candidates))
 
 
 def scan_thunderbird_mail_root(profile_root: Path, mail_root: Path) -> list[SourceCandidate]:
@@ -114,6 +156,63 @@ def scan_thunderbird_mail_root(profile_root: Path, mail_root: Path) -> list[Sour
                 stack.append(entry)
             elif is_thunderbird_mbox_file(entry):
                 candidates.append(build_mbox_candidate("thunderbird", profile_root, entry))
+    return candidates
+
+
+def scan_evolution(root: Path) -> list[SourceCandidate]:
+    candidates: list[SourceCandidate] = []
+    stack = [root]
+    while stack:
+        current = stack.pop()
+        if is_hidden_path(current, root):
+            continue
+        if is_maildir(current):
+            candidates.append(build_maildir_candidate("evolution", root, current))
+            continue
+        if has_eml_files(current):
+            candidates.append(build_eml_dir_candidate("evolution", root, current))
+        for entry in safe_iterdir(current):
+            if entry.is_dir():
+                stack.append(entry)
+            elif is_evolution_mbox_file(entry):
+                candidates.append(build_mbox_candidate("evolution", root, entry))
+    return sort_candidates(unique_candidates(candidates))
+
+
+def scan_apple_mail(root: Path) -> list[SourceCandidate]:
+    if root.is_file():
+        if root.name.lower() == "mbox" or root.suffix.lower() in {".mbox", ".mbx"}:
+            return [build_apple_mail_mbox_candidate(root.parent, root)]
+        return scan_generic(root)
+
+    candidates: list[SourceCandidate] = []
+    stack = [root]
+    while stack:
+        current = stack.pop()
+        if is_hidden_path(current, root):
+            continue
+        if current.suffix.lower() == ".mbox":
+            candidates.extend(scan_apple_mail_package(root, current))
+            continue
+        if current.name == "Messages" and has_eml_files(current):
+            candidates.append(build_apple_mail_messages_candidate(root, current))
+            continue
+        for entry in safe_iterdir(current):
+            if entry.is_dir():
+                stack.append(entry)
+            elif is_apple_mail_mbox_file(entry):
+                candidates.append(build_apple_mail_mbox_candidate(root, entry))
+    return sort_candidates(unique_candidates(candidates))
+
+
+def scan_apple_mail_package(root: Path, package: Path) -> list[SourceCandidate]:
+    candidates: list[SourceCandidate] = []
+    mbox_file = package / "mbox"
+    messages_dir = package / "Messages"
+    if mbox_file.exists() and mbox_file.is_file():
+        candidates.append(build_apple_mail_mbox_candidate(root, mbox_file))
+    if messages_dir.exists() and messages_dir.is_dir() and has_eml_files(messages_dir):
+        candidates.append(build_apple_mail_messages_candidate(root, messages_dir))
     return candidates
 
 
@@ -159,6 +258,40 @@ def scan_generic(path: Path) -> list[SourceCandidate]:
             )
         ]
     return []
+
+
+def looks_like_evolution_root(path: Path) -> bool:
+    if not path.exists() or not path.is_dir():
+        return False
+    names = {item.name for item in safe_iterdir(path)}
+    lower_names = {name.lower() for name in names}
+    if {"cur", "new"}.issubset(names) or EVOLUTION_METADATA_NAMES.intersection(lower_names):
+        return True
+    return any(
+        item.is_dir() and (item.name in {"mail", "local"} or item.name.startswith("account_"))
+        for item in safe_iterdir(path)
+    )
+
+
+def looks_like_apple_mail_root(path: Path) -> bool:
+    if not path.exists():
+        return False
+    if path.is_file():
+        return path.name.lower() == "mbox" or path.suffix.lower() in {".emlx", ".mbox", ".mbx"}
+    if path.suffix.lower() == ".mbox":
+        return True
+    names = {item.name for item in safe_iterdir(path)}
+    if APPLE_MAIL_MARKERS.intersection(names):
+        return True
+    for item in safe_iterdir(path):
+        if not item.is_dir():
+            continue
+        if item.suffix.lower() == ".mbox":
+            return True
+        child_names = {child.name for child in safe_iterdir(item)}
+        if APPLE_MAIL_MARKERS.intersection(child_names):
+            return True
+    return False
 
 
 def find_thunderbird_profiles(root: Path) -> list[Path]:
@@ -236,6 +369,43 @@ def build_mbox_candidate(source_type: str, profile_root: Path, path: Path) -> So
     )
 
 
+def build_apple_mail_mbox_candidate(root: Path, path: Path) -> SourceCandidate:
+    _, mailbox_path = apple_mail_identity(root, path)
+    size = safe_size(path)
+    estimate, sampled = estimate_mbox_messages(path)
+    notes = ["Apple Mail export package MBOX file."] if path.name.lower() == "mbox" else []
+    if sampled:
+        notes.append("Message estimate sampled from first 16 MiB.")
+    return SourceCandidate(
+        id=candidate_id("apple-mail", "mbox", path),
+        source_type="apple-mail",
+        format="mbox",
+        path=str(path),
+        display_name=f"Apple Mail - {mailbox_path}",
+        mailbox_path=mailbox_path,
+        size_bytes=size,
+        message_estimate=estimate,
+        confidence="high" if starts_like_mbox(path) or estimate > 0 else "medium",
+        notes=notes,
+    )
+
+
+def build_apple_mail_messages_candidate(root: Path, path: Path) -> SourceCandidate:
+    _, mailbox_path = apple_mail_identity(root, path)
+    return SourceCandidate(
+        id=candidate_id("apple-mail", "eml-dir", path),
+        source_type="apple-mail",
+        format="eml-dir",
+        path=str(path),
+        display_name=f"Apple Mail - {mailbox_path}",
+        mailbox_path=mailbox_path,
+        size_bytes=directory_size(path),
+        message_estimate=count_eml_files(path),
+        confidence="high",
+        notes=["Apple Mail .emlx message folder."],
+    )
+
+
 def build_maildir_candidate(source_type: str, profile_root: Path, path: Path) -> SourceCandidate:
     account, mailbox_path = mailbox_identity(profile_root, path)
     notes = account_notes(account)
@@ -285,6 +455,30 @@ def is_thunderbird_mbox_file(path: Path) -> bool:
     return size == 0 or starts_like_mbox(path)
 
 
+def is_evolution_mbox_file(path: Path) -> bool:
+    name = path.name.lower()
+    if path.name.startswith(".") or name in EVOLUTION_METADATA_NAMES:
+        return False
+    if suffix_in(name, EVOLUTION_METADATA_SUFFIXES):
+        return False
+    suffix = path.suffix.lower()
+    if suffix in {".mbox", ".mbx"}:
+        return True
+    if suffix:
+        return False
+    size = safe_size(path)
+    return size == 0 or starts_like_mbox(path)
+
+
+def is_apple_mail_mbox_file(path: Path) -> bool:
+    name = path.name.lower()
+    if path.name.startswith(".") or name in APPLE_MAIL_METADATA_NAMES:
+        return False
+    if suffix_in(name, APPLE_MAIL_METADATA_SUFFIXES):
+        return False
+    return name == "mbox" or path.suffix.lower() in {".mbox", ".mbx"}
+
+
 def mailbox_identity(profile_root: Path, path: Path) -> tuple[str | None, str]:
     try:
         relative = path.relative_to(profile_root)
@@ -298,6 +492,11 @@ def mailbox_identity(profile_root: Path, path: Path) -> tuple[str | None, str]:
         if parts:
             account = parts[0]
             parts = parts[1:]
+    elif parts and parts[0] in {"mail", "local", "accounts"}:
+        parts = parts[1:]
+        if parts and parts[0].startswith("account_"):
+            account = parts[0]
+            parts = parts[1:]
 
     clean_parts: list[str] = []
     for index, part in enumerate(parts):
@@ -308,6 +507,33 @@ def mailbox_identity(profile_root: Path, path: Path) -> tuple[str | None, str]:
             clean_parts.append(cleaned)
     mailbox_path = "/".join(item for item in clean_parts if item) or path.stem or path.name
     return account, mailbox_path
+
+
+def apple_mail_identity(root: Path, path: Path) -> tuple[Path, str]:
+    try:
+        relative = path.relative_to(root)
+        parts = list(relative.parts)
+    except ValueError:
+        parts = [path.name]
+
+    clean_parts: list[str] = []
+    for part in parts:
+        if part in {"Messages", "Data", "MailData"} or part.isdigit() or is_apple_version_folder(part):
+            continue
+        lowered = part.lower()
+        if lowered == "mbox":
+            continue
+        if lowered.endswith(".mbox"):
+            clean_parts.append(part[:-5])
+        elif lowered.endswith(".emlx"):
+            clean_parts.append(Path(part).stem)
+        elif lowered not in APPLE_MAIL_METADATA_NAMES:
+            clean_parts.append(part)
+    mailbox_path = "/".join(item for item in clean_parts if item)
+    if not mailbox_path and root.suffix.lower() == ".mbox":
+        mailbox_path = root.stem
+    mailbox_path = mailbox_path or path.stem or path.name
+    return root, mailbox_path
 
 
 def display_name(
@@ -323,6 +549,12 @@ def display_name(
             parts.append(account)
         parts.append(mailbox_path)
         return "Thunderbird - " + " / ".join(parts)
+    if source_type == "evolution":
+        parts = [profile_root.name]
+        if account:
+            parts.append(account)
+        parts.append(mailbox_path)
+        return "Evolution - " + " / ".join(parts)
     return path.name
 
 
@@ -414,6 +646,32 @@ def unique_paths(paths: list[Path]) -> list[Path]:
             seen.add(key)
             unique.append(path)
     return unique
+
+
+def unique_candidates(candidates: list[SourceCandidate]) -> list[SourceCandidate]:
+    seen: set[tuple[str, str]] = set()
+    unique: list[SourceCandidate] = []
+    for candidate in candidates:
+        key = (candidate.format, str(Path(candidate.path).resolve()).lower())
+        if key not in seen:
+            seen.add(key)
+            unique.append(candidate)
+    return unique
+
+
+def sort_candidates(candidates: list[SourceCandidate]) -> list[SourceCandidate]:
+    return sorted(
+        candidates,
+        key=lambda item: (item.source_type.lower(), item.mailbox_path.lower(), item.path.lower()),
+    )
+
+
+def suffix_in(name: str, suffixes: set[str]) -> bool:
+    return any(name.endswith(suffix) for suffix in suffixes)
+
+
+def is_apple_version_folder(name: str) -> bool:
+    return len(name) > 1 and name[0] == "V" and name[1:].isdigit()
 
 
 def candidate_id(source_type: str, import_format: str, path: Path) -> str:

@@ -89,7 +89,7 @@ MILLIE now has a first runnable foundation slice:
 - SQLite `.settings` files for global and profile-specific settings
 - `.eml`, `mbox`, `maildir`, and `.eml` folder import paths
 - PST import through the optional `readpst`/`libpst` adapter
-- Thunderbird profile scanning to find importable mailbox candidates before import
+- Thunderbird, Evolution, and Apple Mail source scanning to find importable mailbox candidates before import
 - `.eml`, `mbox`, and `maildir` export paths with manifests
 - Exact raw-MIME deduplication so repeat imports do not duplicate canonical messages
 - SQLite FTS search over subject, participants, and body text

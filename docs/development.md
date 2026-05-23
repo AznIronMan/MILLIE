@@ -103,10 +103,12 @@ Import output reports processed messages, newly created canonical messages, exac
 
 ```sh
 PYTHONPATH=src python3 -m millie scan /path/to/Thunderbird --type thunderbird
+PYTHONPATH=src python3 -m millie scan /path/to/evolution/mail --type evolution
+PYTHONPATH=src python3 -m millie scan ~/Library/Mail --type apple-mail
 PYTHONPATH=src python3 -m millie scan /path/to/Thunderbird --type thunderbird --json
 ```
 
-The web app has the same scan path in the import panel. Scanning is read-only and currently focuses on Thunderbird profile roots or directories containing Thunderbird profiles.
+The web app has the same scan path in the import panel. Scanning is read-only and currently covers Thunderbird profiles, Evolution local stores, Apple Mail stores/exports, and generic open mailbox files.
 
 ## Search
 

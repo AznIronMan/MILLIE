@@ -17,5 +17,6 @@ Implement initial file import adapters.
 ## Progress
 
 - `.eml`, `.eml` folder, `mbox`, `maildir`, and PST import paths exist.
-- Thunderbird profile scanning can discover extensionless MBOX folders, Maildir folders, and `.eml` folders before handing selected candidates to the normal import endpoint.
-- Remaining desktop-client helper work includes Evolution and Apple Mail source scans, OLM/OST path decisions, and clearer unsupported-format UX around vendor-specific stores.
+- Thunderbird, Evolution, and Apple Mail scanning can discover open mailbox candidates before handing selected paths to the normal import endpoint.
+- Apple `.emlx` files are normalized to RFC822 message bytes during import.
+- Remaining desktop-client helper work includes OLM/OST path decisions and clearer unsupported-format UX around vendor-specific stores.

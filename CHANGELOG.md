@@ -19,6 +19,7 @@ The project uses semantic versioning in `major.minor.patch` format.
 - Added local admin/session authentication with development bypass enabled by default, plus import/export job drill-down views.
 - Added export profiles, profile-aware export UI controls, and enriched export manifests with folder, attachment, source, and client workflow metadata.
 - Added read-only source scanning for Thunderbird profiles, with API, CLI, web import-panel integration, and candidate import handoff.
+- Added read-only source scanning for Evolution and Apple Mail stores, `.emlx` wrapper normalization, and candidate mailbox-path handoff during import.
 
 ## [0.1.0] - 2026-05-23
 

@@ -319,11 +319,13 @@ function render(): void {
           <div class="panel-rule"></div>
           <label>
             Scan path
-            <input id="source-scan-path" value="${escapeHtml(state.sourceScanPath)}" placeholder="/path/to/Thunderbird profile" />
+            <input id="source-scan-path" value="${escapeHtml(state.sourceScanPath)}" placeholder="/path/to/mail client store" />
           </label>
           <div class="inline-controls">
             <select id="source-scan-type">
               <option value="thunderbird" ${state.sourceScanType === "thunderbird" ? "selected" : ""}>Thunderbird</option>
+              <option value="evolution" ${state.sourceScanType === "evolution" ? "selected" : ""}>Evolution</option>
+              <option value="apple-mail" ${state.sourceScanType === "apple-mail" ? "selected" : ""}>Apple Mail</option>
               <option value="auto" ${state.sourceScanType === "auto" ? "selected" : ""}>Auto</option>
               <option value="generic" ${state.sourceScanType === "generic" ? "selected" : ""}>Generic</option>
             </select>
@@ -902,6 +904,7 @@ async function importSourceCandidate(candidateId: string): Promise<void> {
         path: candidate.path,
         format: candidate.format,
         sourceName: candidate.display_name,
+        mailboxPath: candidate.mailbox_path,
       }),
     });
     await loadMailboxes();
