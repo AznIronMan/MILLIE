@@ -113,13 +113,31 @@ label {
   background: #f9fbfc;
 }
 
-.profile-path {
+.profile-facts {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+}
+
+.profile-facts div {
+  display: grid;
+  grid-template-columns: 50px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.profile-facts dt,
+.profile-facts dd {
   overflow: hidden;
   margin: 0;
   color: #5d6a72;
-  font-size: 0.74rem;
+  font-size: 0.72rem;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.profile-facts dt {
+  color: #34434d;
+  font-weight: 750;
 }
 
 .inline-controls {
@@ -250,9 +268,13 @@ label {
   background: #fff8ec;
 }
 
-.message-detail {
+.detail-content {
   min-height: 0;
   overflow: auto;
+}
+
+.message-detail {
+  min-height: 0;
   padding: 22px;
 }
 
@@ -325,6 +347,67 @@ label {
   font-size: 0.92rem;
 }
 
+.operations-panel {
+  display: grid;
+  gap: 12px;
+  border-top: 1px solid #d9e0e4;
+  padding: 16px 22px 22px;
+  background: #fbfcfc;
+}
+
+.operations-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.operations-header h3,
+.job-grid h4 {
+  margin: 0;
+}
+
+.operations-header span,
+.muted {
+  color: #5d6a72;
+  font-size: 0.84rem;
+}
+
+.job-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.job-grid > div {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+}
+
+.job-row {
+  display: grid;
+  gap: 3px;
+  border: 1px solid #d9e0e4;
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 9px;
+}
+
+.job-row strong,
+.job-row span,
+.job-row small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.job-row span,
+.job-row small {
+  color: #5d6a72;
+  font-size: 0.82rem;
+}
+
 .empty {
   display: grid;
   place-items: center;
@@ -368,7 +451,8 @@ label {
   }
 
   .detail-toolbar,
-  .topbar {
+  .topbar,
+  .job-grid {
     grid-template-columns: 1fr;
   }
 }

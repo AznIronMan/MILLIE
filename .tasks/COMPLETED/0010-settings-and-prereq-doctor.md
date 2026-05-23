@@ -14,6 +14,7 @@ Use SQLite `.settings` files for global and profile-specific settings, keep `.en
 - Moved backend default port to `22001`.
 - Moved Vite dev and preview ports to `22002` and `22003`.
 - Added `millie doctor` with optional `--install` and `--yes` flags.
+- Doctor reports optional `readpst/libpst` availability for PST import.
 
 ## Verification
 

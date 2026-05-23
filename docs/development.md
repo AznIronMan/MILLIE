@@ -22,7 +22,7 @@ The previously selected profile opens automatically when the server starts.
 
 ## Prerequisites
 
-Run the doctor command to check Python, SQLite, Node.js, npm, `web/package.json`, `web/node_modules`, and optional `.venv` state:
+Run the doctor command to check Python, SQLite, Node.js, npm, optional `readpst/libpst`, `web/package.json`, `web/node_modules`, and optional `.venv` state:
 
 ```sh
 PYTHONPATH=src python3 -m millie doctor
@@ -38,6 +38,12 @@ For non-interactive setup:
 
 ```sh
 PYTHONPATH=src python3 -m millie doctor --install --yes
+```
+
+For PST import support:
+
+```sh
+brew install libpst
 ```
 
 ## Run The Backend
@@ -84,6 +90,7 @@ The Vite dev server uses `22002`, and Vite preview uses `22003`.
 PYTHONPATH=src python3 -m millie import /path/to/message.eml --format eml
 PYTHONPATH=src python3 -m millie import /path/to/archive.mbox --format mbox
 PYTHONPATH=src python3 -m millie import /path/to/Maildir --format maildir
+PYTHONPATH=src python3 -m millie import /path/to/archive.pst --format pst
 ```
 
 ## Export Mail

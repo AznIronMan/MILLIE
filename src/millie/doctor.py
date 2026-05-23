@@ -49,6 +49,7 @@ def collect_checks(project_root: Path) -> list[CheckResult]:
         check_sqlite(),
         check_node(),
         check_npm(),
+        check_readpst(),
         check_package_json(project_root),
         check_node_modules(project_root),
         check_venv(project_root),
@@ -86,6 +87,14 @@ def check_npm() -> CheckResult:
         return CheckResult("npm", False, "npm command not found")
     version = command_text([npm, "--version"])
     return CheckResult("npm", True, version or npm)
+
+
+def check_readpst() -> CheckResult:
+    readpst = shutil.which("readpst")
+    if readpst is None:
+        return CheckResult("readpst/libpst", False, "readpst command not found; PST import will be disabled", required=False)
+    version = command_text([readpst, "-V"])
+    return CheckResult("readpst/libpst", True, version.splitlines()[0] if version else readpst, required=False)
 
 
 def check_package_json(project_root: Path) -> CheckResult:

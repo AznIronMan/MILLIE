@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import mailbox
+from email.message import EmailMessage
 from pathlib import Path
 
 from millie.database import MillieDatabase
 from millie.exporters import export_messages
-from millie.importers import import_path
+from millie.importers import detect_format, import_path
 from millie.profiles import ProfileManager
 
 
@@ -24,6 +26,9 @@ This message is a tiny archive seed.\r
 
 
 class CoreImportExportTests(unittest.TestCase):
+    def test_detects_pst_format(self) -> None:
+        self.assertEqual(detect_format(Path("archive.pst")), "pst")
+
     def test_import_eml_and_export_eml(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -48,6 +53,71 @@ class CoreImportExportTests(unittest.TestCase):
             self.assertEqual(export_result.exported, 1)
             self.assertTrue(export_result.manifest_path.exists())
             self.assertEqual(len(list(export_dir.rglob("*.eml"))), 1)
+            self.assertEqual(db.list_migrations()[0]["version"], 1)
+
+    def test_import_html_and_attachment_message(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = MillieDatabase(root / "millie.sqlite", root / "data")
+            db.init()
+
+            source = root / "multipart.eml"
+            source.write_bytes(build_multipart_message().as_bytes())
+            result = import_path(db, source, "eml", "Multipart Fixture")
+
+            self.assertEqual(result.imported, 1)
+            messages = db.list_messages(query="quarterly")
+            self.assertEqual(len(messages), 1)
+
+            detail = db.get_message(int(messages[0]["id"]))
+            self.assertIsNotNone(detail)
+            self.assertEqual(detail["subject"], "Multipart Fixture")
+            self.assertIsNotNone(detail["body_html_ref"])
+            self.assertEqual(len(detail["attachments"]), 1)
+            self.assertEqual(detail["attachments"][0]["filename"], "report.csv")
+
+    def test_import_mbox_and_export_mbox(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = MillieDatabase(root / "millie.sqlite", root / "data")
+            db.init()
+
+            mbox_path = root / "fixture.mbox"
+            box = mailbox.mbox(mbox_path)
+            box.add(build_message("one@example.com", "MBOX One", "First archive body"))
+            box.add(build_message("two@example.com", "MBOX Two", "Second archive body"))
+            box.flush()
+            box.close()
+
+            result = import_path(db, mbox_path, "mbox", "MBOX Fixture")
+            self.assertEqual(result.imported, 2)
+            self.assertEqual(len(db.list_messages()), 2)
+
+            export_dir = root / "exports"
+            export_result = export_messages(db, export_dir, "mbox")
+            self.assertEqual(export_result.exported, 2)
+            self.assertTrue((export_dir / "fixture.mbox").exists())
+
+    def test_import_maildir_and_export_maildir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = MillieDatabase(root / "millie.sqlite", root / "data")
+            db.init()
+
+            maildir_path = root / "Maildir"
+            maildir = mailbox.Maildir(maildir_path, create=True)
+            maildir.add(build_message("maildir@example.com", "Maildir Fixture", "Maildir archive body"))
+            maildir.flush()
+            maildir.close()
+
+            result = import_path(db, maildir_path, "maildir", "Maildir Fixture")
+            self.assertEqual(result.imported, 1)
+            self.assertEqual(len(db.list_messages()), 1)
+
+            export_dir = root / "exports"
+            export_result = export_messages(db, export_dir, "maildir")
+            self.assertEqual(export_result.exported, 1)
+            self.assertEqual(len(list((export_dir / "Maildir" / "new").glob("*"))), 1)
 
     def test_profile_manager_remembers_active_profile(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -73,6 +143,33 @@ class CoreImportExportTests(unittest.TestCase):
             self.assertEqual(reloaded.active_profile().name, "Fixture Mail")
             self.assertTrue((root / "millie.settings").exists())
             self.assertTrue(created.settings_path.exists())
+
+
+def build_message(sender: str, subject: str, body: str) -> EmailMessage:
+    message = EmailMessage()
+    message["From"] = f"Fixture Sender <{sender}>"
+    message["To"] = "Fixture Recipient <recipient@example.com>"
+    message["Subject"] = subject
+    message["Message-ID"] = f"<{subject.lower().replace(' ', '-')}@example.com>"
+    message["Date"] = "Fri, 01 Jan 2021 00:00:00 +0000"
+    message.set_content(body)
+    return message
+
+
+def build_multipart_message() -> EmailMessage:
+    message = build_message(
+        "multipart@example.com",
+        "Multipart Fixture",
+        "Plain quarterly archive body.",
+    )
+    message.add_alternative("<html><body><p>HTML quarterly archive body.</p></body></html>", subtype="html")
+    message.add_attachment(
+        b"quarter,value\nQ1,42\n",
+        maintype="text",
+        subtype="csv",
+        filename="report.csv",
+    )
+    return message
 
 
 if __name__ == "__main__":

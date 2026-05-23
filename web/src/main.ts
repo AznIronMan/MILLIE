@@ -14,8 +14,42 @@ type Profile = {
   name: string;
   db_path: string;
   data_dir: string;
+  settings_path: string;
   created_at: string;
   last_opened_at: string;
+};
+
+type Migration = {
+  version: number;
+  name: string;
+  applied_at: string;
+};
+
+type ImportJob = {
+  id: number;
+  source_id: number;
+  source_name: string;
+  source_uri: string | null;
+  kind: string;
+  status: string;
+  started_at: string;
+  finished_at: string | null;
+  message_count: number;
+  error_count: number;
+};
+
+type ExportJob = {
+  id: number;
+  target_profile: string;
+  format: string;
+  status: string;
+  started_at: string;
+  finished_at: string | null;
+  message_count: number;
+  error_count: number;
+  warning_count: number;
+  output_root: string;
+  manifest_ref: string | null;
 };
 
 type Mailbox = {
@@ -61,6 +95,9 @@ type State = {
   health: Health | null;
   profiles: Profile[];
   activeProfileId: string | null;
+  migrations: Migration[];
+  importJobs: ImportJob[];
+  exportJobs: ExportJob[];
   mailboxes: Mailbox[];
   messages: MessageSummary[];
   selectedMailboxId: number | null;
@@ -74,6 +111,9 @@ const state: State = {
   health: null,
   profiles: [],
   activeProfileId: null,
+  migrations: [],
+  importJobs: [],
+  exportJobs: [],
   mailboxes: [],
   messages: [],
   selectedMailboxId: null,
@@ -158,7 +198,11 @@ function render(): void {
             <input id="profile-name" placeholder="New test profile" />
             <button id="profile-create-button">New</button>
           </div>
-          <p class="profile-path">${escapeHtml(state.health?.db_path ?? "No profile loaded")}</p>
+          <dl class="profile-facts">
+            <div><dt>Global</dt><dd>${escapeHtml(state.health?.settings_path ?? "")}</dd></div>
+            <div><dt>Profile</dt><dd>${escapeHtml(state.health?.profile.settings_path ?? "")}</dd></div>
+            <div><dt>DB</dt><dd>${escapeHtml(state.health?.db_path ?? "No profile loaded")}</dd></div>
+          </dl>
         </section>
         <section class="tool-panel">
           <label>
@@ -172,6 +216,7 @@ function render(): void {
               <option value="eml-dir">EML folder</option>
               <option value="mbox">MBOX</option>
               <option value="maildir">Maildir</option>
+              <option value="pst">PST</option>
             </select>
             <button id="import-button">Import</button>
           </div>
@@ -222,7 +267,10 @@ function render(): void {
           </select>
           <button id="export-button">Export</button>
         </div>
-        ${state.selectedMessage ? renderDetail(state.selectedMessage) : `<div class="empty detail-empty">Select a message to inspect it.</div>`}
+        <div class="detail-content">
+          ${state.selectedMessage ? renderDetail(state.selectedMessage) : `<div class="empty detail-empty">Select a message to inspect it.</div>`}
+          ${renderOperations()}
+        </div>
         <footer class="status-line">${escapeHtml(state.status)}</footer>
       </section>
     </div>
@@ -268,6 +316,47 @@ function renderDetail(detail: MessageDetail): string {
       }
       <pre class="body-text">${escapeHtml(detail.body_text || "(No text body captured yet.)")}</pre>
     </article>
+  `;
+}
+
+function renderOperations(): string {
+  return `
+    <section class="operations-panel">
+      <div class="operations-header">
+        <h3>Operations</h3>
+        <span>${state.migrations.length ? `schema v${state.migrations.at(-1)?.version}` : "schema pending"}</span>
+      </div>
+      <div class="job-grid">
+        <div>
+          <h4>Imports</h4>
+          ${state.importJobs.slice(0, 5).map(renderImportJob).join("") || `<p class="muted">No import jobs yet.</p>`}
+        </div>
+        <div>
+          <h4>Exports</h4>
+          ${state.exportJobs.slice(0, 5).map(renderExportJob).join("") || `<p class="muted">No export jobs yet.</p>`}
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderImportJob(job: ImportJob): string {
+  return `
+    <div class="job-row">
+      <strong>${escapeHtml(job.kind)} · ${escapeHtml(job.status)}</strong>
+      <span>${escapeHtml(job.source_name)} · ${job.message_count} message(s) · ${job.error_count} error(s)</span>
+      <small>${escapeHtml(formatDate(job.started_at))}</small>
+    </div>
+  `;
+}
+
+function renderExportJob(job: ExportJob): string {
+  return `
+    <div class="job-row">
+      <strong>${escapeHtml(job.format)} · ${escapeHtml(job.status)}</strong>
+      <span>${job.message_count} message(s) · ${job.warning_count} warning(s) · ${job.error_count} error(s)</span>
+      <small>${escapeHtml(job.manifest_ref || job.output_root)}</small>
+    </div>
   `;
 }
 
@@ -321,6 +410,8 @@ async function loadInitial(): Promise<void> {
   try {
     state.health = await api<Health>("/api/v1/health");
     await loadProfiles();
+    await loadMigrations();
+    await loadJobs();
     await loadMailboxes();
     await loadMessages();
   } catch (error) {
@@ -333,6 +424,20 @@ async function loadProfiles(): Promise<void> {
   const payload = await api<{ active_profile_id: string; profiles: Profile[] }>("/api/v1/profiles");
   state.activeProfileId = payload.active_profile_id;
   state.profiles = payload.profiles;
+}
+
+async function loadMigrations(): Promise<void> {
+  const payload = await api<{ migrations: Migration[] }>("/api/v1/migrations");
+  state.migrations = payload.migrations;
+}
+
+async function loadJobs(): Promise<void> {
+  const [importPayload, exportPayload] = await Promise.all([
+    api<{ import_jobs: ImportJob[] }>("/api/v1/import-jobs"),
+    api<{ export_jobs: ExportJob[] }>("/api/v1/export-jobs"),
+  ]);
+  state.importJobs = importPayload.import_jobs;
+  state.exportJobs = exportPayload.export_jobs;
 }
 
 async function loadMailboxes(): Promise<void> {
@@ -373,9 +478,11 @@ async function importMail(): Promise<void> {
       method: "POST",
       body: JSON.stringify({ path, format }),
     });
-    state.status = `Imported ${result.imported} message(s) as ${result.format}; errors=${result.errors}.`;
     await loadMailboxes();
+    await loadJobs();
     await loadMessages();
+    state.status = `Imported ${result.imported} message(s) as ${result.format}; errors=${result.errors}.`;
+    render();
   } catch (error) {
     state.status = error instanceof Error ? error.message : String(error);
     render();
@@ -437,6 +544,8 @@ async function createProfile(): Promise<void> {
 async function refreshActiveProfileData(): Promise<void> {
   state.health = await api<Health>("/api/v1/health");
   await loadProfiles();
+  await loadMigrations();
+  await loadJobs();
   await loadMailboxes();
   await loadMessages();
 }
@@ -457,6 +566,7 @@ async function exportMail(): Promise<void> {
       }),
     });
     state.status = `Exported ${result.exported} message(s), warnings=${result.warnings}. Manifest: ${result.manifest_path}`;
+    await loadJobs();
     render();
   } catch (error) {
     state.status = error instanceof Error ? error.message : String(error);

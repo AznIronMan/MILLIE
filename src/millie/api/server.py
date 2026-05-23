@@ -51,6 +51,8 @@ class MillieRequestHandler(BaseHTTPRequestHandler):
                 self.write_json({"sources": self.app.db.list_sources()})
             elif path == "/api/v1/mailboxes":
                 self.write_json({"mailboxes": self.app.db.list_mailboxes()})
+            elif path == "/api/v1/migrations":
+                self.write_json({"migrations": self.app.db.list_migrations()})
             elif path == "/api/v1/messages":
                 mailbox_id = int(query["mailbox_id"][0]) if query.get("mailbox_id") else None
                 search = query.get("q", [None])[0]
@@ -85,6 +87,14 @@ class MillieRequestHandler(BaseHTTPRequestHandler):
                     self.write_error(HTTPStatus.NOT_FOUND, "Message not found")
                     return
                 self.write_json({"message": message})
+            elif path.startswith("/api/v1/import-jobs/") and path.endswith("/errors"):
+                import_job_id = int(path.split("/")[-2])
+                self.write_json({"errors": self.app.db.get_import_job_errors(import_job_id)})
+            elif path == "/api/v1/import-jobs":
+                self.write_json({"import_jobs": self.app.db.list_import_jobs()})
+            elif path.startswith("/api/v1/export-jobs/") and path.endswith("/items"):
+                export_job_id = int(path.split("/")[-2])
+                self.write_json({"items": self.app.db.list_export_job_items(export_job_id)})
             elif path == "/api/v1/export-jobs":
                 self.write_json({"export_jobs": self.app.db.list_export_jobs()})
             else:

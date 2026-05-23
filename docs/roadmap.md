@@ -40,7 +40,7 @@
 
 ## Phase 4: Advanced File Import And Export
 
-- Add PST support through an adapter wrapper.
+- Harden PST support through the `readpst` adapter wrapper.
 - Add OLM support through an adapter wrapper.
 - Investigate OST extraction limits and document unsupported encrypted/cache-only cases.
 - Add Thunderbird, Evolution, and Apple Mail profile helpers.

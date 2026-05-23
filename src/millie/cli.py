@@ -39,7 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     import_cmd = subparsers.add_parser("import", help="Import email from a file or folder")
     import_cmd.add_argument("path", help="Path to .eml, .mbox, maildir, or folder of .eml files")
-    import_cmd.add_argument("--format", default="auto", choices=["auto", "eml", "eml-dir", "mbox", "maildir"])
+    import_cmd.add_argument("--format", default="auto", choices=["auto", "eml", "eml-dir", "mbox", "maildir", "pst"])
     import_cmd.add_argument("--source-name", default=None)
 
     export_cmd = subparsers.add_parser("export", help="Export messages to a mailbox format")

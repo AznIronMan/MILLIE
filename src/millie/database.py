@@ -178,6 +178,11 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
 """
 
 
+MIGRATIONS = [
+    (1, "initial_schema", SCHEMA),
+]
+
+
 def utc_now() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat()
 
@@ -209,7 +214,44 @@ class MillieDatabase:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         with self.connect() as conn:
-            conn.executescript(SCHEMA)
+            self.run_migrations(conn)
+
+    def run_migrations(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                applied_at TEXT NOT NULL
+            )
+            """
+        )
+        applied = {
+            int(row["version"])
+            for row in conn.execute("SELECT version FROM schema_migrations").fetchall()
+        }
+        for version, name, sql in MIGRATIONS:
+            if version in applied:
+                continue
+            conn.executescript(sql)
+            conn.execute(
+                "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+                (version, name, utc_now()),
+            )
+
+    def list_migrations(self) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    applied_at TEXT NOT NULL
+                )
+                """
+            )
+            rows = conn.execute("SELECT * FROM schema_migrations ORDER BY version").fetchall()
+            return [row_to_dict(row) for row in rows if row is not None]
 
     def store_blob(self, kind: str, content: bytes, mime_type: str | None = None) -> dict[str, Any]:
         digest = hashlib.sha256(content).hexdigest()
@@ -746,4 +788,42 @@ class MillieDatabase:
     def list_export_jobs(self) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute("SELECT * FROM export_jobs ORDER BY started_at DESC").fetchall()
+            return [row_to_dict(row) for row in rows if row is not None]
+
+    def list_import_jobs(self) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT ij.*, s.display_name AS source_name, s.source_uri
+                FROM import_jobs ij
+                JOIN sources s ON s.id = ij.source_id
+                ORDER BY ij.started_at DESC
+                """
+            ).fetchall()
+            return [row_to_dict(row) for row in rows if row is not None]
+
+    def get_import_job_errors(self, import_job_id: int) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM import_errors
+                WHERE import_job_id = ?
+                ORDER BY created_at DESC, id DESC
+                """,
+                (import_job_id,),
+            ).fetchall()
+            return [row_to_dict(row) for row in rows if row is not None]
+
+    def list_export_job_items(self, export_job_id: int) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM export_items
+                WHERE export_job_id = ?
+                ORDER BY id
+                """,
+                (export_job_id,),
+            ).fetchall()
             return [row_to_dict(row) for row in rows if row is not None]

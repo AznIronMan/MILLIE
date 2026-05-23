@@ -88,8 +88,9 @@ MILLIE now has a first runnable foundation slice:
 - Local profiles with last-selected profile persistence
 - SQLite `.settings` files for global and profile-specific settings
 - `.eml`, `mbox`, `maildir`, and `.eml` folder import paths
+- PST import through the optional `readpst`/`libpst` adapter
 - `.eml`, `mbox`, and `maildir` export paths with manifests
 - TypeScript/Vite web client for mailbox navigation, message viewing, import, and export
 - Basic import/export test coverage
 
-See [docs/development.md](docs/development.md) for setup and run commands, and [docs/profiles.md](docs/profiles.md) for profile switching.
+See [docs/development.md](docs/development.md) for setup and run commands, [docs/profiles.md](docs/profiles.md) for profile switching, and [docs/pst.md](docs/pst.md) for PST import notes.
