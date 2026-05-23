@@ -78,6 +78,7 @@ class SourceCandidate:
     message_estimate: int | None
     confidence: str
     notes: list[str]
+    importable: bool = True
 
     def to_api(self) -> dict[str, object]:
         return {
@@ -91,6 +92,7 @@ class SourceCandidate:
             "message_estimate": self.message_estimate,
             "confidence": self.confidence,
             "notes": self.notes,
+            "importable": self.importable,
         }
 
 
@@ -257,6 +259,8 @@ def scan_generic(path: Path) -> list[SourceCandidate]:
                 notes=["PST import requires readpst/libpst."],
             )
         ]
+    if suffix in {".olm", ".ost"}:
+        return [build_unsupported_outlook_candidate(path, suffix[1:])]
     return []
 
 
@@ -403,6 +407,34 @@ def build_apple_mail_messages_candidate(root: Path, path: Path) -> SourceCandida
         message_estimate=count_eml_files(path),
         confidence="high",
         notes=["Apple Mail .emlx message folder."],
+    )
+
+
+def build_unsupported_outlook_candidate(path: Path, import_format: str) -> SourceCandidate:
+    if import_format == "olm":
+        notes = [
+            "OLM import is not implemented yet.",
+            "Recommended today: export from Outlook for Mac to MBOX/EML if available, or keep this file for the future OLM adapter.",
+        ]
+    elif import_format == "ost":
+        notes = [
+            "OST import is not implemented and may be encrypted or tied to the original Outlook/Exchange profile.",
+            "Recommended today: sync from Exchange/Microsoft Graph/IMAP when available, or export a PST from Outlook.",
+        ]
+    else:
+        notes = ["This vendor format is not importable yet."]
+    return SourceCandidate(
+        id=candidate_id("outlook", import_format, path),
+        source_type="outlook",
+        format=import_format,
+        path=str(path),
+        display_name=path.name,
+        mailbox_path=path.stem,
+        size_bytes=safe_size(path),
+        message_estimate=None,
+        confidence="high",
+        notes=notes,
+        importable=False,
     )
 
 

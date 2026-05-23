@@ -1,5 +1,7 @@
 # PST Import
 
+For the broader Outlook format strategy, including OLM and OST, see [outlook.md](outlook.md).
+
 MILLIE uses `readpst` from `libpst` as the first PST adapter path.
 
 ## Prerequisite

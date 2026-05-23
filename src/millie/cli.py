@@ -41,7 +41,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     import_cmd = subparsers.add_parser("import", help="Import email from a file or folder")
     import_cmd.add_argument("path", help="Path to .eml, .mbox, maildir, or folder of .eml files")
-    import_cmd.add_argument("--format", default="auto", choices=["auto", "eml", "eml-dir", "mbox", "maildir", "pst"])
+    import_cmd.add_argument(
+        "--format",
+        default="auto",
+        choices=["auto", "eml", "eml-dir", "mbox", "maildir", "pst", "olm", "ost"],
+    )
     import_cmd.add_argument("--source-name", default=None)
 
     scan_cmd = subparsers.add_parser("scan", help="Scan a source path for importable mailbox candidates")
@@ -114,7 +118,11 @@ def main(argv: list[str] | None = None) -> int:
         run_server(config)
         return 0
     if args.command == "import":
-        result = import_path(db, Path(args.path), args.format, args.source_name)
+        try:
+            result = import_path(db, Path(args.path), args.format, args.source_name)
+        except Exception as exc:  # noqa: BLE001
+            print(f"Import failed: {exc}")
+            return 1
         print(
             f"Import job {result.import_job_id}: processed={result.processed} "
             f"imported={result.imported} duplicates={result.duplicates} "
@@ -144,7 +152,9 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 print(
                     f"- {candidate.display_name}: {candidate.format}, "
-                    f"{estimate} message(s), {candidate.path}"
+                    f"{estimate} message(s), "
+                    f"{'importable' if candidate.importable else 'not importable yet'}, "
+                    f"{candidate.path}"
                 )
         return 0
     if args.command == "export":

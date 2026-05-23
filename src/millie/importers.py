@@ -12,6 +12,19 @@ from .database import MillieDatabase
 from .mailparse import parse_raw_message
 
 
+UNSUPPORTED_IMPORT_FORMAT_MESSAGES = {
+    "olm": (
+        "OLM import is not implemented yet. Recommended today: export from Outlook for Mac "
+        "to MBOX/EML if available, or keep the OLM for the future adapter."
+    ),
+    "ost": (
+        "OST import is not implemented. OST files are offline Outlook/Exchange caches and may "
+        "be encrypted or tied to the original profile; use Exchange/Microsoft Graph/IMAP sync "
+        "or export a PST from Outlook when possible."
+    ),
+}
+
+
 @dataclass(slots=True)
 class ImportResult:
     import_job_id: int
@@ -35,6 +48,8 @@ def detect_format(path: Path) -> str:
         return "mbox"
     if suffix == ".pst":
         return "pst"
+    if suffix in {".olm", ".ost"}:
+        return suffix[1:]
     return "mbox"
 
 
@@ -179,8 +194,26 @@ def import_path(
                     except Exception as exc:  # noqa: BLE001
                         errors += 1
                         db.record_import_error(job_id, str(item.relative_to(root)), "error", str(exc))
+        elif resolved_format in UNSUPPORTED_IMPORT_FORMAT_MESSAGES:
+            message = UNSUPPORTED_IMPORT_FORMAT_MESSAGES[resolved_format]
+            db.record_import_error(
+                job_id,
+                str(path),
+                "error",
+                message,
+                {"format": resolved_format, "supported": False},
+            )
+            raise RuntimeError(message)
         else:
-            raise ValueError(f"Unsupported import format: {resolved_format}")
+            message = f"Unsupported import format: {resolved_format}"
+            db.record_import_error(
+                job_id,
+                str(path),
+                "error",
+                message,
+                {"format": resolved_format, "supported": False},
+            )
+            raise ValueError(message)
     except Exception:
         db.finish_import_job(
             job_id,

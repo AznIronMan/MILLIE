@@ -20,6 +20,7 @@ The project uses semantic versioning in `major.minor.patch` format.
 - Added export profiles, profile-aware export UI controls, and enriched export manifests with folder, attachment, source, and client workflow metadata.
 - Added read-only source scanning for Thunderbird profiles, with API, CLI, web import-panel integration, and candidate import handoff.
 - Added read-only source scanning for Evolution and Apple Mail stores, `.emlx` wrapper normalization, and candidate mailbox-path handoff during import.
+- Added non-importable OLM/OST scan candidates, clearer direct-import errors, and Outlook format strategy notes.
 
 ## [0.1.0] - 2026-05-23
 

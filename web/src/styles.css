@@ -222,9 +222,20 @@ label {
   font-size: 0.78rem;
 }
 
+.source-candidate.not-importable {
+  border-color: #e3c6a0;
+  background: #fffaf3;
+}
+
 .candidate-import-button {
   min-height: 32px;
   padding: 0 9px;
+}
+
+.candidate-import-button:disabled {
+  color: #6d6258;
+  cursor: not-allowed;
+  background: #f4ebe1;
 }
 
 .folder-list {

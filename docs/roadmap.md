@@ -47,6 +47,7 @@
 - Add OLM support through an adapter wrapper.
 - Investigate OST extraction limits and document unsupported encrypted/cache-only cases.
 - Add Thunderbird, Evolution, and Apple Mail profile helpers.
+- Keep unsupported vendor-store scan candidates visible but disabled until adapters exist.
 - Investigate reliable PST/OLM writer options before promising direct Outlook-native export.
 
 ## Phase 5: Live Connectors

@@ -85,6 +85,7 @@ type SourceCandidate = {
   message_estimate: number | null;
   confidence: string;
   notes: string[];
+  importable: boolean;
 };
 
 type ImportJobError = {
@@ -427,15 +428,17 @@ function renderSourceCandidates(): string {
 
 function renderSourceCandidate(candidate: SourceCandidate): string {
   const notes = candidate.notes.length ? `<small>${escapeHtml(candidate.notes.join(" "))}</small>` : "";
+  const disabled = candidate.importable ? "" : "disabled";
+  const buttonLabel = candidate.importable ? "Import" : "Unavailable";
   return `
-    <div class="source-candidate">
+    <div class="source-candidate ${candidate.importable ? "" : "not-importable"}">
       <div>
         <strong>${escapeHtml(candidate.mailbox_path || candidate.display_name)}</strong>
         <span>${escapeHtml(candidate.format.toUpperCase())} · ${escapeHtml(candidate.confidence)} · ${escapeHtml(candidateEstimate(candidate))}</span>
         <small>${escapeHtml(candidate.path)}</small>
         ${notes}
       </div>
-      <button class="candidate-import-button" data-candidate-id="${escapeHtml(candidate.id)}">Import</button>
+      <button class="candidate-import-button" data-candidate-id="${escapeHtml(candidate.id)}" ${disabled}>${buttonLabel}</button>
     </div>
   `;
 }
@@ -892,6 +895,11 @@ async function importSourceCandidate(candidateId: string): Promise<void> {
   const candidate = state.sourceScanCandidates.find((item) => item.id === candidateId);
   if (!candidate) {
     state.status = "Candidate is no longer available.";
+    render();
+    return;
+  }
+  if (!candidate.importable) {
+    state.status = candidate.notes[0] ?? "This source is not importable yet.";
     render();
     return;
   }

@@ -37,9 +37,11 @@ HTML message viewing uses sanitized stored HTML. Raw HTML remains preserved in b
 - `GET /api/v1/import-jobs`
 - `GET /api/v1/import-jobs/{id}/errors`
 
-Source scanning is read-only. It returns local candidate paths, source type, detected import format, mailbox path, size, message estimate, confidence, and notes. The web app can send a selected candidate to `POST /api/v1/import`.
+Source scanning is read-only. It returns local candidate paths, source type, detected import format, mailbox path, size, message estimate, confidence, notes, and whether the candidate is currently importable. The web app can send importable candidates to `POST /api/v1/import`.
 
 `POST /api/v1/import` accepts an optional `mailboxPath` value. Source-scan candidate imports use it so directory-based sources such as Apple Mail `Messages/*.emlx` keep the discovered mailbox path.
+
+Unsupported vendor formats such as OLM and OST produce non-importable scan candidates. Direct import attempts fail with a clear import job error.
 
 Import responses and job rows distinguish:
 

@@ -32,6 +32,10 @@ class CoreImportExportTests(unittest.TestCase):
     def test_detects_pst_format(self) -> None:
         self.assertEqual(detect_format(Path("archive.pst")), "pst")
 
+    def test_detects_unsupported_outlook_formats(self) -> None:
+        self.assertEqual(detect_format(Path("archive.olm")), "olm")
+        self.assertEqual(detect_format(Path("archive.ost")), "ost")
+
     def test_import_eml_and_export_eml(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -300,6 +304,40 @@ class CoreImportExportTests(unittest.TestCase):
             )
             self.assertEqual(result.imported, 1)
             self.assertEqual(profile_db.list_messages()[0]["mailbox_path"], "Mailboxes/Archive")
+
+    def test_scan_unsupported_outlook_files_and_import_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            olm_path = root / "archive.olm"
+            ost_path = root / "cache.ost"
+            olm_path.write_bytes(b"OLM fixture")
+            ost_path.write_bytes(b"OST fixture")
+
+            olm_candidates = scan_source(olm_path, "auto")
+            self.assertEqual(len(olm_candidates), 1)
+            self.assertFalse(olm_candidates[0].importable)
+            self.assertEqual(olm_candidates[0].format, "olm")
+            self.assertEqual(olm_candidates[0].source_type, "outlook")
+            self.assertIn("OLM import is not implemented", " ".join(olm_candidates[0].notes))
+
+            ost_candidates = scan_source(ost_path, "generic")
+            self.assertEqual(len(ost_candidates), 1)
+            self.assertFalse(ost_candidates[0].importable)
+            self.assertEqual(ost_candidates[0].format, "ost")
+            self.assertIn("OST import is not implemented", " ".join(ost_candidates[0].notes))
+
+            db = MillieDatabase(root / "millie.sqlite", root / "data")
+            db.init()
+            with self.assertRaisesRegex(RuntimeError, "OLM import is not implemented"):
+                import_path(db, olm_path, "auto", "OLM Fixture")
+
+            jobs = db.list_import_jobs()
+            self.assertEqual(jobs[0]["status"], "failed")
+            self.assertEqual(jobs[0]["kind"], "olm")
+            self.assertEqual(jobs[0]["error_count"], 1)
+            errors = db.get_import_job_errors(int(jobs[0]["id"]))
+            self.assertEqual(len(errors), 1)
+            self.assertIn("OLM import is not implemented", errors[0]["message"])
 
     def test_profile_manager_remembers_active_profile(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

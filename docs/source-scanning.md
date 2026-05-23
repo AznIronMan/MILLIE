@@ -45,12 +45,23 @@ It detects:
 
 When importing `.emlx` files, MILLIE strips the Apple wrapper line and trailing plist metadata before parsing the RFC822 message content.
 
+## Outlook Vendor Stores
+
+The scanner detects `.pst`, `.olm`, and `.ost` files.
+
+- PST candidates are importable when `readpst/libpst` is installed.
+- OLM candidates are currently marked `importable: false`.
+- OST candidates are currently marked `importable: false`.
+
+OLM and OST candidates include notes with the current workaround. Direct import attempts for OLM/OST produce clear failed import jobs instead of treating the files as MBOX.
+
 ## API
 
 ```http
 GET /api/v1/source-scan?path=/path/to/profile&type=thunderbird
 GET /api/v1/source-scan?path=/path/to/store&type=evolution
 GET /api/v1/source-scan?path=/path/to/Mail&type=apple-mail
+GET /api/v1/source-scan?path=/path/to/archive.olm&type=auto
 ```
 
 Each candidate includes:
@@ -65,6 +76,7 @@ Each candidate includes:
 - message estimate when available
 - confidence
 - notes
+- `importable`, so clients can disable unsupported candidates
 
 Selected candidates are imported through the normal `POST /api/v1/import` endpoint. Candidate imports can pass `mailboxPath` so directory-based sources keep the discovered mailbox path. The scanner does not write to the MILLIE database.
 
@@ -74,6 +86,7 @@ Selected candidates are imported through the normal `POST /api/v1/import` endpoi
 PYTHONPATH=src python3 -m millie scan /path/to/profile --type thunderbird
 PYTHONPATH=src python3 -m millie scan /path/to/evolution/mail --type evolution
 PYTHONPATH=src python3 -m millie scan ~/Library/Mail --type apple-mail
+PYTHONPATH=src python3 -m millie scan /path/to/archive.olm --type auto
 PYTHONPATH=src python3 -m millie scan /path/to/profile --type thunderbird --json
 ```
 
