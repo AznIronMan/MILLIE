@@ -15,6 +15,7 @@ The project uses semantic versioning in `major.minor.patch` format.
 - Added `millie doctor` to check prerequisites and optionally install local dev dependencies.
 - Added schema migration tracking, expanded open-format import/export tests, visible job history endpoints, and initial PST import through `readpst`.
 - Added exact raw-MIME deduplication accounting, safer SQLite FTS search, and a `/api/v1/search` endpoint.
+- Added sanitized HTML message viewing and attachment download endpoints in the API and web client.
 
 ## [0.1.0] - 2026-05-23
 

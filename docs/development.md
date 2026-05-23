@@ -99,6 +99,10 @@ Import output reports processed messages, newly created canonical messages, exac
 
 The web app search box and `/api/v1/search?q=...` use SQLite FTS5 over message subject, participants, and text body. Query text is normalized before it reaches FTS so searches with punctuation or email addresses are safe to run.
 
+## HTML And Attachments
+
+MILLIE preserves raw HTML body blobs when available, stores a sanitized HTML copy, and serves sanitized HTML through `/api/v1/messages/{id}/html`. Attachments are exposed through `/api/v1/attachments/{id}` with download-oriented response headers.
+
 ## Export Mail
 
 ```sh

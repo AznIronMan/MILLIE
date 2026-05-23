@@ -9,9 +9,13 @@ MILLIE exposes a local versioned API under `/api/v1`.
 - `GET /api/v1/messages?q=quarterly`
 - `GET /api/v1/search?q=alice@example.com`
 - `GET /api/v1/messages/{id}`
+- `GET /api/v1/messages/{id}/html`
 - `GET /api/v1/messages/{id}/raw`
+- `GET /api/v1/attachments/{id}`
 
 Search uses SQLite FTS5 over subject, participants, and text body. Query text is normalized before matching so email addresses and punctuation-heavy terms are safe.
+
+HTML message viewing uses sanitized stored HTML. Raw HTML remains preserved in blob storage, but `/api/v1/messages/{id}/html` serves the sanitized representation with a restrictive content security policy. Attachments are downloaded through `Content-Disposition: attachment` responses.
 
 ## Import Jobs
 

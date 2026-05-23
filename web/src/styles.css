@@ -326,13 +326,41 @@ label {
   margin: 14px 0;
 }
 
-.attachments span {
+.attachment-link {
+  display: grid;
+  gap: 2px;
   border: 1px solid #c9d8cd;
   border-radius: 6px;
   background: #eef7f0;
   padding: 6px 9px;
   color: #234433;
+  text-decoration: none;
+}
+
+.attachment-link span,
+.attachment-link small {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment-link span {
+  font-weight: 700;
+}
+
+.attachment-link small {
+  color: #4d6858;
   font-size: 0.85rem;
+}
+
+.html-frame {
+  width: 100%;
+  min-height: 360px;
+  margin: 16px 0 0;
+  border: 1px solid #d9e0e4;
+  border-radius: 6px;
+  background: #ffffff;
 }
 
 .body-text {

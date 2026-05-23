@@ -115,8 +115,21 @@ class CoreImportExportTests(unittest.TestCase):
             self.assertIsNotNone(detail)
             self.assertEqual(detail["subject"], "Multipart Fixture")
             self.assertIsNotNone(detail["body_html_ref"])
+            self.assertIsNotNone(detail["body_sanitized_html_ref"])
+            sanitized = db.get_sanitized_message_html(int(messages[0]["id"]))
+            self.assertIsNotNone(sanitized)
+            sanitized_text = sanitized.decode("utf-8")
+            self.assertIn("HTML quarterly archive body.", sanitized_text)
+            self.assertIn("https://example.com/report", sanitized_text)
+            self.assertNotIn("script", sanitized_text.lower())
+            self.assertNotIn("onclick", sanitized_text.lower())
+            self.assertNotIn("javascript:", sanitized_text.lower())
+            self.assertNotIn("//example.com/tracker", sanitized_text.lower())
             self.assertEqual(len(detail["attachments"]), 1)
             self.assertEqual(detail["attachments"][0]["filename"], "report.csv")
+            attachment = db.get_attachment(int(detail["attachments"][0]["id"]))
+            self.assertIsNotNone(attachment)
+            self.assertEqual(attachment["content"], b"quarter,value\nQ1,42\n")
 
     def test_import_mbox_and_export_mbox(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -204,7 +217,21 @@ def build_multipart_message() -> EmailMessage:
         "Multipart Fixture",
         "Plain quarterly archive body.",
     )
-    message.add_alternative("<html><body><p>HTML quarterly archive body.</p></body></html>", subtype="html")
+    message.add_alternative(
+        """
+        <html>
+          <body>
+            <p onclick="alert('x')">HTML quarterly archive body.</p>
+            <script>alert('bad')</script>
+            <a href="javascript:alert('bad')">bad link</a>
+            <a href="//example.com/tracker">protocol-relative link</a>
+            <a href="https://example.com/report">good link</a>
+            <img src="https://example.com/track.png" alt="blocked image" />
+          </body>
+        </html>
+        """,
+        subtype="html",
+    )
     message.add_attachment(
         b"quarter,value\nQ1,42\n",
         maintype="text",

@@ -134,6 +134,10 @@ Fields to consider:
 - `is_inline`
 - `created_at`
 
+## HTML Rendering Strategy
+
+Raw HTML bodies are preserved as blobs through `body_html_ref`. The viewer uses `body_sanitized_html_ref`, which is generated at import time for new messages and can be lazily generated for older imported messages. Sanitized HTML removes active content, event attributes, embedded forms, scripts, styles, iframes, and remote image loading.
+
 ### headers
 
 Preserves raw headers.

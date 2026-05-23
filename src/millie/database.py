@@ -10,6 +10,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterable
 
+from .html_sanitize import sanitize_html_document
+
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -824,6 +826,47 @@ class MillieDatabase:
         if not row or not row["raw_message_ref"]:
             return None
         return self.read_blob(row["raw_message_ref"])
+
+    def get_sanitized_message_html(self, message_id: int) -> bytes | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT body_html_ref, body_sanitized_html_ref FROM messages WHERE id = ?",
+                (message_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        if row["body_sanitized_html_ref"]:
+            return self.read_blob(row["body_sanitized_html_ref"])
+        if not row["body_html_ref"]:
+            return None
+
+        raw_html = self.read_blob(row["body_html_ref"]).decode("utf-8", errors="replace")
+        sanitized = sanitize_html_document(raw_html).encode("utf-8")
+        blob = self.store_blob("body_sanitized_html", sanitized, "text/html")
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE messages SET body_sanitized_html_ref = ?, updated_at = ? WHERE id = ?",
+                (blob["storage_ref"], utc_now(), message_id),
+            )
+        return sanitized
+
+    def get_attachment(self, attachment_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT att.*, msg.subject, src.display_name AS source_name
+                FROM attachments att
+                JOIN messages msg ON msg.id = att.message_id
+                JOIN sources src ON src.id = msg.source_id
+                WHERE att.id = ?
+                """,
+                (attachment_id,),
+            ).fetchone()
+            attachment = row_to_dict(row)
+        if attachment is None:
+            return None
+        attachment["content"] = self.read_blob(str(attachment["storage_ref"]))
+        return attachment
 
     def messages_for_export(
         self,

@@ -76,6 +76,8 @@ type MessageSummary = {
 type MessageDetail = MessageSummary & {
   internet_message_id: string | null;
   size_bytes: number;
+  body_html_ref: string | null;
+  body_sanitized_html_ref: string | null;
   addresses: Array<{
     role: string;
     ordinal: number;
@@ -84,9 +86,11 @@ type MessageDetail = MessageSummary & {
     display_name_snapshot: string | null;
   }>;
   attachments: Array<{
+    id: number;
     filename: string | null;
     mime_type: string | null;
     size_bytes: number;
+    content_hash: string;
     is_inline: number;
   }>;
   mailboxes: Array<{ id: number; path: string }>;
@@ -143,6 +147,10 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(payload.error ?? `HTTP ${response.status}`);
   }
   return payload as T;
+}
+
+function apiUrl(path: string): string {
+  return `${API_BASE}${path}`;
 }
 
 function formatDate(value: string | null): string {
@@ -310,15 +318,33 @@ function renderDetail(detail: MessageDetail): string {
           ? `<div class="attachments">${detail.attachments
               .map(
                 (item) => `
-                  <span>${escapeHtml(item.filename || "(inline part)")} · ${escapeHtml(item.mime_type || "unknown")} · ${item.size_bytes} bytes</span>
+                  <a class="attachment-link" href="${escapeHtml(apiUrl(`/api/v1/attachments/${item.id}`))}" download>
+                    <span>${escapeHtml(item.filename || "(inline part)")}</span>
+                    <small>${escapeHtml(item.mime_type || "unknown")} · ${item.size_bytes} bytes</small>
+                  </a>
                 `,
               )
               .join("")}</div>`
           : ""
       }
-      <pre class="body-text">${escapeHtml(detail.body_text || "(No text body captured yet.)")}</pre>
+      ${renderMessageBody(detail)}
     </article>
   `;
+}
+
+function renderMessageBody(detail: MessageDetail): string {
+  if (detail.body_sanitized_html_ref || detail.body_html_ref) {
+    return `
+      <iframe
+        class="html-frame"
+        title="${escapeHtml(detail.subject || "Message HTML")}"
+        sandbox
+        referrerpolicy="no-referrer"
+        src="${escapeHtml(apiUrl(`/api/v1/messages/${detail.id}/html`))}"
+      ></iframe>
+    `;
+  }
+  return `<pre class="body-text">${escapeHtml(detail.body_text || "(No text body captured yet.)")}</pre>`;
 }
 
 function renderOperations(): string {

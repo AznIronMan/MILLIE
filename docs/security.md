@@ -23,11 +23,13 @@ HTML email is untrusted content.
 
 The viewer must:
 
-- Sanitize HTML.
-- Block active script content.
-- Control remote image loading.
+- Sanitize HTML before rendering.
+- Block active script content and event attributes.
+- Block embedded remote image/resource loading by default.
 - Avoid leaking local file paths.
 - Avoid executing embedded content.
+
+The first implemented renderer stores both raw HTML and sanitized HTML. The web client loads sanitized HTML in a sandboxed frame and downloads attachments through API responses with `Content-Disposition: attachment`.
 
 ## Secrets
 

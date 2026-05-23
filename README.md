@@ -92,6 +92,8 @@ MILLIE now has a first runnable foundation slice:
 - `.eml`, `mbox`, and `maildir` export paths with manifests
 - Exact raw-MIME deduplication so repeat imports do not duplicate canonical messages
 - SQLite FTS search over subject, participants, and body text
+- Sanitized HTML message viewing with raw HTML preserved separately
+- Attachment listing and downloads through the local API
 - TypeScript/Vite web client for mailbox navigation, message viewing, import, and export
 - Basic import/export test coverage
 

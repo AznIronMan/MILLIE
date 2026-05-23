@@ -8,6 +8,7 @@ from email.utils import getaddresses, parsedate_to_datetime
 from typing import Any
 
 from .database import MillieDatabase
+from .html_sanitize import sanitize_html_document
 
 
 def parse_date(value: str | None) -> str | None:
@@ -32,7 +33,7 @@ def parse_raw_message(db: MillieDatabase, raw: bytes) -> dict[str, Any]:
     parsed = BytesParser(policy=policy.default).parsebytes(raw)
     raw_blob = db.store_blob("raw_message", raw, "message/rfc822")
 
-    body_text, body_html_ref = extract_bodies(db, parsed)
+    body_text, body_html_ref, body_sanitized_html_ref = extract_bodies(db, parsed)
     attachments = extract_attachments(db, parsed)
     headers = list(parsed.raw_items()) if hasattr(parsed, "raw_items") else list(parsed.items())
 
@@ -84,7 +85,7 @@ def parse_raw_message(db: MillieDatabase, raw: bytes) -> dict[str, Any]:
         "conversation_id": message_id,
         "body_text": body_text,
         "body_html_ref": body_html_ref,
-        "body_sanitized_html_ref": None,
+        "body_sanitized_html_ref": body_sanitized_html_ref,
         "raw_message_ref": raw_blob["storage_ref"],
         "content_hash": raw_blob["content_hash"],
         "size_bytes": raw_blob["size_bytes"],
@@ -98,9 +99,10 @@ def parse_raw_message(db: MillieDatabase, raw: bytes) -> dict[str, Any]:
     }
 
 
-def extract_bodies(db: MillieDatabase, parsed: Message) -> tuple[str, str | None]:
+def extract_bodies(db: MillieDatabase, parsed: Message) -> tuple[str, str | None, str | None]:
     text_body = ""
     html_ref: str | None = None
+    sanitized_html_ref: str | None = None
 
     body_parts = parsed.walk() if parsed.is_multipart() else [parsed]
     for part in body_parts:
@@ -120,10 +122,15 @@ def extract_bodies(db: MillieDatabase, parsed: Message) -> tuple[str, str | None
         if content_type == "text/plain" and not text_body:
             text_body = safe_text(content)
         elif content_type == "text/html" and html_ref is None:
-            html_bytes = safe_text(content).encode("utf-8")
+            html_text = safe_text(content)
+            html_bytes = html_text.encode("utf-8")
             html_ref = db.store_blob("body_html", html_bytes, "text/html")["storage_ref"]
+            sanitized_html = sanitize_html_document(html_text).encode("utf-8")
+            sanitized_html_ref = db.store_blob("body_sanitized_html", sanitized_html, "text/html")[
+                "storage_ref"
+            ]
 
-    return text_body, html_ref
+    return text_body, html_ref, sanitized_html_ref
 
 
 def extract_attachments(db: MillieDatabase, parsed: Message) -> list[dict[str, Any]]:

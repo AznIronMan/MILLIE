@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import re
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 from millie import __version__
 from millie.config import AppConfig
@@ -96,6 +97,23 @@ class MillieRequestHandler(BaseHTTPRequestHandler):
                 self.send_cors_headers()
                 self.end_headers()
                 self.wfile.write(raw)
+            elif path.startswith("/api/v1/messages/") and path.endswith("/html"):
+                message_id = int(path.split("/")[-2])
+                html = self.app.db.get_sanitized_message_html(message_id)
+                if html is None:
+                    self.write_error(HTTPStatus.NOT_FOUND, "Message HTML content not found")
+                    return
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(html)))
+                self.send_header(
+                    "Content-Security-Policy",
+                    "default-src 'none'; base-uri 'none'; form-action 'none'",
+                )
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_cors_headers()
+                self.end_headers()
+                self.wfile.write(html)
             elif path.startswith("/api/v1/messages/"):
                 message_id = int(path.rsplit("/", 1)[-1])
                 message = self.app.db.get_message(message_id)
@@ -103,6 +121,23 @@ class MillieRequestHandler(BaseHTTPRequestHandler):
                     self.write_error(HTTPStatus.NOT_FOUND, "Message not found")
                     return
                 self.write_json({"message": message})
+            elif path.startswith("/api/v1/attachments/"):
+                attachment_id = int(path.rsplit("/", 1)[-1])
+                attachment = self.app.db.get_attachment(attachment_id)
+                if attachment is None:
+                    self.write_error(HTTPStatus.NOT_FOUND, "Attachment not found")
+                    return
+                body = attachment.pop("content")
+                filename = safe_download_filename(attachment.get("filename"), attachment_id)
+                mime_type = str(attachment.get("mime_type") or "application/octet-stream")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", mime_type)
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Content-Disposition", content_disposition(filename))
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_cors_headers()
+                self.end_headers()
+                self.wfile.write(body)
             elif path.startswith("/api/v1/import-jobs/") and path.endswith("/errors"):
                 import_job_id = int(path.split("/")[-2])
                 self.write_json({"errors": self.app.db.get_import_job_errors(import_job_id)})
@@ -283,3 +318,16 @@ def run_server(config: AppConfig) -> None:
     print(f"Database: {server.db.db_path}")
     print(f"Data dir: {server.db.data_dir}")
     server.serve_forever()
+
+
+def safe_download_filename(value: object, attachment_id: int) -> str:
+    raw = str(value or f"attachment-{attachment_id}")
+    name = Path(raw.replace("\\", "/")).name
+    cleaned = re.sub(r"[\r\n\"]+", "_", name).strip(" .")
+    return cleaned or f"attachment-{attachment_id}"
+
+
+def content_disposition(filename: str) -> str:
+    ascii_name = filename.encode("ascii", errors="ignore").decode("ascii") or "attachment"
+    quoted_name = ascii_name.replace("\\", "_").replace('"', "_")
+    return f'attachment; filename="{quoted_name}"; filename*=UTF-8\'\'{quote(filename)}'
