@@ -2,6 +2,17 @@
 
 MILLIE exposes a local versioned API under `/api/v1`.
 
+## Authentication
+
+- `GET /api/v1/auth/status`
+- `POST /api/v1/auth/setup`
+- `POST /api/v1/auth/login`
+- `POST /api/v1/auth/logout`
+
+Auth state is stored in the global SQLite settings file. `auth.dev_bypass` currently defaults to `true` for development, so API requests are accepted without a session until that setting is changed to `false`.
+
+When bypass is off, protected API endpoints require the `millie_session` cookie. Static web assets and auth endpoints remain available so the browser can load the login/setup UI.
+
 ## Search And Messages
 
 - `GET /api/v1/messages`

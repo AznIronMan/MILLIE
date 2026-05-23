@@ -20,6 +20,8 @@ Global settings are stored at `.private/local/millie.settings` by default. Profi
 
 The previously selected profile opens automatically when the server starts.
 
+Local auth also uses `.private/local/millie.settings`. For the current development phase, `auth.dev_bypass` defaults to `true`. Set it to `false` in the global settings database when testing the first-run admin setup and session-cookie login flow.
+
 ## Prerequisites
 
 Run the doctor command to check Python, SQLite, Node.js, npm, optional `readpst/libpst`, `web/package.json`, `web/node_modules`, and optional `.venv` state:
@@ -54,6 +56,8 @@ PYTHONPATH=src python3 -m millie serve
 ```
 
 The server binds to `0.0.0.0:22001` by default.
+
+When `auth.dev_bypass` is `false`, the web app shows first-run setup or login before loading protected API data.
 
 ## Profiles
 

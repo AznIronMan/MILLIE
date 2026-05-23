@@ -3,10 +3,18 @@ import "./styles.css";
 type Health = {
   ok: boolean;
   version: string;
+  auth: AuthStatus;
   profile: Profile;
   settings_path: string;
   db_path: string;
   data_dir: string;
+};
+
+type AuthStatus = {
+  authenticated: boolean;
+  dev_bypass: boolean;
+  setup_required: boolean;
+  username: string | null;
 };
 
 type Profile = {
@@ -38,6 +46,7 @@ type ImportJob = {
   new_message_count: number;
   duplicate_count: number;
   error_count: number;
+  options_json: string;
 };
 
 type ExportJob = {
@@ -51,7 +60,30 @@ type ExportJob = {
   error_count: number;
   warning_count: number;
   output_root: string;
+  options_json: string;
   manifest_ref: string | null;
+};
+
+type ImportJobError = {
+  id: number;
+  import_job_id: number;
+  source_item_ref: string | null;
+  severity: string;
+  message: string;
+  detail_json: string;
+  created_at: string;
+};
+
+type ExportJobItem = {
+  id: number;
+  export_job_id: number;
+  message_id: number;
+  mailbox_id: number | null;
+  output_path: string;
+  output_hash: string | null;
+  format: string;
+  status: string;
+  warning_json: string;
 };
 
 type Mailbox = {
@@ -98,6 +130,7 @@ type MessageDetail = MessageSummary & {
 };
 
 type State = {
+  auth: AuthStatus | null;
   health: Health | null;
   profiles: Profile[];
   activeProfileId: string | null;
@@ -109,11 +142,16 @@ type State = {
   selectedMailboxId: number | null;
   selectedMessageId: number | null;
   selectedMessage: MessageDetail | null;
+  selectedJob:
+    | { kind: "import"; id: number; errors: ImportJobError[] }
+    | { kind: "export"; id: number; items: ExportJobItem[] }
+    | null;
   query: string;
   status: string;
 };
 
 const state: State = {
+  auth: null,
   health: null,
   profiles: [],
   activeProfileId: null,
@@ -125,6 +163,7 @@ const state: State = {
   selectedMailboxId: null,
   selectedMessageId: null,
   selectedMessage: null,
+  selectedJob: null,
   query: "",
   status: "Ready",
 };
@@ -140,6 +179,7 @@ const appRoot: HTMLDivElement = app;
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+    credentials: "include",
     ...init,
   });
   const payload = await response.json();
@@ -179,6 +219,11 @@ function roleLine(detail: MessageDetail, role: string): string {
 }
 
 function render(): void {
+  if (state.auth && !state.auth.authenticated && !state.auth.dev_bypass) {
+    renderAuthScreen();
+    return;
+  }
+
   const selectedMailbox = state.mailboxes.find((box) => box.id === state.selectedMailboxId);
   appRoot.innerHTML = `
     <div class="shell">
@@ -209,10 +254,16 @@ function render(): void {
             <button id="profile-create-button">New</button>
           </div>
           <dl class="profile-facts">
+            <div><dt>Auth</dt><dd>${escapeHtml(authLabel())}</dd></div>
             <div><dt>Global</dt><dd>${escapeHtml(state.health?.settings_path ?? "")}</dd></div>
             <div><dt>Profile</dt><dd>${escapeHtml(state.health?.profile.settings_path ?? "")}</dd></div>
             <div><dt>DB</dt><dd>${escapeHtml(state.health?.db_path ?? "No profile loaded")}</dd></div>
           </dl>
+          ${
+            state.auth?.authenticated && !state.auth.dev_bypass
+              ? `<button id="logout-button">Logout</button>`
+              : ""
+          }
         </section>
         <section class="tool-panel">
           <label>
@@ -286,6 +337,35 @@ function render(): void {
     </div>
   `;
   bindEvents();
+}
+
+function renderAuthScreen(): void {
+  const setup = state.auth?.setup_required ?? false;
+  appRoot.innerHTML = `
+    <main class="auth-shell">
+      <section class="auth-panel">
+        <div class="brand auth-brand">
+          <div>
+            <h1>MILLIE</h1>
+            <p>${setup ? "First-run setup" : "Login"}</p>
+          </div>
+        </div>
+        <form id="${setup ? "setup-form" : "login-form"}" class="auth-form">
+          <label>
+            Username
+            <input id="auth-username" autocomplete="username" />
+          </label>
+          <label>
+            Password
+            <input id="auth-password" type="password" autocomplete="${setup ? "new-password" : "current-password"}" />
+          </label>
+          <button type="submit">${setup ? "Create Admin" : "Login"}</button>
+        </form>
+        <footer class="status-line">${escapeHtml(state.status)}</footer>
+      </section>
+    </main>
+  `;
+  bindAuthEvents();
 }
 
 function renderMessageRow(message: MessageSummary): string {
@@ -364,26 +444,98 @@ function renderOperations(): string {
           ${state.exportJobs.slice(0, 5).map(renderExportJob).join("") || `<p class="muted">No export jobs yet.</p>`}
         </div>
       </div>
+      ${renderSelectedJob()}
     </section>
   `;
 }
 
 function renderImportJob(job: ImportJob): string {
   return `
-    <div class="job-row">
+    <button class="job-row ${state.selectedJob?.kind === "import" && state.selectedJob.id === job.id ? "active" : ""}" data-job-kind="import" data-job-id="${job.id}">
       <strong>${escapeHtml(job.kind)} · ${escapeHtml(job.status)}</strong>
       <span>${escapeHtml(job.source_name)} · ${job.message_count} processed · ${job.new_message_count} new · ${job.duplicate_count} duplicate(s) · ${job.error_count} error(s)</span>
       <small>${escapeHtml(formatDate(job.started_at))}</small>
-    </div>
+    </button>
   `;
 }
 
 function renderExportJob(job: ExportJob): string {
   return `
-    <div class="job-row">
+    <button class="job-row ${state.selectedJob?.kind === "export" && state.selectedJob.id === job.id ? "active" : ""}" data-job-kind="export" data-job-id="${job.id}">
       <strong>${escapeHtml(job.format)} · ${escapeHtml(job.status)}</strong>
       <span>${job.message_count} message(s) · ${job.warning_count} warning(s) · ${job.error_count} error(s)</span>
       <small>${escapeHtml(job.manifest_ref || job.output_root)}</small>
+    </button>
+  `;
+}
+
+function renderSelectedJob(): string {
+  if (!state.selectedJob) return "";
+  if (state.selectedJob.kind === "import") {
+    const job = state.importJobs.find((item) => item.id === state.selectedJob?.id);
+    if (!job) return "";
+    return `
+      <section class="job-detail">
+        <div class="operations-header">
+          <h4>Import ${job.id}</h4>
+          <span>${escapeHtml(job.status)}</span>
+        </div>
+        <dl class="metadata compact-metadata">
+          <div><dt>Source</dt><dd>${escapeHtml(job.source_name)}</dd></div>
+          <div><dt>Kind</dt><dd>${escapeHtml(job.kind)}</dd></div>
+          <div><dt>Started</dt><dd>${escapeHtml(formatDate(job.started_at))}</dd></div>
+          <div><dt>Counts</dt><dd>${job.message_count} processed, ${job.new_message_count} new, ${job.duplicate_count} duplicate(s), ${job.error_count} error(s)</dd></div>
+          <div><dt>Options</dt><dd>${escapeHtml(compactJson(job.options_json))}</dd></div>
+        </dl>
+        ${
+          state.selectedJob.errors.length
+            ? `<div class="detail-list">${state.selectedJob.errors.map(renderImportError).join("")}</div>`
+            : `<p class="muted">No import errors recorded.</p>`
+        }
+      </section>
+    `;
+  }
+
+  const job = state.exportJobs.find((item) => item.id === state.selectedJob?.id);
+  if (!job) return "";
+  return `
+    <section class="job-detail">
+      <div class="operations-header">
+        <h4>Export ${job.id}</h4>
+        <span>${escapeHtml(job.status)}</span>
+      </div>
+      <dl class="metadata compact-metadata">
+        <div><dt>Format</dt><dd>${escapeHtml(job.format)}</dd></div>
+        <div><dt>Target</dt><dd>${escapeHtml(job.target_profile)}</dd></div>
+        <div><dt>Output</dt><dd>${escapeHtml(job.manifest_ref || job.output_root)}</dd></div>
+        <div><dt>Counts</dt><dd>${job.message_count} message(s), ${job.warning_count} warning(s), ${job.error_count} error(s)</dd></div>
+        <div><dt>Options</dt><dd>${escapeHtml(compactJson(job.options_json))}</dd></div>
+      </dl>
+      ${
+        state.selectedJob.items.length
+          ? `<div class="detail-list">${state.selectedJob.items.slice(0, 20).map(renderExportItem).join("")}</div>`
+          : `<p class="muted">No export items recorded.</p>`
+      }
+    </section>
+  `;
+}
+
+function renderImportError(error: ImportJobError): string {
+  return `
+    <div class="detail-row">
+      <strong>${escapeHtml(error.severity)} · ${escapeHtml(error.source_item_ref || "source item")}</strong>
+      <span>${escapeHtml(error.message)}</span>
+      <small>${escapeHtml(compactJson(error.detail_json))}</small>
+    </div>
+  `;
+}
+
+function renderExportItem(item: ExportJobItem): string {
+  return `
+    <div class="detail-row">
+      <strong>${escapeHtml(item.format)} · ${escapeHtml(item.status)} · message ${item.message_id}</strong>
+      <span>${escapeHtml(item.output_path)}</span>
+      <small>${escapeHtml(item.output_hash || compactJson(item.warning_json))}</small>
     </div>
   `;
 }
@@ -425,6 +577,7 @@ function bindEvents(): void {
 
   document.querySelector<HTMLButtonElement>("#import-button")?.addEventListener("click", importMail);
   document.querySelector<HTMLButtonElement>("#export-button")?.addEventListener("click", exportMail);
+  document.querySelector<HTMLButtonElement>("#logout-button")?.addEventListener("click", logout);
   document.querySelector<HTMLSelectElement>("#profile-select")?.addEventListener("change", switchProfile);
   document.querySelector<HTMLButtonElement>("#profile-create-button")?.addEventListener("click", createProfile);
   document.querySelector<HTMLInputElement>("#profile-name")?.addEventListener("keydown", async (event) => {
@@ -432,11 +585,38 @@ function bindEvents(): void {
       await createProfile();
     }
   });
+
+  document.querySelectorAll<HTMLButtonElement>(".job-row[data-job-kind]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const kind = button.dataset.jobKind;
+      const id = Number(button.dataset.jobId);
+      if (kind === "import") await loadImportJobDetail(id);
+      if (kind === "export") await loadExportJobDetail(id);
+    });
+  });
+}
+
+function bindAuthEvents(): void {
+  document.querySelector<HTMLFormElement>("#setup-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await setupAdmin();
+  });
+  document.querySelector<HTMLFormElement>("#login-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await login();
+  });
 }
 
 async function loadInitial(): Promise<void> {
   try {
+    await loadAuth();
+    if (!state.auth?.authenticated && !state.auth?.dev_bypass) {
+      state.status = state.auth?.setup_required ? "Create the first admin user." : "Login required.";
+      render();
+      return;
+    }
     state.health = await api<Health>("/api/v1/health");
+    state.auth = state.health.auth;
     await loadProfiles();
     await loadMigrations();
     await loadJobs();
@@ -446,6 +626,11 @@ async function loadInitial(): Promise<void> {
     state.status = error instanceof Error ? error.message : String(error);
     render();
   }
+}
+
+async function loadAuth(): Promise<void> {
+  const payload = await api<{ auth: AuthStatus }>("/api/v1/auth/status");
+  state.auth = payload.auth;
 }
 
 async function loadProfiles(): Promise<void> {
@@ -466,6 +651,20 @@ async function loadJobs(): Promise<void> {
   ]);
   state.importJobs = importPayload.import_jobs;
   state.exportJobs = exportPayload.export_jobs;
+}
+
+async function loadImportJobDetail(id: number): Promise<void> {
+  const payload = await api<{ errors: ImportJobError[] }>(`/api/v1/import-jobs/${id}/errors`);
+  state.selectedJob = { kind: "import", id, errors: payload.errors };
+  state.status = `Import job ${id} loaded.`;
+  render();
+}
+
+async function loadExportJobDetail(id: number): Promise<void> {
+  const payload = await api<{ items: ExportJobItem[] }>(`/api/v1/export-jobs/${id}/items`);
+  state.selectedJob = { kind: "export", id, items: payload.items };
+  state.status = `Export job ${id} loaded.`;
+  render();
 }
 
 async function loadMailboxes(): Promise<void> {
@@ -571,11 +770,58 @@ async function createProfile(): Promise<void> {
 
 async function refreshActiveProfileData(): Promise<void> {
   state.health = await api<Health>("/api/v1/health");
+  state.auth = state.health.auth;
   await loadProfiles();
   await loadMigrations();
   await loadJobs();
   await loadMailboxes();
   await loadMessages();
+}
+
+async function setupAdmin(): Promise<void> {
+  const username = document.querySelector<HTMLInputElement>("#auth-username")?.value.trim() ?? "";
+  const password = document.querySelector<HTMLInputElement>("#auth-password")?.value ?? "";
+  try {
+    const payload = await api<{ auth: AuthStatus }>("/api/v1/auth/setup", {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+    });
+    state.auth = payload.auth;
+    state.status = "Admin created.";
+    await loadInitial();
+  } catch (error) {
+    state.status = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}
+
+async function login(): Promise<void> {
+  const username = document.querySelector<HTMLInputElement>("#auth-username")?.value.trim() ?? "";
+  const password = document.querySelector<HTMLInputElement>("#auth-password")?.value ?? "";
+  try {
+    const payload = await api<{ auth: AuthStatus }>("/api/v1/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+    });
+    state.auth = payload.auth;
+    state.status = "Logged in.";
+    await loadInitial();
+  } catch (error) {
+    state.status = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}
+
+async function logout(): Promise<void> {
+  try {
+    const payload = await api<{ auth: AuthStatus }>("/api/v1/auth/logout", { method: "POST" });
+    state.auth = payload.auth;
+    state.status = "Logged out.";
+    render();
+  } catch (error) {
+    state.status = error instanceof Error ? error.message : String(error);
+    render();
+  }
 }
 
 async function exportMail(): Promise<void> {
@@ -604,6 +850,21 @@ async function exportMail(): Promise<void> {
 
 function defaultExportPath(): string {
   return `.private/local/exports/${state.activeProfileId ?? "default"}`;
+}
+
+function authLabel(): string {
+  if (!state.auth) return "Unknown";
+  if (state.auth.dev_bypass) return "Dev bypass";
+  return state.auth.authenticated ? state.auth.username || "Session" : "Required";
+}
+
+function compactJson(value: string | null): string {
+  if (!value) return "";
+  try {
+    return JSON.stringify(JSON.parse(value));
+  } catch {
+    return value;
+  }
 }
 
 function escapeHtml(value: string): string {

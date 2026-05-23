@@ -9,6 +9,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
 from millie import __version__
+from millie.auth import AuthManager, expired_session_cookie, session_cookie
 from millie.config import AppConfig
 from millie.exporters import export_messages
 from millie.importers import import_path
@@ -30,11 +31,16 @@ class MillieRequestHandler(BaseHTTPRequestHandler):
         path = parsed.path
         query = parse_qs(parsed.query)
         try:
-            if path == "/api/v1/health":
+            if path == "/api/v1/auth/status":
+                self.write_json({"auth": self.app.auth.status(self.headers.get("Cookie")).to_api()})
+            elif path.startswith("/api/v1/") and not self.app.is_authorized(self.headers.get("Cookie")):
+                self.write_error(HTTPStatus.UNAUTHORIZED, "Authentication required")
+            elif path == "/api/v1/health":
                 self.write_json(
                     {
                         "ok": True,
                         "version": __version__,
+                        "auth": self.app.auth.status(self.headers.get("Cookie")).to_api(),
                         "profile": self.app.profile_manager.active_profile().to_api(),
                         "settings_path": str(self.app.profile_manager.settings_path),
                         "db_path": str(self.app.db.db_path),
@@ -163,7 +169,33 @@ class MillieRequestHandler(BaseHTTPRequestHandler):
         path = parsed.path
         try:
             payload = self.read_json()
-            if path == "/api/v1/profiles":
+            if path == "/api/v1/auth/setup":
+                token = self.app.auth.setup_admin(
+                    str(payload.get("username") or ""),
+                    str(payload.get("password") or ""),
+                )
+                self.write_json(
+                    {"auth": self.app.auth.status(f"millie_session={token}").to_api()},
+                    HTTPStatus.CREATED,
+                    headers={"Set-Cookie": session_cookie(token)},
+                )
+            elif path == "/api/v1/auth/login":
+                token = self.app.auth.login(
+                    str(payload.get("username") or ""),
+                    str(payload.get("password") or ""),
+                )
+                self.write_json(
+                    {"auth": self.app.auth.status(f"millie_session={token}").to_api()},
+                    headers={"Set-Cookie": session_cookie(token)},
+                )
+            elif path == "/api/v1/auth/logout":
+                self.write_json(
+                    {"auth": self.app.auth.status(None).to_api()},
+                    headers={"Set-Cookie": expired_session_cookie()},
+                )
+            elif path.startswith("/api/v1/") and not self.app.is_authorized(self.headers.get("Cookie")):
+                self.write_error(HTTPStatus.UNAUTHORIZED, "Authentication required")
+            elif path == "/api/v1/profiles":
                 name = str(payload.get("name") or "").strip()
                 if not name:
                     self.write_error(HTTPStatus.BAD_REQUEST, "Profile name is required")
@@ -243,11 +275,18 @@ class MillieRequestHandler(BaseHTTPRequestHandler):
         raw = self.rfile.read(length)
         return json.loads(raw.decode("utf-8"))
 
-    def write_json(self, payload: dict[str, object], status: HTTPStatus = HTTPStatus.OK) -> None:
+    def write_json(
+        self,
+        payload: dict[str, object],
+        status: HTTPStatus = HTTPStatus.OK,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         body = json.dumps(payload, indent=2, default=str).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.send_cors_headers()
         self.end_headers()
         self.wfile.write(body)
@@ -256,7 +295,11 @@ class MillieRequestHandler(BaseHTTPRequestHandler):
         self.write_json({"error": message, "status": status.value}, status)
 
     def send_cors_headers(self) -> None:
-        self.send_header("Access-Control-Allow-Origin", "*")
+        origin = self.headers.get("Origin")
+        self.send_header("Access-Control-Allow-Origin", origin or "*")
+        if origin:
+            self.send_header("Vary", "Origin")
+        self.send_header("Access-Control-Allow-Credentials", "true")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
 
@@ -289,7 +332,11 @@ class MillieHTTPServer(ThreadingHTTPServer):
         super().__init__(server_address, MillieRequestHandler)
         self.config = config
         self.profile_manager = profile_manager
+        self.auth = AuthManager(profile_manager)
         self.db = profile_manager.active_database()
+
+    def is_authorized(self, cookie_header: str | None) -> bool:
+        return self.auth.status(cookie_header).authenticated
 
     def set_active_profile(self, profile_id: str):
         profile = self.profile_manager.set_active(profile_id)

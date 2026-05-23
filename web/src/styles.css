@@ -65,6 +65,33 @@ label {
   min-height: 640px;
 }
 
+.auth-shell {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  padding: 24px;
+  background: #f4f6f7;
+}
+
+.auth-panel {
+  display: grid;
+  width: min(420px, 100%);
+  border: 1px solid #d9e0e4;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.auth-brand {
+  min-height: 86px;
+}
+
+.auth-form {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+}
+
 .sidebar,
 .message-list-pane,
 .detail-pane {
@@ -420,6 +447,12 @@ label {
   border-radius: 6px;
   background: #ffffff;
   padding: 9px;
+  text-align: left;
+}
+
+.job-row.active {
+  border-color: #2e6f9e;
+  background: #e6f1f7;
 }
 
 .job-row strong,
@@ -432,6 +465,49 @@ label {
 
 .job-row span,
 .job-row small {
+  color: #5d6a72;
+  font-size: 0.82rem;
+}
+
+.job-detail {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid #d9e0e4;
+  padding-top: 12px;
+}
+
+.compact-metadata {
+  margin: 0;
+}
+
+.compact-metadata div {
+  grid-template-columns: 72px minmax(0, 1fr);
+}
+
+.detail-list {
+  display: grid;
+  gap: 8px;
+}
+
+.detail-row {
+  display: grid;
+  gap: 3px;
+  border: 1px solid #d9e0e4;
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 9px;
+}
+
+.detail-row strong,
+.detail-row span,
+.detail-row small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail-row span,
+.detail-row small {
   color: #5d6a72;
   font-size: 0.82rem;
 }

@@ -94,6 +94,8 @@ MILLIE now has a first runnable foundation slice:
 - SQLite FTS search over subject, participants, and body text
 - Sanitized HTML message viewing with raw HTML preserved separately
 - Attachment listing and downloads through the local API
+- Local admin/session authentication path with development bypass currently enabled by default
+- Import/export job drill-downs for errors and generated export items
 - TypeScript/Vite web client for mailbox navigation, message viewing, import, and export
 - Basic import/export test coverage
 

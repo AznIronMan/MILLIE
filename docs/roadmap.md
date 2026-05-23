@@ -38,6 +38,7 @@
 - Include folder navigation, message list, message detail, and search.
 - Add HTML email sanitization before rendering.
 - Add local authentication before loading real mail.
+- Add import/export job drill-down views.
 
 ## Phase 4: Advanced File Import And Export
 

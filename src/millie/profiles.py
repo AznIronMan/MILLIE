@@ -214,6 +214,10 @@ class ProfileManager:
             return None
         return str(row["value"])
 
+    def get_app_setting(self, key: str) -> str | None:
+        with self.connect() as conn:
+            return self.get_setting(conn, key)
+
     def set_setting(self, conn: sqlite3.Connection, key: str, value: str) -> None:
         conn.execute(
             """
@@ -223,6 +227,10 @@ class ProfileManager:
             """,
             (key, value, utc_now()),
         )
+
+    def set_app_setting(self, key: str, value: str) -> None:
+        with self.connect() as conn:
+            self.set_setting(conn, key, value)
 
     def init_profile_settings(self, profile: Profile) -> None:
         profile.settings_path.parent.mkdir(parents=True, exist_ok=True)

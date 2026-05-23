@@ -6,6 +6,7 @@ import mailbox
 from email.message import EmailMessage
 from pathlib import Path
 
+from millie.auth import AuthManager, SESSION_COOKIE
 from millie.database import MillieDatabase
 from millie.exporters import export_messages
 from millie.importers import detect_format, import_path
@@ -198,6 +199,35 @@ class CoreImportExportTests(unittest.TestCase):
             self.assertEqual(reloaded.active_profile().name, "Fixture Mail")
             self.assertTrue((root / "millie.settings").exists())
             self.assertTrue(created.settings_path.exists())
+
+    def test_auth_defaults_to_dev_bypass_and_supports_sessions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = ProfileManager(
+                root / "millie.settings",
+                root / "profiles",
+                root / "default.sqlite",
+                root / "default-data",
+            )
+            auth = AuthManager(manager)
+
+            status = auth.status(None)
+            self.assertTrue(status.dev_bypass)
+            self.assertTrue(status.authenticated)
+            self.assertTrue(status.setup_required)
+
+            manager.set_app_setting("auth.dev_bypass", "false")
+            self.assertFalse(auth.status(None).authenticated)
+
+            token = auth.setup_admin("admin", "password123")
+            cookie = f"{SESSION_COOKIE}={token}"
+            self.assertTrue(auth.status(cookie).authenticated)
+            self.assertEqual(auth.status(cookie).username, "admin")
+
+            login_token = auth.login("admin", "password123")
+            self.assertTrue(auth.status(f"{SESSION_COOKIE}={login_token}").authenticated)
+            with self.assertRaises(ValueError):
+                auth.login("admin", "wrong-password")
 
 
 def build_message(sender: str, subject: str, body: str) -> EmailMessage:
