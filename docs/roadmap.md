@@ -20,6 +20,7 @@
 - Add deduplication and content hashing.
 - Add SQLite FTS search over subject, addresses, and body text.
 - Preserve raw MIME where available for future high-fidelity export.
+- Track exact duplicate counts on import jobs.
 
 ## Phase 2: Export MVP
 

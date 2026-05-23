@@ -40,6 +40,8 @@ class CoreImportExportTests(unittest.TestCase):
             result = import_path(db, source, "eml", "Unit Test Mail")
 
             self.assertEqual(result.imported, 1)
+            self.assertEqual(result.processed, 1)
+            self.assertEqual(result.duplicates, 0)
             messages = db.list_messages()
             self.assertEqual(len(messages), 1)
             self.assertEqual(messages[0]["subject"], "Hello from MILLIE")
@@ -54,6 +56,45 @@ class CoreImportExportTests(unittest.TestCase):
             self.assertTrue(export_result.manifest_path.exists())
             self.assertEqual(len(list(export_dir.rglob("*.eml"))), 1)
             self.assertEqual(db.list_migrations()[0]["version"], 1)
+            self.assertEqual(db.list_migrations()[-1]["version"], 2)
+
+    def test_repeat_import_deduplicates_by_raw_content_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = MillieDatabase(root / "millie.sqlite", root / "data")
+            db.init()
+
+            source = root / "sample.eml"
+            source.write_bytes(SAMPLE_EML)
+            first = import_path(db, source, "eml", "Unit Test Mail")
+            second = import_path(db, source, "eml", "Unit Test Mail")
+
+            self.assertEqual(first.imported, 1)
+            self.assertEqual(first.processed, 1)
+            self.assertEqual(first.duplicates, 0)
+            self.assertEqual(second.imported, 0)
+            self.assertEqual(second.processed, 1)
+            self.assertEqual(second.duplicates, 1)
+            self.assertEqual(len(db.list_messages()), 1)
+
+            jobs = db.list_import_jobs()
+            self.assertEqual(jobs[0]["message_count"], 1)
+            self.assertEqual(jobs[0]["new_message_count"], 0)
+            self.assertEqual(jobs[0]["duplicate_count"], 1)
+
+    def test_search_handles_addresses_and_punctuation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = MillieDatabase(root / "millie.sqlite", root / "data")
+            db.init()
+
+            source = root / "sample.eml"
+            source.write_bytes(SAMPLE_EML)
+            import_path(db, source, "eml", "Unit Test Mail")
+
+            self.assertEqual(len(db.list_messages(query="alice@example.com")), 1)
+            self.assertEqual(len(db.list_messages(query="Hello: MILLIE?")), 1)
+            self.assertEqual(len(db.list_messages(query="does-not-exist@example.com")), 0)
 
     def test_import_html_and_attachment_message(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -66,6 +107,7 @@ class CoreImportExportTests(unittest.TestCase):
             result = import_path(db, source, "eml", "Multipart Fixture")
 
             self.assertEqual(result.imported, 1)
+            self.assertEqual(result.processed, 1)
             messages = db.list_messages(query="quarterly")
             self.assertEqual(len(messages), 1)
 

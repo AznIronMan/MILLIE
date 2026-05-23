@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterable
@@ -180,6 +182,20 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
 
 MIGRATIONS = [
     (1, "initial_schema", SCHEMA),
+    (
+        2,
+        "import_dedupe_accounting",
+        """
+        ALTER TABLE import_jobs ADD COLUMN new_message_count INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE import_jobs ADD COLUMN duplicate_count INTEGER NOT NULL DEFAULT 0;
+        UPDATE import_jobs
+        SET new_message_count = message_count
+        WHERE message_count > 0 AND new_message_count = 0 AND duplicate_count = 0;
+        CREATE INDEX IF NOT EXISTS idx_messages_content_hash ON messages(content_hash);
+        CREATE INDEX IF NOT EXISTS idx_message_mailboxes_message_id ON message_mailboxes(message_id);
+        CREATE INDEX IF NOT EXISTS idx_message_mailboxes_mailbox_id ON message_mailboxes(mailbox_id);
+        """,
+    ),
 ]
 
 
@@ -191,6 +207,25 @@ def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     if row is None:
         return None
     return {key: row[key] for key in row.keys()}
+
+
+def normalize_fts_query(value: str | None) -> str | None:
+    if not value or not value.strip():
+        return None
+    tokens = re.findall(r"[\w@.+-]+", value, flags=re.UNICODE)
+    quoted = []
+    for token in tokens:
+        if token.strip():
+            escaped = token.replace('"', '""')
+            quoted.append(f'"{escaped}"')
+    return " ".join(quoted) or None
+
+
+@dataclass(slots=True)
+class InsertMessageResult:
+    message_id: int
+    created: bool
+    mailbox_link_created: bool
 
 
 class MillieDatabase:
@@ -364,10 +399,11 @@ class MillieDatabase:
         addresses: list[dict[str, Any]],
         attachments: list[dict[str, Any]],
         participants_text: str,
-    ) -> int:
+    ) -> InsertMessageResult:
         now = utc_now()
         stable_id = fields["content_hash"]
         with self.connect() as conn:
+            created = False
             existing = conn.execute(
                 "SELECT id FROM messages WHERE stable_id = ?",
                 (stable_id,),
@@ -375,6 +411,7 @@ class MillieDatabase:
             if existing:
                 message_id = int(existing["id"])
             else:
+                created = True
                 cur = conn.execute(
                     """
                     INSERT INTO messages (
@@ -456,18 +493,7 @@ class MillieDatabase:
                         for item in attachments
                     ],
                 )
-                conn.execute(
-                    """
-                    INSERT INTO messages_fts (message_id, subject, participants, body_text)
-                    VALUES (?, ?, ?, ?)
-                    """,
-                    (
-                        message_id,
-                        fields.get("subject") or "",
-                        participants_text,
-                        fields.get("body_text") or "",
-                    ),
-                )
+            self.index_message_fts(conn, message_id, fields, participants_text)
 
             exists = conn.execute(
                 """
@@ -476,6 +502,7 @@ class MillieDatabase:
                 """,
                 (message_id, mailbox_id, source_uid),
             ).fetchone()
+            mailbox_link_created = exists is None
             if not exists:
                 conn.execute(
                     """
@@ -485,7 +512,28 @@ class MillieDatabase:
                     """,
                     (message_id, mailbox_id, source_uid, now),
                 )
-            return message_id
+            return InsertMessageResult(message_id, created, mailbox_link_created)
+
+    def index_message_fts(
+        self,
+        conn: sqlite3.Connection,
+        message_id: int,
+        fields: dict[str, Any],
+        participants_text: str,
+    ) -> None:
+        conn.execute("DELETE FROM messages_fts WHERE message_id = ?", (message_id,))
+        conn.execute(
+            """
+            INSERT INTO messages_fts (message_id, subject, participants, body_text)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                message_id,
+                fields.get("subject") or "",
+                participants_text,
+                fields.get("body_text") or "",
+            ),
+        )
 
     def start_import_job(self, source_id: int, kind: str, options: dict[str, Any]) -> int:
         with self.connect() as conn:
@@ -498,15 +546,33 @@ class MillieDatabase:
             )
             return int(cur.lastrowid)
 
-    def finish_import_job(self, import_job_id: int, status: str, message_count: int, error_count: int) -> None:
+    def finish_import_job(
+        self,
+        import_job_id: int,
+        status: str,
+        message_count: int,
+        error_count: int,
+        *,
+        new_message_count: int = 0,
+        duplicate_count: int = 0,
+    ) -> None:
         with self.connect() as conn:
             conn.execute(
                 """
                 UPDATE import_jobs
-                SET status = ?, finished_at = ?, message_count = ?, error_count = ?
+                SET status = ?, finished_at = ?, message_count = ?, error_count = ?,
+                    new_message_count = ?, duplicate_count = ?
                 WHERE id = ?
                 """,
-                (status, utc_now(), message_count, error_count, import_job_id),
+                (
+                    status,
+                    utc_now(),
+                    message_count,
+                    error_count,
+                    new_message_count,
+                    duplicate_count,
+                    import_job_id,
+                ),
             )
 
     def record_import_error(
@@ -650,8 +716,12 @@ class MillieDatabase:
             mailbox_where = "AND mm.mailbox_id = ?"
             params.append(mailbox_id)
 
-        if query:
-            params = [query] + params
+        search_query = normalize_fts_query(query)
+        if query and search_query is None:
+            return []
+
+        if search_query:
+            params = [search_query] + params
             sql = f"""
                 SELECT msg.*, mb.path AS mailbox_path, src.display_name AS source_name
                 FROM messages_fts fts
@@ -787,7 +857,7 @@ class MillieDatabase:
 
     def list_export_jobs(self) -> list[dict[str, Any]]:
         with self.connect() as conn:
-            rows = conn.execute("SELECT * FROM export_jobs ORDER BY started_at DESC").fetchall()
+            rows = conn.execute("SELECT * FROM export_jobs ORDER BY started_at DESC, id DESC").fetchall()
             return [row_to_dict(row) for row in rows if row is not None]
 
     def list_import_jobs(self) -> list[dict[str, Any]]:
@@ -797,7 +867,7 @@ class MillieDatabase:
                 SELECT ij.*, s.display_name AS source_name, s.source_uri
                 FROM import_jobs ij
                 JOIN sources s ON s.id = ij.source_id
-                ORDER BY ij.started_at DESC
+                ORDER BY ij.started_at DESC, ij.id DESC
                 """
             ).fetchall()
             return [row_to_dict(row) for row in rows if row is not None]

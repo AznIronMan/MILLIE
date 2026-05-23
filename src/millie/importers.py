@@ -17,6 +17,8 @@ class ImportResult:
     import_job_id: int
     source_id: int
     imported: int
+    processed: int
+    duplicates: int
     errors: int
     format: str
 
@@ -55,13 +57,15 @@ def import_path(
     )
     job_id = db.start_import_job(source_id, resolved_format, {"path": str(path)})
     imported = 0
+    processed = 0
+    duplicates = 0
     errors = 0
 
     def ingest(raw: bytes, mailbox_path: str, source_uid: str) -> None:
-        nonlocal imported
+        nonlocal imported, processed, duplicates
         parsed = parse_raw_message(db, raw)
         mailbox_id = db.get_or_create_mailbox(source_id, mailbox_path)
-        db.insert_message(
+        result = db.insert_message(
             source_id=source_id,
             mailbox_id=mailbox_id,
             source_uid=source_uid,
@@ -71,7 +75,11 @@ def import_path(
             attachments=parsed["attachments"],
             participants_text=parsed["participants_text"],
         )
-        imported += 1
+        processed += 1
+        if result.created:
+            imported += 1
+        else:
+            duplicates += 1
 
     try:
         if resolved_format == "eml":
@@ -143,9 +151,23 @@ def import_path(
         else:
             raise ValueError(f"Unsupported import format: {resolved_format}")
     except Exception:
-        db.finish_import_job(job_id, "failed", imported, errors + 1)
+        db.finish_import_job(
+            job_id,
+            "failed",
+            processed,
+            errors + 1,
+            new_message_count=imported,
+            duplicate_count=duplicates,
+        )
         raise
 
     status = "completed_with_errors" if errors else "completed"
-    db.finish_import_job(job_id, status, imported, errors)
-    return ImportResult(job_id, source_id, imported, errors, resolved_format)
+    db.finish_import_job(
+        job_id,
+        status,
+        processed,
+        errors,
+        new_message_count=imported,
+        duplicate_count=duplicates,
+    )
+    return ImportResult(job_id, source_id, imported, processed, duplicates, errors, resolved_format)

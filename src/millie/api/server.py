@@ -68,6 +68,22 @@ class MillieRequestHandler(BaseHTTPRequestHandler):
                         )
                     }
                 )
+            elif path == "/api/v1/search":
+                search = query.get("q", [""])[0]
+                mailbox_id = int(query["mailbox_id"][0]) if query.get("mailbox_id") else None
+                limit = int(query.get("limit", ["100"])[0])
+                offset = int(query.get("offset", ["0"])[0])
+                self.write_json(
+                    {
+                        "query": search,
+                        "messages": self.app.db.list_messages(
+                            mailbox_id=mailbox_id,
+                            query=search,
+                            limit=limit,
+                            offset=offset,
+                        ),
+                    }
+                )
             elif path.startswith("/api/v1/messages/") and path.endswith("/raw"):
                 message_id = int(path.split("/")[-2])
                 raw = self.app.db.get_raw_message(message_id)
@@ -152,6 +168,8 @@ class MillieRequestHandler(BaseHTTPRequestHandler):
                         "import_job_id": result.import_job_id,
                         "source_id": result.source_id,
                         "imported": result.imported,
+                        "processed": result.processed,
+                        "duplicates": result.duplicates,
                         "errors": result.errors,
                         "format": result.format,
                     },

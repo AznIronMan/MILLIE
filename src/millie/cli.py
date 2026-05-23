@@ -109,7 +109,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "import":
         result = import_path(db, Path(args.path), args.format, args.source_name)
         print(
-            f"Import job {result.import_job_id}: imported={result.imported} "
+            f"Import job {result.import_job_id}: processed={result.processed} "
+            f"imported={result.imported} duplicates={result.duplicates} "
             f"errors={result.errors} format={result.format}"
         )
         return 0 if result.errors == 0 else 1

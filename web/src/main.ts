@@ -35,6 +35,8 @@ type ImportJob = {
   started_at: string;
   finished_at: string | null;
   message_count: number;
+  new_message_count: number;
+  duplicate_count: number;
   error_count: number;
 };
 
@@ -344,7 +346,7 @@ function renderImportJob(job: ImportJob): string {
   return `
     <div class="job-row">
       <strong>${escapeHtml(job.kind)} · ${escapeHtml(job.status)}</strong>
-      <span>${escapeHtml(job.source_name)} · ${job.message_count} message(s) · ${job.error_count} error(s)</span>
+      <span>${escapeHtml(job.source_name)} · ${job.message_count} processed · ${job.new_message_count} new · ${job.duplicate_count} duplicate(s) · ${job.error_count} error(s)</span>
       <small>${escapeHtml(formatDate(job.started_at))}</small>
     </div>
   `;
@@ -474,14 +476,14 @@ async function importMail(): Promise<void> {
   state.status = "Importing...";
   render();
   try {
-    const result = await api<{ imported: number; errors: number; format: string }>("/api/v1/import", {
+    const result = await api<{ imported: number; processed: number; duplicates: number; errors: number; format: string }>("/api/v1/import", {
       method: "POST",
       body: JSON.stringify({ path, format }),
     });
     await loadMailboxes();
     await loadJobs();
     await loadMessages();
-    state.status = `Imported ${result.imported} message(s) as ${result.format}; errors=${result.errors}.`;
+    state.status = `Processed ${result.processed} message(s) as ${result.format}; new=${result.imported}, duplicates=${result.duplicates}, errors=${result.errors}.`;
     render();
   } catch (error) {
     state.status = error instanceof Error ? error.message : String(error);

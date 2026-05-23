@@ -93,6 +93,12 @@ PYTHONPATH=src python3 -m millie import /path/to/Maildir --format maildir
 PYTHONPATH=src python3 -m millie import /path/to/archive.pst --format pst
 ```
 
+Import output reports processed messages, newly created canonical messages, exact duplicates, errors, and the resolved import format. Exact duplicates are detected by raw MIME content hash, so importing the same archive again should not create duplicate canonical messages.
+
+## Search
+
+The web app search box and `/api/v1/search?q=...` use SQLite FTS5 over message subject, participants, and text body. Query text is normalized before it reaches FTS so searches with punctuation or email addresses are safe to run.
+
 ## Export Mail
 
 ```sh

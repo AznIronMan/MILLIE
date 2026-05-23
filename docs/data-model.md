@@ -1,6 +1,6 @@
 # Canonical Data Model Draft
 
-This is a planning draft, not a final schema.
+This is a planning draft plus notes about the first implemented SQLite schema. The schema will continue to evolve through migrations.
 
 ## Model Shape
 
@@ -158,6 +158,8 @@ Fields to consider:
 - `started_at`
 - `finished_at`
 - `message_count`
+- `new_message_count`
+- `duplicate_count`
 - `error_count`
 - `options_json`
 
@@ -236,7 +238,9 @@ Use a layered strategy:
 - Raw message content hash
 - Attachment hashes
 
-Keep enough provenance to explain why two items were or were not deduplicated.
+The first implemented dedupe layer uses the raw MIME content hash as `messages.stable_id`. Re-importing the same raw message increments duplicate accounting on the import job instead of creating another canonical message. If the same raw message appears in another source or folder, MILLIE can still add source/mailbox provenance through `message_mailboxes`.
+
+Keep enough provenance to explain why two items were or were not deduplicated. Future dedupe layers can add fuzzy matching for messages that differ only by transport headers, client-added metadata, or archive-specific wrapping.
 
 ## Export Strategy
 

@@ -14,6 +14,7 @@ The project uses semantic versioning in `major.minor.patch` format.
 - Switched profile/global settings to SQLite `.settings` files and moved development web ports to the `22xxx` range.
 - Added `millie doctor` to check prerequisites and optionally install local dev dependencies.
 - Added schema migration tracking, expanded open-format import/export tests, visible job history endpoints, and initial PST import through `readpst`.
+- Added exact raw-MIME deduplication accounting, safer SQLite FTS search, and a `/api/v1/search` endpoint.
 
 ## [0.1.0] - 2026-05-23
 
