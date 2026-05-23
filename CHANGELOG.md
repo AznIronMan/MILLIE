@@ -10,6 +10,9 @@ The project uses semantic versioning in `major.minor.patch` format.
 - Added a safe `.env.example` and expanded ignore rules for local databases, secrets, caches, logs, and generated output.
 - Added export/round-trip planning for high-fidelity client-importable mailbox formats.
 - Added the first runnable Python/SQLite backend, import/export core, local API server, TypeScript web client, and core test.
+- Added local profile switching with last-selected profile persistence for isolated test and mail libraries.
+- Switched profile/global settings to SQLite `.settings` files and moved development web ports to the `22xxx` range.
+- Added `millie doctor` to check prerequisites and optionally install local dev dependencies.
 
 ## [0.1.0] - 2026-05-23
 

@@ -26,6 +26,8 @@ It should also support high-fidelity export back into importable mailbox formats
 ## Engineering Direction
 
 - Start with SQLite for simplicity and portability.
+- Keep profiles isolated. A profile owns its own database and data directory, and the previously selected profile should open by default.
+- Store global settings in a SQLite file named `millie.settings`; store profile-specific settings in SQLite files named after the profile, such as `default.settings` or `fixture-mail.settings`.
 - Keep the persistence layer clean enough to add PostgreSQL, MySQL/MariaDB, and selected NoSQL connectors later.
 - Prefer a relational canonical model internally. Expose flattened message records through the API where clients need a single object.
 - Treat imported mail, attachments, OAuth tokens, app keys, and generated databases as sensitive data.
@@ -39,6 +41,7 @@ It should also support high-fidelity export back into importable mailbox formats
 - Development may use non-secure HTTP paths.
 - Production must be easy to run with HTTPS/TLS/SSL, either directly or behind a reverse proxy.
 - Web/API listeners should bind to `0.0.0.0` by default, with a documented config override.
+- Use the `22xxx` port range for development web/API ports. Backend default is `22001`; Vite dev default is `22002`.
 - Because `0.0.0.0` exposes the app beyond localhost, authenticated access and clear dev/prod profiles are required before real mail data is loaded.
 - HTML email rendering must be sanitized before display.
 

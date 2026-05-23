@@ -4,23 +4,37 @@ import argparse
 from pathlib import Path
 
 from .config import AppConfig
-from .database import MillieDatabase
+from .doctor import run_doctor
 from .exporters import export_messages
 from .importers import import_path
 from .api.server import run_server
+from .profiles import ProfileManager
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="millie", description="MILLIE email archive toolkit")
     parser.add_argument("--db", default=None, help="SQLite database path")
     parser.add_argument("--data-dir", default=None, help="Content-addressed data directory")
+    parser.add_argument("--settings", "--profiles", dest="settings", default=None, help="Global SQLite settings file")
+    parser.add_argument("--profiles-dir", default=None, help="Directory for profile databases and data")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("init-db", help="Initialize the SQLite database")
+    subparsers.add_parser("profiles", help="List available profiles")
+
+    doctor = subparsers.add_parser("doctor", help="Check local development prerequisites")
+    doctor.add_argument("--install", action="store_true", help="Offer to install missing local dependencies")
+    doctor.add_argument("--yes", action="store_true", help="Assume yes for doctor install prompts")
+
+    profile_create = subparsers.add_parser("profile-create", help="Create a profile and make it active")
+    profile_create.add_argument("name", help="Profile display name")
+
+    profile_use = subparsers.add_parser("profile-use", help="Switch the active profile")
+    profile_use.add_argument("profile_id", help="Profile id")
 
     serve = subparsers.add_parser("serve", help="Run the local web/API server")
     serve.add_argument("--host", default=None, help="Host to bind, default 0.0.0.0")
-    serve.add_argument("--port", type=int, default=None, help="Port to bind, default 8765")
+    serve.add_argument("--port", type=int, default=None, help="Port to bind, default 22001")
     serve.add_argument("--web-dir", default=None, help="Built web app directory")
 
     import_cmd = subparsers.add_parser("import", help="Import email from a file or folder")
@@ -43,6 +57,10 @@ def config_from_args(args: argparse.Namespace) -> AppConfig:
         config.db_path = Path(args.db)
     if args.data_dir:
         config.data_dir = Path(args.data_dir)
+    if args.settings:
+        config.settings_path = Path(args.settings)
+    if args.profiles_dir:
+        config.profiles_dir = Path(args.profiles_dir)
     if getattr(args, "host", None):
         config.host = args.host
     if getattr(args, "port", None):
@@ -55,12 +73,35 @@ def config_from_args(args: argparse.Namespace) -> AppConfig:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "doctor":
+        return run_doctor(args, Path(__file__).resolve().parents[2])
+
     config = config_from_args(args)
-    db = MillieDatabase(config.db_path, config.data_dir)
+    profile_manager = ProfileManager(
+        config.settings_path,
+        config.profiles_dir,
+        config.db_path,
+        config.data_dir,
+    )
+    db = profile_manager.active_database()
 
     if args.command == "init-db":
         db.init()
-        print(f"Initialized {config.db_path}")
+        active = profile_manager.active_profile()
+        print(f"Initialized profile {active.id} at {active.db_path}")
+        return 0
+    if args.command == "profiles":
+        for profile in profile_manager.list_profiles():
+            marker = "*" if profile["id"] == profile_manager.active_profile_id else " "
+            print(f"{marker} {profile['id']}: {profile['name']} ({profile['db_path']})")
+        return 0
+    if args.command == "profile-create":
+        profile = profile_manager.create_profile(args.name, switch=True)
+        print(f"Created and selected profile {profile.id}: {profile.name}")
+        return 0
+    if args.command == "profile-use":
+        profile = profile_manager.set_active(args.profile_id)
+        print(f"Selected profile {profile.id}: {profile.name}")
         return 0
     if args.command == "serve":
         run_server(config)

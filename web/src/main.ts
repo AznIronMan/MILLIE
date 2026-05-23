@@ -3,8 +3,19 @@ import "./styles.css";
 type Health = {
   ok: boolean;
   version: string;
+  profile: Profile;
+  settings_path: string;
   db_path: string;
   data_dir: string;
+};
+
+type Profile = {
+  id: string;
+  name: string;
+  db_path: string;
+  data_dir: string;
+  created_at: string;
+  last_opened_at: string;
 };
 
 type Mailbox = {
@@ -48,6 +59,8 @@ type MessageDetail = MessageSummary & {
 
 type State = {
   health: Health | null;
+  profiles: Profile[];
+  activeProfileId: string | null;
   mailboxes: Mailbox[];
   messages: MessageSummary[];
   selectedMailboxId: number | null;
@@ -59,6 +72,8 @@ type State = {
 
 const state: State = {
   health: null,
+  profiles: [],
+  activeProfileId: null,
   mailboxes: [],
   messages: [],
   selectedMailboxId: null,
@@ -124,6 +139,27 @@ function render(): void {
             <p>${state.health ? `v${state.health.version}` : "Starting"}</p>
           </div>
         </div>
+        <section class="profile-panel">
+          <label>
+            Profile
+            <select id="profile-select">
+              ${state.profiles
+                .map(
+                  (profile) => `
+                    <option value="${escapeHtml(profile.id)}" ${profile.id === state.activeProfileId ? "selected" : ""}>
+                      ${escapeHtml(profile.name)}
+                    </option>
+                  `,
+                )
+                .join("")}
+            </select>
+          </label>
+          <div class="inline-controls">
+            <input id="profile-name" placeholder="New test profile" />
+            <button id="profile-create-button">New</button>
+          </div>
+          <p class="profile-path">${escapeHtml(state.health?.db_path ?? "No profile loaded")}</p>
+        </section>
         <section class="tool-panel">
           <label>
             Import path
@@ -272,17 +308,31 @@ function bindEvents(): void {
 
   document.querySelector<HTMLButtonElement>("#import-button")?.addEventListener("click", importMail);
   document.querySelector<HTMLButtonElement>("#export-button")?.addEventListener("click", exportMail);
+  document.querySelector<HTMLSelectElement>("#profile-select")?.addEventListener("change", switchProfile);
+  document.querySelector<HTMLButtonElement>("#profile-create-button")?.addEventListener("click", createProfile);
+  document.querySelector<HTMLInputElement>("#profile-name")?.addEventListener("keydown", async (event) => {
+    if (event.key === "Enter") {
+      await createProfile();
+    }
+  });
 }
 
 async function loadInitial(): Promise<void> {
   try {
     state.health = await api<Health>("/api/v1/health");
+    await loadProfiles();
     await loadMailboxes();
     await loadMessages();
   } catch (error) {
     state.status = error instanceof Error ? error.message : String(error);
     render();
   }
+}
+
+async function loadProfiles(): Promise<void> {
+  const payload = await api<{ active_profile_id: string; profiles: Profile[] }>("/api/v1/profiles");
+  state.activeProfileId = payload.active_profile_id;
+  state.profiles = payload.profiles;
 }
 
 async function loadMailboxes(): Promise<void> {
@@ -332,6 +382,65 @@ async function importMail(): Promise<void> {
   }
 }
 
+async function switchProfile(event: Event): Promise<void> {
+  const profileId = (event.currentTarget as HTMLSelectElement).value;
+  if (!profileId || profileId === state.activeProfileId) return;
+  state.status = "Switching profile...";
+  render();
+  try {
+    await api<{ active_profile_id: string; profile: Profile; profiles: Profile[] }>("/api/v1/profiles/active", {
+      method: "POST",
+      body: JSON.stringify({ profileId }),
+    });
+    state.selectedMailboxId = null;
+    state.selectedMessageId = null;
+    state.selectedMessage = null;
+    state.query = "";
+    await refreshActiveProfileData();
+    state.status = `Profile switched to ${state.health?.profile.name ?? profileId}.`;
+    render();
+  } catch (error) {
+    state.status = error instanceof Error ? error.message : String(error);
+    await loadProfiles();
+    render();
+  }
+}
+
+async function createProfile(): Promise<void> {
+  const input = document.querySelector<HTMLInputElement>("#profile-name");
+  const name = input?.value.trim() ?? "";
+  if (!name) {
+    state.status = "Enter a profile name.";
+    render();
+    return;
+  }
+  state.status = "Creating profile...";
+  render();
+  try {
+    await api<{ active_profile_id: string; profile: Profile; profiles: Profile[] }>("/api/v1/profiles", {
+      method: "POST",
+      body: JSON.stringify({ name, switch: true }),
+    });
+    state.selectedMailboxId = null;
+    state.selectedMessageId = null;
+    state.selectedMessage = null;
+    state.query = "";
+    await refreshActiveProfileData();
+    state.status = `Profile created: ${state.health?.profile.name ?? name}.`;
+    render();
+  } catch (error) {
+    state.status = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}
+
+async function refreshActiveProfileData(): Promise<void> {
+  state.health = await api<Health>("/api/v1/health");
+  await loadProfiles();
+  await loadMailboxes();
+  await loadMessages();
+}
+
 async function exportMail(): Promise<void> {
   const outputPath = document.querySelector<HTMLInputElement>("#export-path")?.value.trim() || defaultExportPath();
   const format = document.querySelector<HTMLSelectElement>("#export-format")?.value ?? "eml";
@@ -356,7 +465,7 @@ async function exportMail(): Promise<void> {
 }
 
 function defaultExportPath(): string {
-  return ".private/local/exports";
+  return `.private/local/exports/${state.activeProfileId ?? "default"}`;
 }
 
 function escapeHtml(value: string): string {

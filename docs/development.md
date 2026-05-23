@@ -10,13 +10,35 @@ The backend intentionally starts with the Python standard library so the project
 
 ## Local Environment
 
-Create optional local settings from the safe template:
+MILLIE does not require a `.env` file. Defaults are built in, and local runtime state is stored in SQLite `.settings` files.
+
+For reference only, optional environment overrides are listed in `.env.example`.
+
+Runtime databases, imported mail, attachment payloads, secrets, settings files, and generated export output should stay under ignored local paths such as `.private/local/` or `.private/secrets/`.
+
+Global settings are stored at `.private/local/millie.settings` by default. Profiles are stored under `.private/local/profiles/`, and each profile has a profile-specific SQLite settings file such as `default.settings` or `fixture-mail.settings`.
+
+The previously selected profile opens automatically when the server starts.
+
+## Prerequisites
+
+Run the doctor command to check Python, SQLite, Node.js, npm, `web/package.json`, `web/node_modules`, and optional `.venv` state:
 
 ```sh
-cp .env.example .env
+PYTHONPATH=src python3 -m millie doctor
 ```
 
-Runtime databases, imported mail, attachment payloads, secrets, and generated export output should stay under ignored local paths such as `.private/local/` or `.private/secrets/`.
+To let MILLIE prompt for local dependency setup:
+
+```sh
+PYTHONPATH=src python3 -m millie doctor --install
+```
+
+For non-interactive setup:
+
+```sh
+PYTHONPATH=src python3 -m millie doctor --install --yes
+```
 
 ## Run The Backend
 
@@ -25,7 +47,17 @@ PYTHONPATH=src python3 -m millie init-db
 PYTHONPATH=src python3 -m millie serve
 ```
 
-The server binds to `0.0.0.0:8765` by default.
+The server binds to `0.0.0.0:22001` by default.
+
+## Profiles
+
+```sh
+PYTHONPATH=src python3 -m millie profiles
+PYTHONPATH=src python3 -m millie profile-create "Fixture Mail"
+PYTHONPATH=src python3 -m millie profile-use fixture-mail
+```
+
+The web app can also create and switch profiles from the sidebar.
 
 ## Build The Web App
 
@@ -41,10 +73,10 @@ For Vite dev-server work, point the web app at the backend:
 
 ```sh
 cd web
-VITE_MILLIE_API_BASE=http://localhost:8765 npm run dev
+VITE_MILLIE_API_BASE=http://localhost:22001 npm run dev
 ```
 
-If another local service already uses `8765`, run MILLIE on another port and update `VITE_MILLIE_API_BASE`.
+The Vite dev server uses `22002`, and Vite preview uses `22003`.
 
 ## Import Mail
 

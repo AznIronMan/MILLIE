@@ -85,9 +85,11 @@ MILLIE now has a first runnable foundation slice:
 
 - Python CLI and local API server
 - SQLite schema and content-addressed blob storage
+- Local profiles with last-selected profile persistence
+- SQLite `.settings` files for global and profile-specific settings
 - `.eml`, `mbox`, `maildir`, and `.eml` folder import paths
 - `.eml`, `mbox`, and `maildir` export paths with manifests
 - TypeScript/Vite web client for mailbox navigation, message viewing, import, and export
 - Basic import/export test coverage
 
-See [docs/development.md](docs/development.md) for setup and run commands.
+See [docs/development.md](docs/development.md) for setup and run commands, and [docs/profiles.md](docs/profiles.md) for profile switching.

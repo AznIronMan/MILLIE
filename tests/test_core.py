@@ -7,6 +7,7 @@ from pathlib import Path
 from millie.database import MillieDatabase
 from millie.exporters import export_messages
 from millie.importers import import_path
+from millie.profiles import ProfileManager
 
 
 SAMPLE_EML = b"""From: Alice Example <alice@example.com>\r
@@ -47,6 +48,31 @@ class CoreImportExportTests(unittest.TestCase):
             self.assertEqual(export_result.exported, 1)
             self.assertTrue(export_result.manifest_path.exists())
             self.assertEqual(len(list(export_dir.rglob("*.eml"))), 1)
+
+    def test_profile_manager_remembers_active_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = ProfileManager(
+                root / "millie.settings",
+                root / "profiles",
+                root / "default.sqlite",
+                root / "default-data",
+            )
+
+            created = manager.create_profile("Fixture Mail", switch=True)
+            self.assertEqual(manager.active_profile_id, created.id)
+            self.assertTrue(created.db_path.exists())
+
+            reloaded = ProfileManager(
+                root / "millie.settings",
+                root / "profiles",
+                root / "default.sqlite",
+                root / "default-data",
+            )
+            self.assertEqual(reloaded.active_profile_id, created.id)
+            self.assertEqual(reloaded.active_profile().name, "Fixture Mail")
+            self.assertTrue((root / "millie.settings").exists())
+            self.assertTrue(created.settings_path.exists())
 
 
 if __name__ == "__main__":

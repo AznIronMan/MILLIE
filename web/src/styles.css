@@ -76,7 +76,7 @@ label {
 
 .sidebar {
   display: grid;
-  grid-template-rows: auto auto 1fr;
+  grid-template-rows: auto auto auto 1fr;
 }
 
 .brand {
@@ -100,12 +100,26 @@ label {
   color: #a8d5ba;
 }
 
+.profile-panel,
 .tool-panel {
   display: grid;
   gap: 10px;
   padding: 14px;
   border-bottom: 1px solid #d9e0e4;
   background: #f7faf9;
+}
+
+.profile-panel {
+  background: #f9fbfc;
+}
+
+.profile-path {
+  overflow: hidden;
+  margin: 0;
+  color: #5d6a72;
+  font-size: 0.74rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .inline-controls {

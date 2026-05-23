@@ -22,8 +22,8 @@ Implemented the first runnable foundation slice:
 
 - `PYTHONPATH=src python3 -m unittest discover -s tests`
 - `npm run build` from `web/`
-- Browser smoke test at `http://localhost:8766`
+- Browser smoke test during the initial slice
 
 ## Notes
 
-Port `8765` was already occupied by another local service during verification, so the live smoke-test server used `8766`.
+Current development web/API ports should use the `22xxx` range.

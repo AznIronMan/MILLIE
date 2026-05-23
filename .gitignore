@@ -29,6 +29,9 @@ build/
 .private/**/*.db
 .private/**/*.db-shm
 .private/**/*.db-wal
+*.settings
+*.settings-shm
+*.settings-wal
 
 # Databases and generated data
 data/
