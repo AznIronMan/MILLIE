@@ -9,6 +9,7 @@ The project uses semantic versioning in `major.minor.patch` format.
 - Enabled standalone Git tracking for the MILLIE folder and prepared it for the GitHub remote.
 - Added a safe `.env.example` and expanded ignore rules for local databases, secrets, caches, logs, and generated output.
 - Added export/round-trip planning for high-fidelity client-importable mailbox formats.
+- Added the first runnable Python/SQLite backend, import/export core, local API server, TypeScript web client, and core test.
 
 ## [0.1.0] - 2026-05-23
 

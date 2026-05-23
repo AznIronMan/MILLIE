@@ -81,4 +81,13 @@ Web/API services should listen on `0.0.0.0` by default, with a config override. 
 
 ## Current Status
 
-MILLIE is in planning and project-shaping mode. No production importer, API, database schema, or web client has been implemented yet.
+MILLIE now has a first runnable foundation slice:
+
+- Python CLI and local API server
+- SQLite schema and content-addressed blob storage
+- `.eml`, `mbox`, `maildir`, and `.eml` folder import paths
+- `.eml`, `mbox`, and `maildir` export paths with manifests
+- TypeScript/Vite web client for mailbox navigation, message viewing, import, and export
+- Basic import/export test coverage
+
+See [docs/development.md](docs/development.md) for setup and run commands.

@@ -37,6 +37,15 @@ npm run build
 
 After the web app is built, the Python server serves it from `web/dist`.
 
+For Vite dev-server work, point the web app at the backend:
+
+```sh
+cd web
+VITE_MILLIE_API_BASE=http://localhost:8765 npm run dev
+```
+
+If another local service already uses `8765`, run MILLIE on another port and update `VITE_MILLIE_API_BASE`.
+
 ## Import Mail
 
 ```sh

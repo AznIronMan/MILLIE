@@ -68,6 +68,8 @@ const state: State = {
   status: "Ready",
 };
 
+const API_BASE = import.meta.env.VITE_MILLIE_API_BASE ?? "";
+
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) {
   throw new Error("App root was not found");
@@ -75,7 +77,7 @@ if (!app) {
 const appRoot: HTMLDivElement = app;
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
+  const response = await fetch(`${API_BASE}${path}`, {
     headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
     ...init,
   });
