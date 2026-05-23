@@ -1,0 +1,64 @@
+# Python / runtime
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+.venv/
+venv/
+env/
+*.egg-info/
+
+# Node / frontend
+node_modules/
+dist/
+build/
+.next/
+
+# Local config and secrets
+.env
+.env.*
+!.env.example
+.private/secrets/
+.private/local/
+.private/**/*.sqlite
+.private/**/*.sqlite3
+.private/**/*.db
+.private/**/*.db-shm
+.private/**/*.db-wal
+
+# Databases and generated data
+data/
+db/
+*.sqlite
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
+
+# Mail exports and sensitive imported content
+*.pst
+*.ost
+*.olm
+*.mbox
+*.eml
+*.emlx
+Maildir/
+maildir/
+attachments/
+raw-mail/
+
+# Logs and temporary output
+logs/
+*.log
+tmp/
+temp/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
