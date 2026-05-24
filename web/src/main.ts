@@ -102,6 +102,14 @@ type ImapSource = {
   secret_backend: string | null;
 };
 
+type ImapFolder = {
+  name: string;
+  delimiter: string | null;
+  flags: string[];
+  selectable: boolean;
+  role: string | null;
+};
+
 type ImapSyncResult = {
   import_job_id: number;
   source_id: number;
@@ -193,6 +201,8 @@ type State = {
   sourceScanType: string;
   sourceScanCandidates: SourceCandidate[];
   imapSources: ImapSource[];
+  imapDiscoveredSourceId: string | null;
+  imapDiscoveredFolders: ImapFolder[];
   mailboxes: Mailbox[];
   messages: MessageSummary[];
   selectedMailboxId: number | null;
@@ -221,6 +231,8 @@ const state: State = {
   sourceScanType: "thunderbird",
   sourceScanCandidates: [],
   imapSources: [],
+  imapDiscoveredSourceId: null,
+  imapDiscoveredFolders: [],
   mailboxes: [],
   messages: [],
   selectedMailboxId: null,
@@ -390,6 +402,7 @@ function render(): void {
             <input id="imap-limit" type="number" min="1" placeholder="100" />
           </div>
           ${renderImapSources()}
+          ${renderImapFolderPicker()}
         </section>
         <nav class="folder-list" aria-label="Mailboxes">
           <button class="folder-row ${state.selectedMailboxId === null ? "active" : ""}" data-mailbox-id="">
@@ -525,7 +538,43 @@ function renderImapSource(source: ImapSource): string {
         <span>${escapeHtml(source.username)}@${escapeHtml(source.host)}:${source.port} · ${escapeHtml(security)}</span>
         <small>${escapeHtml(folders)} · limit ${source.sync_limit} · ${escapeHtml(secret)}</small>
       </div>
-      <button class="imap-sync-button" data-imap-source-id="${escapeHtml(source.id)}">Sync</button>
+      <div class="imap-source-actions">
+        <button class="imap-discover-button" data-imap-source-id="${escapeHtml(source.id)}">Folders</button>
+        <button class="imap-sync-button" data-imap-source-id="${escapeHtml(source.id)}">Sync</button>
+        <button class="imap-delete-button" data-imap-source-id="${escapeHtml(source.id)}">Delete</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderImapFolderPicker(): string {
+  if (!state.imapDiscoveredSourceId || !state.imapDiscoveredFolders.length) return "";
+  const source = state.imapSources.find((item) => item.id === state.imapDiscoveredSourceId);
+  const selected = new Set(source?.folders ?? []);
+  const selectable = state.imapDiscoveredFolders.filter((folder) => folder.selectable);
+  return `
+    <div class="imap-folder-picker">
+      <div class="imap-folder-picker-header">
+        <strong>${escapeHtml(source?.name ?? "IMAP folders")}</strong>
+        <button id="imap-apply-folders-button">Use Selected</button>
+      </div>
+      <div class="imap-folder-list">
+        ${selectable
+          .map(
+            (folder) => `
+              <label class="imap-folder-option">
+                <input
+                  type="checkbox"
+                  value="${escapeHtml(folder.name)}"
+                  ${selected.has(folder.name) || (!selected.size && folder.name.toUpperCase() === "INBOX") ? "checked" : ""}
+                />
+                <span>${escapeHtml(folder.name)}</span>
+                <small>${escapeHtml(folder.role ?? (folder.flags.join(", ") || "folder"))}</small>
+              </label>
+            `,
+          )
+          .join("")}
+      </div>
     </div>
   `;
 }
@@ -792,9 +841,20 @@ function bindEvents(): void {
     });
   });
   document.querySelector<HTMLButtonElement>("#imap-save-button")?.addEventListener("click", saveImapSource);
+  document.querySelector<HTMLButtonElement>("#imap-apply-folders-button")?.addEventListener("click", applyDiscoveredImapFolders);
+  document.querySelectorAll<HTMLButtonElement>(".imap-discover-button").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await discoverImapFolders(button.dataset.imapSourceId ?? "");
+    });
+  });
   document.querySelectorAll<HTMLButtonElement>(".imap-sync-button").forEach((button) => {
     button.addEventListener("click", async () => {
       await syncImapSource(button.dataset.imapSourceId ?? "");
+    });
+  });
+  document.querySelectorAll<HTMLButtonElement>(".imap-delete-button").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await deleteImapSource(button.dataset.imapSourceId ?? "");
     });
   });
   document.querySelector<HTMLButtonElement>("#export-button")?.addEventListener("click", exportMail);
@@ -1054,7 +1114,102 @@ async function saveImapSource(): Promise<void> {
       }),
     });
     state.imapSources = payload.sources;
+    state.imapDiscoveredSourceId = null;
+    state.imapDiscoveredFolders = [];
     state.status = `Saved IMAP source ${payload.source.name}.`;
+    render();
+  } catch (error) {
+    state.status = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}
+
+async function discoverImapFolders(sourceId: string): Promise<void> {
+  const source = state.imapSources.find((item) => item.id === sourceId);
+  if (!source) {
+    state.status = "IMAP source is no longer available.";
+    render();
+    return;
+  }
+  state.status = `Discovering folders for ${source.name}...`;
+  render();
+  try {
+    const payload = await api<{ folders: ImapFolder[] }>(`/api/v1/imap-sources/${encodeURIComponent(sourceId)}/folders`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    state.imapDiscoveredSourceId = sourceId;
+    state.imapDiscoveredFolders = payload.folders;
+    state.status = `Found ${payload.folders.filter((folder) => folder.selectable).length} selectable folder(s).`;
+    render();
+  } catch (error) {
+    state.status = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}
+
+async function applyDiscoveredImapFolders(): Promise<void> {
+  const sourceId = state.imapDiscoveredSourceId;
+  const source = state.imapSources.find((item) => item.id === sourceId);
+  if (!sourceId || !source) {
+    state.status = "Discover folders before applying a folder list.";
+    render();
+    return;
+  }
+  const folders = Array.from(document.querySelectorAll<HTMLInputElement>(".imap-folder-option input:checked"))
+    .map((input) => input.value)
+    .filter(Boolean);
+  if (!folders.length) {
+    state.status = "Select at least one IMAP folder.";
+    render();
+    return;
+  }
+  state.status = `Saving folders for ${source.name}...`;
+  render();
+  try {
+    const payload = await api<{ source: ImapSource; sources: ImapSource[] }>("/api/v1/imap-sources", {
+      method: "POST",
+      body: JSON.stringify({
+        id: source.id,
+        name: source.name,
+        host: source.host,
+        port: source.port,
+        username: source.username,
+        use_tls: source.use_tls,
+        folders,
+        sync_limit: source.sync_limit,
+        auth_method: source.auth_method,
+      }),
+    });
+    state.imapSources = payload.sources;
+    state.status = `Saved ${folders.length} folder(s) for ${payload.source.name}.`;
+    render();
+  } catch (error) {
+    state.status = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}
+
+async function deleteImapSource(sourceId: string): Promise<void> {
+  const source = state.imapSources.find((item) => item.id === sourceId);
+  if (!source) {
+    state.status = "IMAP source is no longer available.";
+    render();
+    return;
+  }
+  state.status = `Deleting ${source.name}...`;
+  render();
+  try {
+    const payload = await api<{ deleted: boolean; sources: ImapSource[] }>(`/api/v1/imap-sources/${encodeURIComponent(sourceId)}/delete`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    state.imapSources = payload.sources;
+    if (state.imapDiscoveredSourceId === sourceId) {
+      state.imapDiscoveredSourceId = null;
+      state.imapDiscoveredFolders = [];
+    }
+    state.status = `Deleted ${source.name}.`;
     render();
   } catch (error) {
     state.status = error instanceof Error ? error.message : String(error);
@@ -1103,6 +1258,8 @@ async function switchProfile(event: Event): Promise<void> {
     state.selectedMessage = null;
     state.selectedJob = null;
     state.sourceScanCandidates = [];
+    state.imapDiscoveredSourceId = null;
+    state.imapDiscoveredFolders = [];
     state.query = "";
     await refreshActiveProfileData();
     state.status = `Profile switched to ${state.health?.profile.name ?? profileId}.`;
@@ -1134,6 +1291,8 @@ async function createProfile(): Promise<void> {
     state.selectedMessage = null;
     state.selectedJob = null;
     state.sourceScanCandidates = [];
+    state.imapDiscoveredSourceId = null;
+    state.imapDiscoveredFolders = [];
     state.query = "";
     await refreshActiveProfileData();
     state.status = `Profile created: ${state.health?.profile.name ?? name}.`;

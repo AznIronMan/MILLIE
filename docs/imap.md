@@ -10,6 +10,7 @@ Current IMAP support is intentionally narrow:
 - Secret references for stored credentials
 - TLS by default, with plain IMAP available for local/dev testing
 - One or more configured folders, defaulting to `INBOX`
+- Folder discovery through IMAP `LIST`
 - Incremental sync using per-folder UID cursors
 - Raw RFC822 message preservation through the normal import pipeline
 - Existing dedupe, search, HTML sanitization, attachment capture, and export support after import
@@ -50,6 +51,8 @@ PYTHONPATH=src python3 -m millie imap-add "Work Mail" \
   --limit 100
 
 PYTHONPATH=src python3 -m millie imap-sources
+PYTHONPATH=src python3 -m millie imap-folders work-mail
+PYTHONPATH=src python3 -m millie imap-set-folders work-mail --folder INBOX --folder "Sent Items"
 PYTHONPATH=src python3 -m millie imap-migrate-secrets
 PYTHONPATH=src python3 -m millie imap-sync work-mail
 ```
@@ -58,11 +61,15 @@ Use `--no-tls` only for trusted local/dev servers.
 
 `imap-migrate-secrets` moves any legacy raw IMAP passwords from `imap.sources.v1` into the configured secret backend.
 
+`imap-delete` removes a saved IMAP source and deletes its stored secret reference.
+
 ## API
 
 - `GET /api/v1/imap-sources`
 - `POST /api/v1/imap-sources`
+- `POST /api/v1/imap-sources/{id}/folders`
 - `POST /api/v1/imap-sources/{id}/sync`
+- `POST /api/v1/imap-sources/{id}/delete`
 
 `GET /api/v1/imap-sources` redacts the stored password and only reports whether one is configured.
 
@@ -79,6 +86,10 @@ Use `--no-tls` only for trusted local/dev servers.
 
 `POST /api/v1/imap-sources/{id}/sync` runs a read-only sync immediately and creates an import job.
 
+`POST /api/v1/imap-sources/{id}/folders` logs in read-only and returns discovered folders with flags, delimiter, role, and selectability.
+
+`POST /api/v1/imap-sources/{id}/delete` removes the saved source and deletes its secret reference.
+
 `POST /api/v1/imap-sources/migrate-secrets` moves legacy raw IMAP passwords into the configured secret backend.
 
 ## Follow-Up
@@ -86,5 +97,4 @@ Use `--no-tls` only for trusted local/dev servers.
 - Add OAuth/app-password setup flows.
 - Add provider presets for common IMAP hosts.
 - Capture IMAP flags and internal dates.
-- Support folder discovery before sync.
 - Add POP3 and Microsoft Graph/Exchange connectors.

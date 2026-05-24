@@ -54,7 +54,9 @@ Import responses and job rows distinguish:
 
 - `GET /api/v1/imap-sources`
 - `POST /api/v1/imap-sources`
+- `POST /api/v1/imap-sources/{id}/folders`
 - `POST /api/v1/imap-sources/{id}/sync`
+- `POST /api/v1/imap-sources/{id}/delete`
 - `POST /api/v1/imap-sources/migrate-secrets`
 
 IMAP source configs are stored per active profile. Saved configs store `auth_ref` secret references instead of raw password/app-password values.
@@ -63,7 +65,11 @@ IMAP source configs are stored per active profile. Saved configs store `auth_ref
 
 `POST /api/v1/imap-sources` accepts `name`, `host`, `port`, `username`, `password`, `use_tls`, `folders`, and `sync_limit`. `folders` can be a string or list. TLS defaults to on.
 
+`POST /api/v1/imap-sources/{id}/folders` returns selectable and non-selectable folders discovered from the remote account using IMAP `LIST`.
+
 `POST /api/v1/imap-sources/{id}/sync` performs a read-only sync. It imports newly discovered UIDs through the same raw-MIME pipeline as file imports, creates an import job, and returns processed/new/duplicate/error counts.
+
+`POST /api/v1/imap-sources/{id}/delete` removes the saved source and deletes its secret reference.
 
 `POST /api/v1/imap-sources/migrate-secrets` migrates legacy raw IMAP passwords from `imap.sources.v1` into the configured secret backend.
 

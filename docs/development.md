@@ -120,11 +120,13 @@ The web app has the same scan path in the import panel. Scanning is read-only an
 ```sh
 PYTHONPATH=src python3 -m millie imap-add "Test IMAP" --host imap.example.com --username user@example.com --folder INBOX
 PYTHONPATH=src python3 -m millie imap-sources
+PYTHONPATH=src python3 -m millie imap-folders test-imap
+PYTHONPATH=src python3 -m millie imap-set-folders test-imap --folder INBOX --folder "Sent Items"
 PYTHONPATH=src python3 -m millie secrets-status
 PYTHONPATH=src python3 -m millie imap-sync test-imap
 ```
 
-The initial IMAP connector is read-only and uses TLS by default. It stores source configs in the active profile `.settings` file, stores only secret references in those configs, and tracks per-folder UID cursors in the active profile mail database.
+The initial IMAP connector is read-only and uses TLS by default. It stores source configs in the active profile `.settings` file, stores only secret references in those configs, discovers remote folders with IMAP `LIST`, and tracks per-folder UID cursors in the active profile mail database.
 
 If a profile has legacy IMAP source configs with raw passwords from an older development build, migrate them:
 

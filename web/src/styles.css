@@ -258,9 +258,8 @@ label {
 
 .imap-source-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
-  align-items: center;
   border: 1px solid #d9e0e4;
   border-radius: 6px;
   background: #ffffff;
@@ -287,9 +286,74 @@ label {
   font-size: 0.78rem;
 }
 
+.imap-source-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.imap-source-actions button,
 .imap-sync-button {
   min-height: 32px;
   padding: 0 9px;
+}
+
+.imap-delete-button {
+  color: #7a2d2d;
+}
+
+.imap-folder-picker {
+  display: grid;
+  gap: 8px;
+  border: 1px solid #c9d8cd;
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 8px;
+}
+
+.imap-folder-picker-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.imap-folder-picker-header strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.imap-folder-list {
+  display: grid;
+  gap: 5px;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.imap-folder-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  font-size: 0.78rem;
+  font-weight: 500;
+}
+
+.imap-folder-option input {
+  width: 16px;
+  min-height: 16px;
+}
+
+.imap-folder-option span {
+  overflow: hidden;
+  color: #172026;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.imap-folder-option small {
+  color: #5d6a72;
 }
 
 .folder-list {

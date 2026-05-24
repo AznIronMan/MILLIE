@@ -15,6 +15,8 @@ from millie.importers import detect_format, import_path
 from millie.imap_connector import (
     IMAP_SOURCES_SETTING,
     ImapSourceConfig,
+    delete_imap_source,
+    discover_imap_folders,
     get_imap_source,
     load_imap_sources,
     migrate_imap_source_secrets,
@@ -423,6 +425,30 @@ class CoreImportExportTests(unittest.TestCase):
             self.assertEqual(len(db.list_messages()), 3)
             self.assertEqual(db.get_source_sync_state(first.source_id, "folder:INBOX")["last_uid"], 3)
 
+    def test_imap_folder_discovery_parses_selectable_folders(self) -> None:
+        config = ImapSourceConfig(
+            id="unit-imap",
+            name="Unit IMAP",
+            host="imap.example.test",
+            port=993,
+            username="user@example.test",
+            password="secret",
+            use_tls=True,
+            folders=["INBOX"],
+            sync_limit=50,
+        )
+
+        folders = discover_imap_folders(config, lambda _: FakeImapClient({"INBOX": {}}))
+
+        names = [folder.name for folder in folders]
+        self.assertIn("INBOX", names)
+        self.assertIn("Sent Items", names)
+        self.assertIn("Archive/2024", names)
+        noselect = next(folder for folder in folders if folder.name == "[Gmail]")
+        self.assertFalse(noselect.selectable)
+        sent = next(folder for folder in folders if folder.name == "Sent Items")
+        self.assertEqual(sent.delimiter, "/")
+
     def test_imap_source_password_uses_secret_reference(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -457,6 +483,10 @@ class CoreImportExportTests(unittest.TestCase):
 
             resolved = get_imap_source(manager, source.id, secrets)
             self.assertEqual(resolved.password, "super-secret")
+
+            self.assertTrue(delete_imap_source(manager, source.id, secrets))
+            self.assertEqual(load_imap_sources(manager), [])
+            self.assertIsNone(secrets.read_secret(source.auth_ref))
 
     def test_legacy_imap_password_migrates_to_secret_reference(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -579,6 +609,15 @@ class FakeImapClient:
         if user and password:
             return "OK", [b"logged in"]
         return "NO", [b"missing credentials"]
+
+    def list(self, directory: str = "", pattern: str = "*") -> tuple[str, list[bytes]]:
+        del directory, pattern
+        return "OK", [
+            b'(\\HasNoChildren) "/" "INBOX"',
+            b'(\\HasNoChildren \\Sent) "/" "Sent Items"',
+            b'(\\HasNoChildren) "/" "Archive/2024"',
+            b'(\\Noselect \\HasChildren) "/" "[Gmail]"',
+        ]
 
     def select(self, mailbox_name: str = "INBOX", readonly: bool = False) -> tuple[str, list[bytes]]:
         del readonly

@@ -10,6 +10,9 @@ from .doctor import run_doctor
 from .exporters import export_messages
 from .importers import import_path
 from .imap_connector import (
+    ImapSourceConfig,
+    delete_imap_source,
+    discover_imap_folders,
     get_imap_source,
     load_imap_sources,
     migrate_imap_source_secrets,
@@ -73,6 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     imap_add = subparsers.add_parser("imap-add", help="Save an IMAP source for the active profile")
     imap_add.add_argument("name", help="Source display name")
+    imap_add.add_argument("--id", dest="source_id", default=None, help="Existing source id to update")
     imap_add.add_argument("--host", required=True, help="IMAP server host")
     imap_add.add_argument("--port", type=int, default=None, help="IMAP server port, default 993 with TLS")
     imap_add.add_argument("--username", required=True, help="IMAP username")
@@ -83,6 +87,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     imap_sync = subparsers.add_parser("imap-sync", help="Run read-only sync for a saved IMAP source")
     imap_sync.add_argument("source_id", help="Saved IMAP source id")
+
+    imap_folders = subparsers.add_parser("imap-folders", help="Discover folders for a saved IMAP source")
+    imap_folders.add_argument("source_id", help="Saved IMAP source id")
+    imap_folders.add_argument("--json", action="store_true", help="Print discovered folders as JSON")
+
+    imap_set_folders = subparsers.add_parser("imap-set-folders", help="Set folders for a saved IMAP source")
+    imap_set_folders.add_argument("source_id", help="Saved IMAP source id")
+    imap_set_folders.add_argument("--folder", action="append", dest="folders", required=True, help="Folder to sync, repeatable")
+
+    imap_delete = subparsers.add_parser("imap-delete", help="Delete a saved IMAP source")
+    imap_delete.add_argument("source_id", help="Saved IMAP source id")
 
     subparsers.add_parser("secrets-status", help="Show the active secret backend")
     subparsers.add_parser("imap-migrate-secrets", help="Move legacy IMAP passwords out of source configs")
@@ -215,6 +230,7 @@ def main(argv: list[str] | None = None) -> int:
         source = save_imap_source(
             profile_manager,
             {
+                "id": args.source_id,
                 "name": args.name,
                 "host": args.host,
                 "port": args.port or (993 if use_tls else 143),
@@ -227,6 +243,36 @@ def main(argv: list[str] | None = None) -> int:
             secret_manager,
         )
         print(f"Saved IMAP source {source.id}: {source.name}")
+        return 0
+    if args.command == "imap-folders":
+        try:
+            source = get_imap_source(profile_manager, args.source_id, secret_manager)
+            folders = discover_imap_folders(source)
+        except Exception as exc:  # noqa: BLE001
+            print(f"IMAP folder discovery failed: {exc}")
+            return 1
+        if args.json:
+            print(json.dumps({"folders": [folder.to_api() for folder in folders]}, indent=2))
+        else:
+            for folder in folders:
+                marker = " " if folder.selectable else "-"
+                print(f"{marker} {folder.name} ({','.join(folder.flags) or 'no flags'})")
+        return 0
+    if args.command == "imap-set-folders":
+        try:
+            source = get_imap_source(profile_manager, args.source_id, secret_manager)
+            updated = save_imap_source(profile_manager, source_update_payload(source, args.folders), secret_manager)
+        except Exception as exc:  # noqa: BLE001
+            print(f"IMAP folder update failed: {exc}")
+            return 1
+        print(f"Updated IMAP source {updated.id}: folders={','.join(updated.folders)}")
+        return 0
+    if args.command == "imap-delete":
+        deleted = delete_imap_source(profile_manager, args.source_id, secret_manager)
+        if not deleted:
+            print(f"Unknown IMAP source: {args.source_id}")
+            return 1
+        print(f"Deleted IMAP source {args.source_id}")
         return 0
     if args.command == "imap-sync":
         try:
@@ -264,3 +310,17 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if result.errors == 0 else 1
     parser.error(f"Unknown command: {args.command}")
     return 2
+
+
+def source_update_payload(source: ImapSourceConfig, folders: list[str]) -> dict[str, object]:
+    return {
+        "id": source.id,
+        "name": source.name,
+        "host": source.host,
+        "port": source.port,
+        "username": source.username,
+        "use_tls": source.use_tls,
+        "folders": folders,
+        "sync_limit": source.sync_limit,
+        "auth_method": source.auth_method,
+    }

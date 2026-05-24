@@ -15,6 +15,8 @@ from millie.export_profiles import list_export_profiles
 from millie.exporters import export_messages
 from millie.importers import import_path
 from millie.imap_connector import (
+    delete_imap_source,
+    discover_imap_folders,
     get_imap_source,
     load_imap_sources,
     migrate_imap_source_secrets,
@@ -293,6 +295,23 @@ class MillieRequestHandler(BaseHTTPRequestHandler):
             elif path == "/api/v1/imap-sources/migrate-secrets":
                 migrated = migrate_imap_source_secrets(self.app.profile_manager, self.app.secret_manager)
                 self.write_json({"migrated": migrated})
+            elif path.startswith("/api/v1/imap-sources/") and path.endswith("/folders"):
+                source_id = unquote(path.split("/")[-2])
+                source = get_imap_source(self.app.profile_manager, source_id, self.app.secret_manager)
+                folders = discover_imap_folders(source)
+                self.write_json({"folders": [folder.to_api() for folder in folders]})
+            elif path.startswith("/api/v1/imap-sources/") and path.endswith("/delete"):
+                source_id = unquote(path.split("/")[-2])
+                deleted = delete_imap_source(self.app.profile_manager, source_id, self.app.secret_manager)
+                if not deleted:
+                    self.write_error(HTTPStatus.NOT_FOUND, "IMAP source not found")
+                    return
+                self.write_json(
+                    {
+                        "deleted": True,
+                        "sources": [item.to_api() for item in load_imap_sources(self.app.profile_manager)],
+                    }
+                )
             elif path.startswith("/api/v1/imap-sources/") and path.endswith("/sync"):
                 source_id = unquote(path.split("/")[-2])
                 source = get_imap_source(self.app.profile_manager, source_id, self.app.secret_manager)

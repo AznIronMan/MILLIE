@@ -18,6 +18,8 @@ IMAP_SOURCES_SETTING = "imap.sources.v1"
 class ImapClient(Protocol):
     def login(self, user: str, password: str) -> tuple[str, list[bytes]]: ...
 
+    def list(self, directory: str = "", pattern: str = "*") -> tuple[str, list[bytes]]: ...
+
     def select(self, mailbox: str = "INBOX", readonly: bool = False) -> tuple[str, list[bytes]]: ...
 
     def response(self, code: str) -> tuple[str, list[bytes | None]]: ...
@@ -62,6 +64,23 @@ class ImapSourceConfig:
     def source_uri(self) -> str:
         scheme = "imaps" if self.use_tls else "imap"
         return f"{scheme}://{self.username}@{self.host}:{self.port}"
+
+
+@dataclass(slots=True)
+class ImapFolder:
+    name: str
+    delimiter: str | None
+    flags: list[str]
+    selectable: bool
+
+    def to_api(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "delimiter": self.delimiter,
+            "flags": self.flags,
+            "selectable": self.selectable,
+            "role": folder_role(self.name),
+        }
 
 
 @dataclass(slots=True)
@@ -154,6 +173,30 @@ def get_imap_source(
             source.password = source.password or secret_manager.read_secret(source.auth_ref) or ""
             return source
     raise KeyError(f"Unknown IMAP source: {source_id}")
+
+
+def delete_imap_source(
+    profile_manager: ProfileManager,
+    source_id: str,
+    secret_manager: SecretManager | None = None,
+) -> bool:
+    secret_manager = secret_manager or SecretManager(profile_manager)
+    migrate_imap_source_secrets(profile_manager, secret_manager)
+    sources = load_imap_sources(profile_manager)
+    found = False
+    kept: list[ImapSourceConfig] = []
+    for source in sources:
+        if source.id == source_id:
+            found = True
+            secret_manager.delete_secret(source.auth_ref)
+        else:
+            kept.append(source)
+    if found:
+        profile_manager.set_profile_setting(
+            IMAP_SOURCES_SETTING,
+            json.dumps([source_to_settings(item) for item in kept], indent=2, sort_keys=True),
+        )
+    return found
 
 
 def migrate_imap_source_secrets(
@@ -355,6 +398,25 @@ def sync_imap_source(
     return ImapSyncResult(job_id, source_id, processed, imported, duplicates, errors, synced_folders)
 
 
+def discover_imap_folders(
+    config: ImapSourceConfig,
+    imap_factory: Any | None = None,
+) -> list[ImapFolder]:
+    if not config.password:
+        raise ValueError("IMAP password/app password is not configured")
+    client: ImapClient | None = None
+    try:
+        client = imap_factory(config) if imap_factory else open_imap_client(config)
+        login_status, _ = client.login(config.username, config.password)
+        ensure_ok(login_status, "IMAP login failed")
+        list_status, list_data = client.list("", "*")
+        ensure_ok(list_status, "Could not list IMAP folders")
+        folders = [folder for item in list_data if (folder := parse_list_response(item)) is not None]
+        return sorted(folders, key=lambda item: item.name.lower())
+    finally:
+        close_imap_client(client)
+
+
 def sync_imap_folder(
     db: MillieDatabase,
     client: ImapClient,
@@ -479,6 +541,27 @@ def read_uidvalidity(client: ImapClient) -> str | None:
     )
     match = re.search(rb"\d+", raw)
     return match.group(0).decode("ascii") if match else None
+
+
+def parse_list_response(item: bytes) -> ImapFolder | None:
+    text = item.decode("utf-8", errors="replace")
+    match = re.match(r"\((?P<flags>.*?)\)\s+(?P<delimiter>NIL|\"(?:\\.|[^\"])*\"|\S+)\s+(?P<name>.+)$", text)
+    if not match:
+        return None
+    flags = [flag.strip() for flag in match.group("flags").split() if flag.strip()]
+    delimiter = unquote_imap_atom(match.group("delimiter"))
+    name = unquote_imap_atom(match.group("name").strip())
+    selectable = "\\noselect" not in {flag.lower() for flag in flags}
+    return ImapFolder(name=name, delimiter=delimiter, flags=flags, selectable=selectable)
+
+
+def unquote_imap_atom(value: str) -> str | None:
+    if value.upper() == "NIL":
+        return None
+    raw = value.strip()
+    if len(raw) >= 2 and raw[0] == '"' and raw[-1] == '"':
+        return bytes(raw[1:-1], "utf-8").decode("unicode_escape")
+    return raw
 
 
 def extract_fetch_raw(data: list[object]) -> bytes:
