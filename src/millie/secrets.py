@@ -170,6 +170,24 @@ class SecretManager:
         )
         return self.preferred_store().put(key, value)
 
+    def store_graph_token_payload(self, source_id: str, value: str) -> str:
+        key = make_secret_key(
+            self.profile_manager.active_profile_id,
+            "graph",
+            source_id,
+            "token",
+        )
+        return self.preferred_store().put(key, value)
+
+    def store_graph_pending_auth(self, source_id: str, state: str, value: str) -> str:
+        key = make_secret_key(
+            self.profile_manager.active_profile_id,
+            "graph",
+            source_id,
+            f"pending/{state}",
+        )
+        return self.preferred_store().put(key, value)
+
     def read_secret(self, ref: str | None) -> str | None:
         if not ref:
             return None

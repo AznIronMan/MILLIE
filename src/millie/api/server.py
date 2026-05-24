@@ -14,6 +14,13 @@ from millie.config import AppConfig
 from millie.export_profiles import list_export_profiles
 from millie.exporters import export_messages
 from millie.importers import import_path
+from millie.graph_connector import (
+    create_graph_authorization_request,
+    delete_graph_source,
+    list_graph_provider_presets,
+    load_graph_sources,
+    save_graph_source,
+)
 from millie.imap_connector import (
     delete_imap_source,
     discover_imap_folders,
@@ -113,6 +120,12 @@ class MillieRequestHandler(BaseHTTPRequestHandler):
                 )
             elif path == "/api/v1/pop-providers":
                 self.write_json({"providers": [provider.to_api() for provider in list_pop_provider_presets()]})
+            elif path == "/api/v1/graph-sources":
+                self.write_json(
+                    {"sources": [source.to_api() for source in load_graph_sources(self.app.profile_manager)]}
+                )
+            elif path == "/api/v1/graph-providers":
+                self.write_json({"providers": [provider.to_api() for provider in list_graph_provider_presets()]})
             elif path == "/api/v1/mailboxes":
                 self.write_json({"mailboxes": self.app.db.list_mailboxes()})
             elif path == "/api/v1/migrations":
@@ -373,6 +386,35 @@ class MillieRequestHandler(BaseHTTPRequestHandler):
                 sync_limit = int(payload.get("sync_limit") or source.sync_limit)
                 result = sync_pop_source(self.app.db, source, sync_limit=sync_limit)
                 self.write_json({"sync": result.to_api()}, HTTPStatus.CREATED)
+            elif path == "/api/v1/graph-sources":
+                source = save_graph_source(self.app.profile_manager, payload)
+                self.write_json(
+                    {
+                        "source": source.to_api(),
+                        "sources": [item.to_api() for item in load_graph_sources(self.app.profile_manager)],
+                    },
+                    HTTPStatus.CREATED,
+                )
+            elif path.startswith("/api/v1/graph-sources/") and path.endswith("/auth-url"):
+                source_id = unquote(path.split("/")[-2])
+                auth_request = create_graph_authorization_request(
+                    self.app.profile_manager,
+                    source_id,
+                    self.app.secret_manager,
+                )
+                self.write_json({"auth": auth_request.to_api()})
+            elif path.startswith("/api/v1/graph-sources/") and path.endswith("/delete"):
+                source_id = unquote(path.split("/")[-2])
+                deleted = delete_graph_source(self.app.profile_manager, source_id, self.app.secret_manager)
+                if not deleted:
+                    self.write_error(HTTPStatus.NOT_FOUND, "Microsoft Graph source not found")
+                    return
+                self.write_json(
+                    {
+                        "deleted": True,
+                        "sources": [item.to_api() for item in load_graph_sources(self.app.profile_manager)],
+                    }
+                )
             elif path == "/api/v1/export":
                 output_path = Path(str(payload.get("outputPath") or payload.get("output_path") or "exports"))
                 message_ids = payload.get("messageIds") or payload.get("message_ids")

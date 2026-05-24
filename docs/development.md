@@ -145,6 +145,17 @@ PYTHONPATH=src python3 -m millie pop-sync test-pop --limit 5
 
 The POP connector is read-only and uses SSL by default. `pop-probe` checks login, message count, and `UIDL` without retrieving message bodies. `pop-sync` retrieves new UIDLs for import, but never issues `DELE`.
 
+## Microsoft Graph / Exchange
+
+```sh
+PYTHONPATH=src python3 -m millie graph-providers
+PYTHONPATH=src python3 -m millie graph-add "Work Microsoft 365" --client-id "<client-id>" --tenant-id common
+PYTHONPATH=src python3 -m millie graph-sources
+PYTHONPATH=src python3 -m millie graph-auth-url work-microsoft-365
+```
+
+The Graph connector is currently a source and OAuth skeleton. It can generate a PKCE authorization URL and store pending auth state in the configured secret backend, but it does not exchange tokens or sync mail yet.
+
 ## Search
 
 The web app search box and `/api/v1/search?q=...` use SQLite FTS5 over message subject, participants, and text body. Query text is normalized before it reaches FTS so searches with punctuation or email addresses are safe to run.

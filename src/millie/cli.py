@@ -8,6 +8,13 @@ from pathlib import Path
 from .config import AppConfig
 from .doctor import run_doctor
 from .exporters import export_messages
+from .graph_connector import (
+    create_graph_authorization_request,
+    delete_graph_source,
+    list_graph_provider_presets,
+    load_graph_sources,
+    save_graph_source,
+)
 from .importers import import_path
 from .imap_connector import (
     ImapSourceConfig,
@@ -131,6 +138,33 @@ def build_parser() -> argparse.ArgumentParser:
 
     pop_delete = subparsers.add_parser("pop-delete", help="Delete a saved POP source")
     pop_delete.add_argument("source_id", help="Saved POP source id")
+
+    graph_sources = subparsers.add_parser("graph-sources", help="List saved Microsoft Graph sources")
+    graph_sources.add_argument("--json", action="store_true", help="Print source configs as JSON")
+
+    graph_providers = subparsers.add_parser("graph-providers", help="List Microsoft Graph provider presets")
+    graph_providers.add_argument("--json", action="store_true", help="Print provider presets as JSON")
+
+    graph_add = subparsers.add_parser("graph-add", help="Save a Microsoft Graph source skeleton")
+    graph_add.add_argument("name", help="Source display name")
+    graph_add.add_argument("--id", dest="source_id", default=None, help="Existing source id to update")
+    graph_add.add_argument("--client-id", required=True, help="Microsoft Entra application client id")
+    graph_add.add_argument("--tenant-id", default="common", help="Tenant id, domain, common, organizations, or consumers")
+    graph_add.add_argument(
+        "--redirect-uri",
+        default="http://localhost:22013/api/v1/graph/oauth/callback",
+        help="Registered redirect URI",
+    )
+    graph_add.add_argument("--scope", action="append", dest="scopes", help="OAuth scope, repeatable")
+    graph_add.add_argument("--mailbox", default="me", help="Mailbox selector, default me")
+    graph_add.add_argument("--limit", type=int, default=100, help="Maximum messages per future sync")
+
+    graph_auth_url = subparsers.add_parser("graph-auth-url", help="Create a Microsoft Graph OAuth authorization URL")
+    graph_auth_url.add_argument("source_id", help="Saved Microsoft Graph source id")
+    graph_auth_url.add_argument("--json", action="store_true", help="Print authorization request as JSON")
+
+    graph_delete = subparsers.add_parser("graph-delete", help="Delete a saved Microsoft Graph source")
+    graph_delete.add_argument("source_id", help="Saved Microsoft Graph source id")
 
     subparsers.add_parser("secrets-status", help="Show the active secret backend")
     subparsers.add_parser("imap-migrate-secrets", help="Move legacy IMAP passwords out of source configs")
@@ -392,6 +426,67 @@ def main(argv: list[str] | None = None) -> int:
             f"errors={result.errors}"
         )
         return 0 if result.errors == 0 else 1
+    if args.command == "graph-providers":
+        providers = list_graph_provider_presets()
+        if args.json:
+            print(json.dumps({"providers": [provider.to_api() for provider in providers]}, indent=2))
+        else:
+            for provider in providers:
+                print(f"- {provider.id}: {provider.display_name} scopes={','.join(provider.default_scopes)}")
+        return 0
+    if args.command == "graph-sources":
+        sources = load_graph_sources(profile_manager)
+        if args.json:
+            print(json.dumps({"sources": [source.to_api() for source in sources]}, indent=2))
+        else:
+            if not sources:
+                print("No Microsoft Graph sources saved for the active profile.")
+            for source in sources:
+                token = "token ready" if source.token_ref else "no token"
+                print(
+                    f"- {source.id}: {source.name} "
+                    f"(client={source.client_id}, tenant={source.tenant_id}, {token})"
+                )
+        return 0
+    if args.command == "graph-add":
+        source = save_graph_source(
+            profile_manager,
+            {
+                "id": args.source_id,
+                "name": args.name,
+                "client_id": args.client_id,
+                "tenant_id": args.tenant_id,
+                "redirect_uri": args.redirect_uri,
+                "scopes": args.scopes,
+                "mailbox": args.mailbox,
+                "sync_limit": args.limit,
+            },
+        )
+        print(f"Saved Microsoft Graph source {source.id}: {source.name}")
+        return 0
+    if args.command == "graph-auth-url":
+        try:
+            auth_request = create_graph_authorization_request(
+                profile_manager,
+                args.source_id,
+                secret_manager,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"Microsoft Graph auth URL failed: {exc}")
+            return 1
+        if args.json:
+            print(json.dumps({"auth": auth_request.to_api()}, indent=2))
+        else:
+            print(auth_request.authorization_url)
+            print("PKCE verifier was stored in the configured secret backend.")
+        return 0
+    if args.command == "graph-delete":
+        deleted = delete_graph_source(profile_manager, args.source_id, secret_manager)
+        if not deleted:
+            print(f"Unknown Microsoft Graph source: {args.source_id}")
+            return 1
+        print(f"Deleted Microsoft Graph source {args.source_id}")
+        return 0
     if args.command == "secrets-status":
         print(json.dumps(secret_manager.status(), indent=2))
         return 0

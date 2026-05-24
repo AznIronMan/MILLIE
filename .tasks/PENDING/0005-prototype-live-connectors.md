@@ -22,8 +22,9 @@ Add initial live mail import/sync support.
 - Saved IMAP sources can discover folders, apply selected folder lists, sync, and be deleted through CLI, API, and web controls.
 - IMAP hardening now includes generic/Gmail provider presets, Gmail host normalization, one-off selected-folder sync, and capture of IMAP flags/internal dates.
 - Initial read-only POP3 support exists with safe probes, secret-backed source configs, UIDL incremental sync, CLI/API/web controls, and no server delete path.
+- Microsoft Graph / Exchange is selected as the modern Exchange path. A source config skeleton, provider metadata, PKCE authorization URL generation, secret-backed pending auth state, CLI/API endpoints, and design docs exist.
 
 ## Remaining
 
-- Select and prototype Microsoft Graph / Exchange connector path.
-- Add OAuth/provider credential flows and broader provider presets.
+- Add Microsoft Graph OAuth callback, token exchange, token refresh, mailbox probe, folder discovery, and delta sync.
+- Add broader provider presets and setup helper text.

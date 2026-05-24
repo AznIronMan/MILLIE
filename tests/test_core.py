@@ -11,6 +11,14 @@ from pathlib import Path
 from millie.auth import AuthManager, SESSION_COOKIE
 from millie.database import MillieDatabase
 from millie.exporters import export_messages
+from millie.graph_connector import (
+    GRAPH_SOURCES_SETTING,
+    create_graph_authorization_request,
+    delete_graph_source,
+    list_graph_provider_presets,
+    load_graph_sources,
+    save_graph_source,
+)
 from millie.importers import detect_format, import_path
 from millie.imap_connector import (
     IMAP_SOURCES_SETTING,
@@ -718,6 +726,76 @@ class CoreImportExportTests(unittest.TestCase):
             self.assertEqual(second.errors, 0)
             self.assertNotIn("DELE", second_client.commands)
             self.assertEqual(len(db.list_messages()), 3)
+
+    def test_graph_source_saves_config_without_token_secret(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = ProfileManager(
+                root / "millie.settings",
+                root / "profiles",
+                root / "default.sqlite",
+                root / "default-data",
+            )
+
+            source = save_graph_source(
+                manager,
+                {
+                    "name": "Graph Mail",
+                    "client_id": "client-id-123",
+                    "tenant_id": "common",
+                    "redirect_uri": "http://localhost:22013/api/v1/graph/oauth/callback",
+                    "scopes": ["openid", "offline_access", "User.Read", "Mail.Read", "Mail.Read"],
+                },
+            )
+
+            self.assertEqual(source.scopes, ["openid", "offline_access", "User.Read", "Mail.Read"])
+            raw_sources = manager.get_profile_setting(GRAPH_SOURCES_SETTING) or ""
+            self.assertIn("client-id-123", raw_sources)
+            self.assertNotIn("refresh_token", raw_sources)
+            self.assertFalse(load_graph_sources(manager)[0].to_api()["token_configured"])
+
+    def test_graph_auth_request_uses_pkce_and_secret_pending_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = ProfileManager(
+                root / "millie.settings",
+                root / "profiles",
+                root / "default.sqlite",
+                root / "default-data",
+            )
+            secrets = SecretManager(manager, "local")
+            source = save_graph_source(
+                manager,
+                {
+                    "name": "Graph Mail",
+                    "client_id": "client-id-123",
+                    "tenant_id": "common",
+                },
+            )
+
+            auth_request = create_graph_authorization_request(manager, source.id, secrets)
+
+            self.assertIn("https://login.microsoftonline.com/common/oauth2/v2.0/authorize", auth_request.authorization_url)
+            self.assertIn("response_type=code", auth_request.authorization_url)
+            self.assertIn("code_challenge_method=S256", auth_request.authorization_url)
+            self.assertIn("Mail.Read", auth_request.scopes)
+            updated = load_graph_sources(manager)[0]
+            self.assertTrue(updated.pending_auth_ref)
+            pending_payload = secrets.read_secret(updated.pending_auth_ref)
+            self.assertIsNotNone(pending_payload)
+            self.assertIn("code_verifier", pending_payload or "")
+            raw_sources = manager.get_profile_setting(GRAPH_SOURCES_SETTING) or ""
+            self.assertNotIn("code_verifier", raw_sources)
+            self.assertTrue(delete_graph_source(manager, source.id, secrets))
+            self.assertEqual(load_graph_sources(manager), [])
+            self.assertIsNone(secrets.read_secret(updated.pending_auth_ref))
+
+    def test_graph_provider_presets_include_read_only_scopes(self) -> None:
+        presets = {provider.id: provider for provider in list_graph_provider_presets()}
+
+        self.assertIn("microsoft-graph", presets)
+        self.assertIn("Mail.Read", presets["microsoft-graph"].default_scopes)
+        self.assertIn("offline_access", presets["microsoft-graph"].default_scopes)
 
     def test_auth_defaults_to_dev_bypass_and_supports_sessions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -98,6 +98,24 @@ POP source configs are stored per active profile. Saved configs store `auth_ref`
 
 `POST /api/v1/pop-sources/{id}/delete` removes the saved source and deletes its secret reference.
 
+## Microsoft Graph Sources
+
+- `GET /api/v1/graph-providers`
+- `GET /api/v1/graph-sources`
+- `POST /api/v1/graph-sources`
+- `POST /api/v1/graph-sources/{id}/auth-url`
+- `POST /api/v1/graph-sources/{id}/delete`
+
+Microsoft Graph source configs are stored per active profile. Source configs store client id, tenant id, redirect URI, scopes, mailbox selector, and secret references for future token payloads or pending PKCE auth state.
+
+`GET /api/v1/graph-providers` returns the Microsoft Graph provider preset and default read-only delegated scopes.
+
+`POST /api/v1/graph-sources` accepts `name`, `client_id`, `tenant_id`, `redirect_uri`, `scopes`, `mailbox`, and `sync_limit`.
+
+`POST /api/v1/graph-sources/{id}/auth-url` creates an OAuth authorization URL using authorization code flow with PKCE. MILLIE stores the PKCE code verifier in the configured secret backend and returns the authorization URL, state, scopes, and code challenge metadata.
+
+Token exchange and Graph mail sync are not implemented yet.
+
 ## Export Jobs
 
 - `GET /api/v1/export-profiles`
