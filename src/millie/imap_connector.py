@@ -4,6 +4,7 @@ import imaplib
 import json
 import re
 from dataclasses import dataclass
+from email.utils import parsedate_to_datetime
 from typing import Any, Protocol
 
 from .database import MillieDatabase
@@ -13,6 +14,49 @@ from .secrets import SecretManager, backend_from_ref
 
 
 IMAP_SOURCES_SETTING = "imap.sources.v1"
+
+
+@dataclass(frozen=True, slots=True)
+class ImapProviderPreset:
+    id: str
+    display_name: str
+    host: str
+    port: int
+    use_tls: bool
+    default_folders: tuple[str, ...]
+    host_aliases: tuple[str, ...] = ()
+
+    def to_api(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "display_name": self.display_name,
+            "host": self.host,
+            "port": self.port,
+            "use_tls": self.use_tls,
+            "default_folders": list(self.default_folders),
+            "host_aliases": list(self.host_aliases),
+        }
+
+
+IMAP_PROVIDER_PRESETS = {
+    "generic": ImapProviderPreset(
+        id="generic",
+        display_name="Generic IMAP",
+        host="",
+        port=993,
+        use_tls=True,
+        default_folders=("INBOX",),
+    ),
+    "gmail": ImapProviderPreset(
+        id="gmail",
+        display_name="Gmail / Google Workspace",
+        host="imap.gmail.com",
+        port=993,
+        use_tls=True,
+        default_folders=("INBOX",),
+        host_aliases=("imap.google.com",),
+    ),
+}
 
 
 class ImapClient(Protocol):
@@ -44,6 +88,7 @@ class ImapSourceConfig:
     sync_limit: int
     auth_ref: str | None = None
     auth_method: str = "password"
+    provider: str = "generic"
 
     def to_api(self) -> dict[str, Any]:
         secret_backend = backend_from_ref(self.auth_ref)
@@ -57,6 +102,7 @@ class ImapSourceConfig:
             "folders": self.folders,
             "sync_limit": self.sync_limit,
             "auth_method": self.auth_method,
+            "provider": self.provider,
             "password_configured": bool(self.password or self.auth_ref),
             "secret_backend": secret_backend or ("legacy-settings" if self.password else None),
         }
@@ -106,6 +152,12 @@ class ImapSyncResult:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class ImapFetchMetadata:
+    flags: list[str]
+    internal_date: str | None
+
+
 def load_imap_sources(profile_manager: ProfileManager) -> list[ImapSourceConfig]:
     payload = load_imap_source_payloads(profile_manager)
     sources: list[ImapSourceConfig] = []
@@ -115,6 +167,10 @@ def load_imap_sources(profile_manager: ProfileManager) -> list[ImapSourceConfig]
         except ValueError:
             continue
     return sources
+
+
+def list_imap_provider_presets() -> list[ImapProviderPreset]:
+    return list(IMAP_PROVIDER_PRESETS.values())
 
 
 def load_imap_source_payloads(profile_manager: ProfileManager) -> list[dict[str, object]]:
@@ -234,6 +290,8 @@ def config_from_dict(payload: dict[str, object]) -> ImapSourceConfig:
     name = str(payload.get("name") or "").strip()
     host = normalize_imap_host(str(payload.get("host") or "").strip())
     username = str(payload.get("username") or "").strip()
+    raw_provider = str(payload.get("provider") or "").strip().lower()
+    provider = normalize_imap_provider(raw_provider) if raw_provider and raw_provider != "generic" else detect_imap_provider(host)
     if not name:
         raise ValueError("IMAP source name is required")
     if not host:
@@ -241,13 +299,14 @@ def config_from_dict(payload: dict[str, object]) -> ImapSourceConfig:
     if not username:
         raise ValueError("IMAP username is required")
 
-    folders_raw = payload.get("folders") or ["INBOX"]
+    default_folders = list(default_folders_for_provider(provider))
+    folders_raw = payload.get("folders") or default_folders
     if isinstance(folders_raw, str):
         folders = [item.strip() for item in folders_raw.split(",") if item.strip()]
     elif isinstance(folders_raw, list):
         folders = [str(item).strip() for item in folders_raw if str(item).strip()]
     else:
-        folders = ["INBOX"]
+        folders = default_folders
 
     use_tls = payload.get("use_tls")
     if isinstance(use_tls, str):
@@ -271,10 +330,11 @@ def config_from_dict(payload: dict[str, object]) -> ImapSourceConfig:
         username=username,
         password=str(payload.get("password") or ""),
         use_tls=use_tls_value,
-        folders=folders or ["INBOX"],
+        folders=folders or default_folders,
         sync_limit=sync_limit,
         auth_ref=auth_ref,
         auth_method=auth_method,
+        provider=provider,
     )
 
 
@@ -290,6 +350,7 @@ def source_to_settings(config: ImapSourceConfig) -> dict[str, Any]:
         "folders": config.folders,
         "sync_limit": config.sync_limit,
         "auth_method": config.auth_method,
+        "provider": config.provider,
     }
 
 
@@ -309,19 +370,45 @@ def unique_slug(value: str) -> str:
 
 
 def normalize_imap_host(host: str) -> str:
-    if host.lower() == "imap.google.com":
-        return "imap.gmail.com"
+    lowered = host.lower()
+    for preset in IMAP_PROVIDER_PRESETS.values():
+        if lowered in {alias.lower() for alias in preset.host_aliases}:
+            return preset.host
     return host
+
+
+def normalize_imap_provider(provider: str) -> str:
+    lowered = provider.strip().lower()
+    return lowered if lowered in IMAP_PROVIDER_PRESETS else "generic"
+
+
+def detect_imap_provider(host: str) -> str:
+    lowered = host.strip().lower()
+    for preset in IMAP_PROVIDER_PRESETS.values():
+        candidates = {preset.host.lower(), *(alias.lower() for alias in preset.host_aliases)}
+        if lowered and lowered in candidates:
+            return preset.id
+    return "generic"
+
+
+def default_folders_for_provider(provider: str) -> tuple[str, ...]:
+    return IMAP_PROVIDER_PRESETS.get(provider, IMAP_PROVIDER_PRESETS["generic"]).default_folders
 
 
 def sync_imap_source(
     db: MillieDatabase,
     config: ImapSourceConfig,
     imap_factory: Any | None = None,
+    folders: list[str] | None = None,
+    sync_limit: int | None = None,
 ) -> ImapSyncResult:
     db.init()
     if not config.password:
         raise ValueError("IMAP password/app password is not configured")
+    sync_folders = [item.strip() for item in (folders or config.folders) if item.strip()]
+    if not sync_folders:
+        sync_folders = list(default_folders_for_provider(config.provider))
+    effective_limit = max(1, int(sync_limit or config.sync_limit))
     source_id = db.get_or_create_source("imap", config.name, config.source_uri())
     job_id = db.start_import_job(
         source_id,
@@ -331,9 +418,10 @@ def sync_imap_source(
             "host": config.host,
             "port": config.port,
             "use_tls": config.use_tls,
-            "folders": config.folders,
-            "sync_limit": config.sync_limit,
+            "folders": sync_folders,
+            "sync_limit": effective_limit,
             "username": config.username,
+            "provider": config.provider,
         },
     )
     processed = 0
@@ -349,8 +437,8 @@ def sync_imap_source(
         login_status, _ = client.login(config.username, config.password)
         ensure_ok(login_status, "IMAP login failed")
 
-        for folder in config.folders:
-            if attempted >= config.sync_limit:
+        for folder in sync_folders:
+            if attempted >= effective_limit:
                 break
             try:
                 synced = sync_imap_folder(
@@ -359,7 +447,7 @@ def sync_imap_source(
                     source_id,
                     job_id,
                     folder,
-                    config.sync_limit - attempted,
+                    effective_limit - attempted,
                 )
                 attempted += synced["attempted"]
                 processed += synced["processed"]
@@ -459,10 +547,13 @@ def sync_imap_folder(
         attempted += 1
         uid_int = int(uid)
         try:
-            fetch_status, fetch_data = client.uid("FETCH", uid, "(RFC822)")
+            fetch_status, fetch_data = client.uid("FETCH", uid, "(FLAGS INTERNALDATE RFC822)")
             ensure_ok(fetch_status, f"Could not fetch UID {uid} from {folder}")
             raw = extract_fetch_raw(fetch_data)
+            metadata = extract_fetch_metadata(fetch_data)
             parsed = parse_raw_message(db, raw)
+            if metadata.internal_date:
+                parsed["fields"]["internal_date"] = metadata.internal_date
             result = db.insert_message(
                 source_id=source_id,
                 mailbox_id=mailbox_id,
@@ -472,6 +563,7 @@ def sync_imap_folder(
                 addresses=parsed["addresses"],
                 attachments=parsed["attachments"],
                 participants_text=parsed["participants_text"],
+                flags=metadata.flags,
             )
             processed += 1
             if result.created:
@@ -583,6 +675,40 @@ def extract_fetch_raw(data: list[object]) -> bytes:
     if candidates:
         return max(candidates, key=len)
     raise ValueError("IMAP fetch did not include RFC822 message bytes")
+
+
+def extract_fetch_metadata(data: list[object]) -> ImapFetchMetadata:
+    metadata_parts: list[bytes] = []
+    for item in data:
+        if isinstance(item, tuple) and item and isinstance(item[0], bytes):
+            metadata_parts.append(item[0])
+        elif isinstance(item, bytes) and (b"FLAGS" in item.upper() or b"INTERNALDATE" in item.upper()):
+            metadata_parts.append(item)
+    raw = b" ".join(metadata_parts)
+    return ImapFetchMetadata(flags=parse_fetch_flags(raw), internal_date=parse_fetch_internal_date(raw))
+
+
+def parse_fetch_flags(raw: bytes) -> list[str]:
+    match = re.search(rb"FLAGS\s+\((?P<flags>.*?)\)", raw, flags=re.IGNORECASE)
+    if not match:
+        return []
+    seen: set[str] = set()
+    flags: list[str] = []
+    for value in match.group("flags").decode("utf-8", errors="replace").split():
+        if value and value not in seen:
+            flags.append(value)
+            seen.add(value)
+    return flags
+
+
+def parse_fetch_internal_date(raw: bytes) -> str | None:
+    match = re.search(rb'INTERNALDATE\s+"(?P<date>[^"]+)"', raw, flags=re.IGNORECASE)
+    if not match:
+        return None
+    try:
+        return parsedate_to_datetime(match.group("date").decode("ascii", errors="replace")).isoformat()
+    except (TypeError, ValueError, IndexError, OverflowError):
+        return None
 
 
 def quote_mailbox(folder: str) -> str:

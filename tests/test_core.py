@@ -20,6 +20,7 @@ from millie.imap_connector import (
     discover_imap_folders,
     folder_role,
     get_imap_source,
+    list_imap_provider_presets,
     load_imap_sources,
     migrate_imap_source_secrets,
     save_imap_source,
@@ -409,6 +410,10 @@ class CoreImportExportTests(unittest.TestCase):
             self.assertEqual(first.errors, 0)
             self.assertEqual(len(db.list_messages()), 2)
             self.assertEqual(db.list_migrations()[-1]["version"], 3)
+            detail = db.get_message(int(db.list_messages(query="IMAP One")[0]["id"]))
+            self.assertIsNotNone(detail)
+            self.assertEqual(detail["internal_date"], "2021-01-01T00:00:00+00:00")
+            self.assertEqual(json.loads(detail["mailboxes"][0]["flags_json"]), ["\\Seen", "\\Flagged"])
 
             state = db.get_source_sync_state(first.source_id, "folder:INBOX")
             self.assertEqual(state["uidvalidity"], "999")
@@ -426,6 +431,37 @@ class CoreImportExportTests(unittest.TestCase):
             self.assertEqual(second.errors, 0)
             self.assertEqual(len(db.list_messages()), 3)
             self.assertEqual(db.get_source_sync_state(first.source_id, "folder:INBOX")["last_uid"], 3)
+
+    def test_imap_sync_can_override_folders_for_one_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = MillieDatabase(root / "millie.sqlite", root / "data")
+            db.init()
+            messages = {
+                "INBOX": {
+                    "1": build_message("inbox@example.com", "Inbox Only", "Inbox body").as_bytes(),
+                },
+                "Archive": {
+                    "1": build_message("archive@example.com", "Archive Only", "Archive body").as_bytes(),
+                },
+            }
+            config = ImapSourceConfig(
+                id="unit-imap",
+                name="Unit IMAP",
+                host="imap.example.test",
+                port=993,
+                username="user@example.test",
+                password="secret",
+                use_tls=True,
+                folders=["INBOX"],
+                sync_limit=50,
+            )
+
+            result = sync_imap_source(db, config, lambda _: FakeImapClient(messages), folders=["Archive"])
+
+            self.assertEqual(result.folders, ["Archive"])
+            self.assertEqual(result.processed, 1)
+            self.assertEqual(db.list_messages()[0]["mailbox_path"], "Archive")
 
     def test_imap_folder_discovery_parses_selectable_folders(self) -> None:
         config = ImapSourceConfig(
@@ -465,6 +501,14 @@ class CoreImportExportTests(unittest.TestCase):
         )
 
         self.assertEqual(config.host, "imap.gmail.com")
+        self.assertEqual(config.provider, "gmail")
+
+    def test_imap_provider_presets_include_gmail_defaults(self) -> None:
+        presets = {provider.id: provider for provider in list_imap_provider_presets()}
+
+        self.assertIn("gmail", presets)
+        self.assertEqual(presets["gmail"].host, "imap.gmail.com")
+        self.assertEqual(presets["gmail"].default_folders, ("INBOX",))
 
     def test_gmail_special_folders_map_to_roles(self) -> None:
         self.assertEqual(folder_role("[Gmail]/All Mail"), "archive")
@@ -668,7 +712,15 @@ class FakeImapClient:
         if command.upper() == "FETCH":
             uid = str(args[0])
             raw = self.messages[self.selected][uid]
-            return "OK", [(f"{uid} (RFC822 {{{len(raw)}}}".encode("ascii"), raw)]
+            return "OK", [
+                (
+                    (
+                        f'{uid} (UID {uid} FLAGS (\\Seen \\Flagged) '
+                        f'INTERNALDATE "01-Jan-2021 00:00:00 +0000" RFC822 {{{len(raw)}}}'
+                    ).encode("ascii"),
+                    raw,
+                )
+            ]
         return "BAD", [b"unsupported command"]
 
     def close(self) -> tuple[str, list[bytes]]:

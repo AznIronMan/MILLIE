@@ -462,9 +462,14 @@ class MillieDatabase:
         addresses: list[dict[str, Any]],
         attachments: list[dict[str, Any]],
         participants_text: str,
+        flags: list[str] | None = None,
+        labels: list[str] | None = None,
+        seen_at_source: str | None = None,
     ) -> InsertMessageResult:
         now = utc_now()
         stable_id = fields["content_hash"]
+        flags_json = json.dumps(flags or [], sort_keys=True)
+        labels_json = json.dumps(labels or [], sort_keys=True)
         with self.connect() as conn:
             created = False
             existing = conn.execute(
@@ -473,6 +478,15 @@ class MillieDatabase:
             ).fetchone()
             if existing:
                 message_id = int(existing["id"])
+                if fields.get("internal_date"):
+                    conn.execute(
+                        """
+                        UPDATE messages
+                        SET internal_date = ?, updated_at = ?
+                        WHERE id = ? AND internal_date IS NULL
+                        """,
+                        (fields.get("internal_date"), now, message_id),
+                    )
             else:
                 created = True
                 cur = conn.execute(
@@ -571,9 +585,9 @@ class MillieDatabase:
                     """
                     INSERT INTO message_mailboxes
                         (message_id, mailbox_id, source_uid, flags_json, labels_json, seen_at_source)
-                    VALUES (?, ?, ?, '[]', '[]', ?)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     """,
-                    (message_id, mailbox_id, source_uid, now),
+                    (message_id, mailbox_id, source_uid, flags_json, labels_json, seen_at_source or now),
                 )
             return InsertMessageResult(message_id, created, mailbox_link_created)
 

@@ -10,9 +10,12 @@ Current IMAP support is intentionally narrow:
 - Secret references for stored credentials
 - TLS by default, with plain IMAP available for local/dev testing
 - One or more configured folders, defaulting to `INBOX`
+- Provider presets for generic IMAP and Gmail / Google Workspace
 - Folder discovery through IMAP `LIST`
 - Gmail-compatible folder discovery; `imap.google.com` is normalized to `imap.gmail.com`, and common `[Gmail]/...` folders map to roles
+- One-off selected-folder sync overrides from the API/web UI
 - Incremental sync using per-folder UID cursors
+- IMAP `FLAGS` and `INTERNALDATE` capture during message fetch
 - Raw RFC822 message preservation through the normal import pipeline
 - Existing dedupe, search, HTML sanitization, attachment capture, and export support after import
 
@@ -87,7 +90,9 @@ For Gmail or Google Workspace accounts, use `imap.gmail.com` on port `993` with 
 - `folders`
 - `sync_limit`
 
-`POST /api/v1/imap-sources/{id}/sync` runs a read-only sync immediately and creates an import job.
+`GET /api/v1/imap-providers` returns provider presets for the web UI and other clients.
+
+`POST /api/v1/imap-sources/{id}/sync` runs a read-only sync immediately and creates an import job. Optional `folders` and `sync_limit` values can override the saved config for a single run.
 
 `POST /api/v1/imap-sources/{id}/folders` logs in read-only and returns discovered folders with flags, delimiter, role, and selectability.
 
@@ -98,6 +103,5 @@ For Gmail or Google Workspace accounts, use `imap.gmail.com` on port `993` with 
 ## Follow-Up
 
 - Add OAuth/app-password setup flows.
-- Add provider presets for common IMAP hosts.
-- Capture IMAP flags and internal dates.
+- Add more provider presets for common IMAP hosts.
 - Add POP3 and Microsoft Graph/Exchange connectors.

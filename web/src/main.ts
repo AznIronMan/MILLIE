@@ -98,8 +98,19 @@ type ImapSource = {
   folders: string[];
   sync_limit: number;
   auth_method: string;
+  provider: string;
   password_configured: boolean;
   secret_backend: string | null;
+};
+
+type ImapProvider = {
+  id: string;
+  display_name: string;
+  host: string;
+  port: number;
+  use_tls: boolean;
+  default_folders: string[];
+  host_aliases: string[];
 };
 
 type ImapFolder = {
@@ -156,6 +167,7 @@ type MessageSummary = {
   subject: string | null;
   sent_at: string | null;
   received_at: string | null;
+  internal_date: string | null;
   created_at: string;
   body_text: string | null;
   source_name: string;
@@ -182,7 +194,14 @@ type MessageDetail = MessageSummary & {
     content_hash: string;
     is_inline: number;
   }>;
-  mailboxes: Array<{ id: number; path: string }>;
+  mailboxes: Array<{
+    id: number;
+    path: string;
+    display_name: string;
+    source_uid: string | null;
+    flags_json: string;
+    labels_json: string;
+  }>;
   headers: Array<{ name: string; value: string | null; ordinal: number }>;
 };
 
@@ -200,6 +219,7 @@ type State = {
   sourceScanPath: string;
   sourceScanType: string;
   sourceScanCandidates: SourceCandidate[];
+  imapProviders: ImapProvider[];
   imapSources: ImapSource[];
   imapDiscoveredSourceId: string | null;
   imapDiscoveredFolders: ImapFolder[];
@@ -230,6 +250,7 @@ const state: State = {
   sourceScanPath: "",
   sourceScanType: "thunderbird",
   sourceScanCandidates: [],
+  imapProviders: [],
   imapSources: [],
   imapDiscoveredSourceId: null,
   imapDiscoveredFolders: [],
@@ -373,6 +394,12 @@ function render(): void {
           </div>
           ${renderSourceCandidates()}
           <div class="panel-rule"></div>
+          <label>
+            IMAP provider
+            <select id="imap-provider">
+              ${renderImapProviderOptions()}
+            </select>
+          </label>
           <label>
             IMAP source
             <input id="imap-name" placeholder="Work mailbox" />
@@ -518,6 +545,33 @@ function candidateEstimate(candidate: SourceCandidate): string {
   return `${candidate.message_estimate} message(s)`;
 }
 
+function renderImapProviderOptions(): string {
+  const providers = state.imapProviders.length
+    ? state.imapProviders
+    : [
+        {
+          id: "generic",
+          display_name: "Generic IMAP",
+          host: "",
+          port: 993,
+          use_tls: true,
+          default_folders: ["INBOX"],
+          host_aliases: [],
+        },
+      ];
+  return providers
+    .map(
+      (provider) => `
+        <option value="${escapeHtml(provider.id)}">${escapeHtml(provider.display_name)}</option>
+      `,
+    )
+    .join("");
+}
+
+function imapProviderLabel(providerId: string): string {
+  return state.imapProviders.find((provider) => provider.id === providerId)?.display_name ?? providerId;
+}
+
 function renderImapSources(): string {
   if (!state.imapSources.length) return `<p class="muted compact-note">No saved IMAP sources.</p>`;
   return `
@@ -531,11 +585,12 @@ function renderImapSource(source: ImapSource): string {
   const security = source.use_tls ? "TLS" : "plain";
   const folders = source.folders.join(", ");
   const secret = source.secret_backend ?? "no secret";
+  const provider = imapProviderLabel(source.provider);
   return `
     <div class="imap-source-row">
       <div>
         <strong>${escapeHtml(source.name)}</strong>
-        <span>${escapeHtml(source.username)}@${escapeHtml(source.host)}:${source.port} · ${escapeHtml(security)}</span>
+        <span>${escapeHtml(source.username)}@${escapeHtml(source.host)}:${source.port} · ${escapeHtml(security)} · ${escapeHtml(provider)}</span>
         <small>${escapeHtml(folders)} · limit ${source.sync_limit} · ${escapeHtml(secret)}</small>
       </div>
       <div class="imap-source-actions">
@@ -556,7 +611,10 @@ function renderImapFolderPicker(): string {
     <div class="imap-folder-picker">
       <div class="imap-folder-picker-header">
         <strong>${escapeHtml(source?.name ?? "IMAP folders")}</strong>
-        <button id="imap-apply-folders-button">Use Selected</button>
+        <div class="inline-actions">
+          <button id="imap-sync-selected-folders-button">Sync Selected</button>
+          <button id="imap-apply-folders-button">Use Selected</button>
+        </div>
       </div>
       <div class="imap-folder-list">
         ${selectable
@@ -569,7 +627,7 @@ function renderImapFolderPicker(): string {
                   ${selected.has(folder.name) || (!selected.size && folder.name.toUpperCase() === "INBOX") ? "checked" : ""}
                 />
                 <span>${escapeHtml(folder.name)}</span>
-                <small>${escapeHtml(folder.role ?? (folder.flags.join(", ") || "folder"))}</small>
+                <small>${escapeHtml(imapFolderNote(folder))}</small>
               </label>
             `,
           )
@@ -577,6 +635,13 @@ function renderImapFolderPicker(): string {
       </div>
     </div>
   `;
+}
+
+function imapFolderNote(folder: ImapFolder): string {
+  if (folder.name.toLowerCase() === "[gmail]/all mail") {
+    return "archive · overlaps labels";
+  }
+  return folder.role ?? (folder.flags.join(", ") || "folder");
 }
 
 function renderAuthScreen(): void {
@@ -613,7 +678,7 @@ function renderMessageRow(message: MessageSummary): string {
   return `
     <button class="message-row ${active}" data-message-id="${message.id}">
       <span class="message-subject">${escapeHtml(message.subject || "(No subject)")}</span>
-      <span class="message-date">${escapeHtml(formatDate(message.sent_at || message.received_at || message.created_at))}</span>
+      <span class="message-date">${escapeHtml(formatDate(message.sent_at || message.received_at || message.internal_date || message.created_at))}</span>
       <span class="message-meta">${escapeHtml(message.source_name)} / ${escapeHtml(message.mailbox_path || "Imported")}</span>
       <span class="message-snippet">${escapeHtml(snippet(message.body_text))}</span>
     </button>
@@ -625,12 +690,14 @@ function renderDetail(detail: MessageDetail): string {
     <article class="message-detail">
       <header>
         <h2>${escapeHtml(detail.subject || "(No subject)")}</h2>
-        <p>${escapeHtml(formatDate(detail.sent_at || detail.received_at || detail.created_at))}</p>
+        <p>${escapeHtml(formatDate(detail.sent_at || detail.received_at || detail.internal_date || detail.created_at))}</p>
       </header>
       <dl class="metadata">
         <div><dt>From</dt><dd>${escapeHtml(roleLine(detail, "from"))}</dd></div>
         <div><dt>To</dt><dd>${escapeHtml(roleLine(detail, "to"))}</dd></div>
         <div><dt>Source</dt><dd>${escapeHtml(detail.source_name)}</dd></div>
+        <div><dt>Internal</dt><dd>${escapeHtml(formatDate(detail.internal_date))}</dd></div>
+        <div><dt>Flags</dt><dd>${escapeHtml(messageFlagLine(detail))}</dd></div>
         <div><dt>Message-ID</dt><dd>${escapeHtml(detail.internet_message_id || "")}</dd></div>
       </dl>
       ${
@@ -650,6 +717,25 @@ function renderDetail(detail: MessageDetail): string {
       ${renderMessageBody(detail)}
     </article>
   `;
+}
+
+function messageFlagLine(detail: MessageDetail): string {
+  const flags = new Set<string>();
+  for (const mailbox of detail.mailboxes) {
+    for (const flag of parseJsonList(mailbox.flags_json)) {
+      flags.add(flag);
+    }
+  }
+  return Array.from(flags).join(", ");
+}
+
+function parseJsonList(value: string): string[] {
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch {
+    return [];
+  }
 }
 
 function renderMessageBody(detail: MessageDetail): string {
@@ -841,7 +927,9 @@ function bindEvents(): void {
     });
   });
   document.querySelector<HTMLButtonElement>("#imap-save-button")?.addEventListener("click", saveImapSource);
+  document.querySelector<HTMLSelectElement>("#imap-provider")?.addEventListener("change", applyImapProviderPreset);
   document.querySelector<HTMLButtonElement>("#imap-apply-folders-button")?.addEventListener("click", applyDiscoveredImapFolders);
+  document.querySelector<HTMLButtonElement>("#imap-sync-selected-folders-button")?.addEventListener("click", syncSelectedImapFolders);
   document.querySelectorAll<HTMLButtonElement>(".imap-discover-button").forEach((button) => {
     button.addEventListener("click", async () => {
       await discoverImapFolders(button.dataset.imapSourceId ?? "");
@@ -909,6 +997,7 @@ async function loadInitial(): Promise<void> {
     await loadProfiles();
     await loadMigrations();
     await loadExportProfiles();
+    await loadImapProviders();
     await loadImapSources();
     await loadJobs();
     await loadMailboxes();
@@ -950,6 +1039,11 @@ async function loadExportProfiles(): Promise<void> {
   if (!state.exportProfiles.some((profile) => profile.id === state.selectedExportProfileId)) {
     state.selectedExportProfileId = state.exportProfiles[0]?.id ?? "generic-eml";
   }
+}
+
+async function loadImapProviders(): Promise<void> {
+  const payload = await api<{ providers: ImapProvider[] }>("/api/v1/imap-providers");
+  state.imapProviders = payload.providers;
 }
 
 async function loadImapSources(): Promise<void> {
@@ -1080,8 +1174,30 @@ async function importSourceCandidate(candidateId: string): Promise<void> {
   }
 }
 
+function applyImapProviderPreset(event: Event): void {
+  const providerId = (event.currentTarget as HTMLSelectElement).value;
+  const provider = state.imapProviders.find((item) => item.id === providerId);
+  if (!provider || provider.id === "generic") return;
+
+  const hostInput = document.querySelector<HTMLInputElement>("#imap-host");
+  const portInput = document.querySelector<HTMLInputElement>("#imap-port");
+  const folderInput = document.querySelector<HTMLInputElement>("#imap-folder");
+  const securitySelect = document.querySelector<HTMLSelectElement>("#imap-security");
+  const nameInput = document.querySelector<HTMLInputElement>("#imap-name");
+  const usernameInput = document.querySelector<HTMLInputElement>("#imap-username");
+
+  if (hostInput && !hostInput.value.trim()) hostInput.value = provider.host;
+  if (portInput && !portInput.value.trim()) portInput.value = String(provider.port);
+  if (folderInput && !folderInput.value.trim()) folderInput.value = provider.default_folders.join(", ");
+  if (securitySelect) securitySelect.value = provider.use_tls ? "tls" : "plain";
+  if (nameInput && !nameInput.value.trim() && usernameInput?.value.trim()) {
+    nameInput.value = usernameInput.value.trim();
+  }
+}
+
 async function saveImapSource(): Promise<void> {
   const name = document.querySelector<HTMLInputElement>("#imap-name")?.value.trim() ?? "";
+  const provider = document.querySelector<HTMLSelectElement>("#imap-provider")?.value ?? "generic";
   const host = document.querySelector<HTMLInputElement>("#imap-host")?.value.trim() ?? "";
   const username = document.querySelector<HTMLInputElement>("#imap-username")?.value.trim() ?? "";
   const password = document.querySelector<HTMLInputElement>("#imap-password")?.value ?? "";
@@ -1104,6 +1220,7 @@ async function saveImapSource(): Promise<void> {
       method: "POST",
       body: JSON.stringify({
         name,
+        provider,
         host,
         username,
         password,
@@ -1156,9 +1273,7 @@ async function applyDiscoveredImapFolders(): Promise<void> {
     render();
     return;
   }
-  const folders = Array.from(document.querySelectorAll<HTMLInputElement>(".imap-folder-option input:checked"))
-    .map((input) => input.value)
-    .filter(Boolean);
+  const folders = selectedDiscoveredImapFolders();
   if (!folders.length) {
     state.status = "Select at least one IMAP folder.";
     render();
@@ -1179,6 +1294,7 @@ async function applyDiscoveredImapFolders(): Promise<void> {
         folders,
         sync_limit: source.sync_limit,
         auth_method: source.auth_method,
+        provider: source.provider,
       }),
     });
     state.imapSources = payload.sources;
@@ -1188,6 +1304,28 @@ async function applyDiscoveredImapFolders(): Promise<void> {
     state.status = error instanceof Error ? error.message : String(error);
     render();
   }
+}
+
+async function syncSelectedImapFolders(): Promise<void> {
+  const sourceId = state.imapDiscoveredSourceId;
+  if (!sourceId) {
+    state.status = "Discover folders before syncing a selected folder list.";
+    render();
+    return;
+  }
+  const folders = selectedDiscoveredImapFolders();
+  if (!folders.length) {
+    state.status = "Select at least one IMAP folder.";
+    render();
+    return;
+  }
+  await syncImapSource(sourceId, folders);
+}
+
+function selectedDiscoveredImapFolders(): string[] {
+  return Array.from(document.querySelectorAll<HTMLInputElement>(".imap-folder-option input:checked"))
+    .map((input) => input.value)
+    .filter(Boolean);
 }
 
 async function deleteImapSource(sourceId: string): Promise<void> {
@@ -1217,19 +1355,20 @@ async function deleteImapSource(sourceId: string): Promise<void> {
   }
 }
 
-async function syncImapSource(sourceId: string): Promise<void> {
+async function syncImapSource(sourceId: string, folders?: string[]): Promise<void> {
   const source = state.imapSources.find((item) => item.id === sourceId);
   if (!source) {
     state.status = "IMAP source is no longer available.";
     render();
     return;
   }
-  state.status = `Syncing ${source.name}...`;
+  const folderList = folders && folders.length ? folders : source.folders;
+  state.status = `Syncing ${source.name} (${folderList.join(", ")})...`;
   render();
   try {
     const payload = await api<{ sync: ImapSyncResult }>(`/api/v1/imap-sources/${encodeURIComponent(sourceId)}/sync`, {
       method: "POST",
-      body: JSON.stringify({}),
+      body: JSON.stringify({ folders }),
     });
     await loadMailboxes();
     await loadJobs();
@@ -1309,6 +1448,7 @@ async function refreshActiveProfileData(): Promise<void> {
   await loadProfiles();
   await loadMigrations();
   await loadExportProfiles();
+  await loadImapProviders();
   await loadImapSources();
   await loadJobs();
   await loadMailboxes();

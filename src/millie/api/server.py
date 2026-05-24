@@ -18,6 +18,7 @@ from millie.imap_connector import (
     delete_imap_source,
     discover_imap_folders,
     get_imap_source,
+    list_imap_provider_presets,
     load_imap_sources,
     migrate_imap_source_secrets,
     save_imap_source,
@@ -94,6 +95,8 @@ class MillieRequestHandler(BaseHTTPRequestHandler):
                 self.write_json(
                     {"sources": [source.to_api() for source in load_imap_sources(self.app.profile_manager)]}
                 )
+            elif path == "/api/v1/imap-providers":
+                self.write_json({"providers": [provider.to_api() for provider in list_imap_provider_presets()]})
             elif path == "/api/v1/mailboxes":
                 self.write_json({"mailboxes": self.app.db.list_mailboxes()})
             elif path == "/api/v1/migrations":
@@ -315,7 +318,9 @@ class MillieRequestHandler(BaseHTTPRequestHandler):
             elif path.startswith("/api/v1/imap-sources/") and path.endswith("/sync"):
                 source_id = unquote(path.split("/")[-2])
                 source = get_imap_source(self.app.profile_manager, source_id, self.app.secret_manager)
-                result = sync_imap_source(self.app.db, source)
+                folders = parse_string_list(payload.get("folders"))
+                sync_limit = int(payload.get("sync_limit") or source.sync_limit)
+                result = sync_imap_source(self.app.db, source, folders=folders, sync_limit=sync_limit)
                 self.write_json({"sync": result.to_api()}, HTTPStatus.CREATED)
             elif path == "/api/v1/export":
                 output_path = Path(str(payload.get("outputPath") or payload.get("output_path") or "exports"))
@@ -465,3 +470,15 @@ def content_disposition(filename: str) -> str:
     ascii_name = filename.encode("ascii", errors="ignore").decode("ascii") or "attachment"
     quoted_name = ascii_name.replace("\\", "_").replace('"', "_")
     return f'attachment; filename="{quoted_name}"; filename*=UTF-8\'\'{quote(filename)}'
+
+
+def parse_string_list(value: object) -> list[str] | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        items = [item.strip() for item in value.split(",")]
+    elif isinstance(value, list):
+        items = [str(item).strip() for item in value]
+    else:
+        return None
+    return [item for item in items if item]

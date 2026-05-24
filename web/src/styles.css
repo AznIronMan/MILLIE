@@ -173,6 +173,12 @@ label {
   gap: 8px;
 }
 
+.inline-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
 .panel-rule {
   height: 1px;
   margin: 2px 0;

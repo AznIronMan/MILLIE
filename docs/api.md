@@ -53,6 +53,7 @@ Import responses and job rows distinguish:
 ## IMAP Sources
 
 - `GET /api/v1/imap-sources`
+- `GET /api/v1/imap-providers`
 - `POST /api/v1/imap-sources`
 - `POST /api/v1/imap-sources/{id}/folders`
 - `POST /api/v1/imap-sources/{id}/sync`
@@ -63,11 +64,13 @@ IMAP source configs are stored per active profile. Saved configs store `auth_ref
 
 `GET /api/v1/imap-sources` returns saved sources with the password redacted, `password_configured` set to `true` or `false`, and `secret_backend` showing where the secret reference resolves.
 
-`POST /api/v1/imap-sources` accepts `name`, `host`, `port`, `username`, `password`, `use_tls`, `folders`, and `sync_limit`. `folders` can be a string or list. TLS defaults to on.
+`GET /api/v1/imap-providers` returns provider presets such as generic IMAP and Gmail / Google Workspace. Presets include host, port, TLS, default folders, and host aliases.
+
+`POST /api/v1/imap-sources` accepts `name`, `provider`, `host`, `port`, `username`, `password`, `use_tls`, `folders`, and `sync_limit`. `folders` can be a string or list. TLS defaults to on.
 
 `POST /api/v1/imap-sources/{id}/folders` returns selectable and non-selectable folders discovered from the remote account using IMAP `LIST`.
 
-`POST /api/v1/imap-sources/{id}/sync` performs a read-only sync. It imports newly discovered UIDs through the same raw-MIME pipeline as file imports, creates an import job, and returns processed/new/duplicate/error counts.
+`POST /api/v1/imap-sources/{id}/sync` performs a read-only sync. It accepts optional `folders` and `sync_limit` overrides for a one-off run. It imports newly discovered UIDs through the same raw-MIME pipeline as file imports, captures IMAP flags/internal dates when the server provides them, creates an import job, and returns processed/new/duplicate/error counts.
 
 `POST /api/v1/imap-sources/{id}/delete` removes the saved source and deletes its secret reference.
 
