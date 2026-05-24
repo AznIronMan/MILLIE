@@ -15,8 +15,10 @@ from millie.importers import detect_format, import_path
 from millie.imap_connector import (
     IMAP_SOURCES_SETTING,
     ImapSourceConfig,
+    config_from_dict,
     delete_imap_source,
     discover_imap_folders,
+    folder_role,
     get_imap_source,
     load_imap_sources,
     migrate_imap_source_secrets,
@@ -438,9 +440,12 @@ class CoreImportExportTests(unittest.TestCase):
             sync_limit=50,
         )
 
-        folders = discover_imap_folders(config, lambda _: FakeImapClient({"INBOX": {}}))
+        client = FakeImapClient({"INBOX": {}})
+
+        folders = discover_imap_folders(config, lambda _: client)
 
         names = [folder.name for folder in folders]
+        self.assertEqual(client.list_calls, [('""', "*")])
         self.assertIn("INBOX", names)
         self.assertIn("Sent Items", names)
         self.assertIn("Archive/2024", names)
@@ -448,6 +453,23 @@ class CoreImportExportTests(unittest.TestCase):
         self.assertFalse(noselect.selectable)
         sent = next(folder for folder in folders if folder.name == "Sent Items")
         self.assertEqual(sent.delimiter, "/")
+
+    def test_imap_config_normalizes_common_gmail_host(self) -> None:
+        config = config_from_dict(
+            {
+                "name": "Gmail",
+                "host": "imap.google.com",
+                "username": "user@example.test",
+                "password": "secret",
+            }
+        )
+
+        self.assertEqual(config.host, "imap.gmail.com")
+
+    def test_gmail_special_folders_map_to_roles(self) -> None:
+        self.assertEqual(folder_role("[Gmail]/All Mail"), "archive")
+        self.assertEqual(folder_role("[Gmail]/Sent Mail"), "sent")
+        self.assertEqual(folder_role("[Gmail]/Spam"), "junk")
 
     def test_imap_source_password_uses_secret_reference(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -604,14 +626,15 @@ class FakeImapClient:
     def __init__(self, messages: dict[str, dict[str, bytes]]):
         self.messages = messages
         self.selected = "INBOX"
+        self.list_calls: list[tuple[str, str]] = []
 
     def login(self, user: str, password: str) -> tuple[str, list[bytes]]:
         if user and password:
             return "OK", [b"logged in"]
         return "NO", [b"missing credentials"]
 
-    def list(self, directory: str = "", pattern: str = "*") -> tuple[str, list[bytes]]:
-        del directory, pattern
+    def list(self, directory: str = '""', pattern: str = "*") -> tuple[str, list[bytes]]:
+        self.list_calls.append((directory, pattern))
         return "OK", [
             b'(\\HasNoChildren) "/" "INBOX"',
             b'(\\HasNoChildren \\Sent) "/" "Sent Items"',

@@ -11,6 +11,7 @@ Current IMAP support is intentionally narrow:
 - TLS by default, with plain IMAP available for local/dev testing
 - One or more configured folders, defaulting to `INBOX`
 - Folder discovery through IMAP `LIST`
+- Gmail-compatible folder discovery; `imap.google.com` is normalized to `imap.gmail.com`, and common `[Gmail]/...` folders map to roles
 - Incremental sync using per-folder UID cursors
 - Raw RFC822 message preservation through the normal import pipeline
 - Existing dedupe, search, HTML sanitization, attachment capture, and export support after import
@@ -58,6 +59,8 @@ PYTHONPATH=src python3 -m millie imap-sync work-mail
 ```
 
 Use `--no-tls` only for trusted local/dev servers.
+
+For Gmail or Google Workspace accounts, use `imap.gmail.com` on port `993` with TLS. If `imap.google.com` is entered, MILLIE normalizes it to `imap.gmail.com`.
 
 `imap-migrate-secrets` moves any legacy raw IMAP passwords from `imap.sources.v1` into the configured secret backend.
 

@@ -18,7 +18,7 @@ IMAP_SOURCES_SETTING = "imap.sources.v1"
 class ImapClient(Protocol):
     def login(self, user: str, password: str) -> tuple[str, list[bytes]]: ...
 
-    def list(self, directory: str = "", pattern: str = "*") -> tuple[str, list[bytes]]: ...
+    def list(self, directory: str = '""', pattern: str = "*") -> tuple[str, list[bytes]]: ...
 
     def select(self, mailbox: str = "INBOX", readonly: bool = False) -> tuple[str, list[bytes]]: ...
 
@@ -232,7 +232,7 @@ def migrate_imap_source_secrets(
 
 def config_from_dict(payload: dict[str, object]) -> ImapSourceConfig:
     name = str(payload.get("name") or "").strip()
-    host = str(payload.get("host") or "").strip()
+    host = normalize_imap_host(str(payload.get("host") or "").strip())
     username = str(payload.get("username") or "").strip()
     if not name:
         raise ValueError("IMAP source name is required")
@@ -306,6 +306,12 @@ def unique_imap_source_id(value: str, existing_sources: list[ImapSourceConfig]) 
 
 def unique_slug(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-") or "imap"
+
+
+def normalize_imap_host(host: str) -> str:
+    if host.lower() == "imap.google.com":
+        return "imap.gmail.com"
+    return host
 
 
 def sync_imap_source(
@@ -409,7 +415,7 @@ def discover_imap_folders(
         client = imap_factory(config) if imap_factory else open_imap_client(config)
         login_status, _ = client.login(config.username, config.password)
         ensure_ok(login_status, "IMAP login failed")
-        list_status, list_data = client.list("", "*")
+        list_status, list_data = client.list('""', "*")
         ensure_ok(list_status, "Could not list IMAP folders")
         folders = [folder for item in list_data if (folder := parse_list_response(item)) is not None]
         return sorted(folders, key=lambda item: item.name.lower())
@@ -588,6 +594,8 @@ def quote_mailbox(folder: str) -> str:
 
 def folder_role(folder: str) -> str | None:
     normalized = folder.strip().lower().replace("\\", "/")
+    if normalized.startswith("[gmail]/"):
+        normalized = normalized.split("/", 1)[1]
     if normalized in {"inbox"}:
         return "inbox"
     if normalized in {"sent", "sent mail", "sent items"}:
@@ -600,6 +608,10 @@ def folder_role(folder: str) -> str | None:
         return "junk"
     if normalized in {"archive", "all mail"}:
         return "archive"
+    if normalized in {"important"}:
+        return "important"
+    if normalized in {"starred"}:
+        return "starred"
     return None
 
 

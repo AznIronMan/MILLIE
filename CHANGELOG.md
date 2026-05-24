@@ -24,6 +24,7 @@ The project uses semantic versioning in `major.minor.patch` format.
 - Added an initial read-only IMAP sync connector with profile-stored source configs, per-folder UID cursors, CLI/API endpoints, web controls, and tests.
 - Added connector credential secret references, macOS Keychain support, a local development secret fallback, and legacy IMAP password migration.
 - Added IMAP folder discovery and saved-source management through CLI, API, and web controls.
+- Fixed Gmail IMAP folder discovery, normalized the common `imap.google.com` host typo to `imap.gmail.com`, and mapped Gmail special folders to roles.
 
 ## [0.1.0] - 2026-05-23
 
