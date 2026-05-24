@@ -6,7 +6,7 @@ import re
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from millie import __version__
 from millie.auth import AuthManager, expired_session_cookie, session_cookie
@@ -14,6 +14,12 @@ from millie.config import AppConfig
 from millie.export_profiles import list_export_profiles
 from millie.exporters import export_messages
 from millie.importers import import_path
+from millie.imap_connector import (
+    get_imap_source,
+    load_imap_sources,
+    save_imap_source,
+    sync_imap_source,
+)
 from millie.profiles import ProfileManager
 from millie.source_scanners import scan_source
 
@@ -79,6 +85,10 @@ class MillieRequestHandler(BaseHTTPRequestHandler):
                 )
             elif path == "/api/v1/sources":
                 self.write_json({"sources": self.app.db.list_sources()})
+            elif path == "/api/v1/imap-sources":
+                self.write_json(
+                    {"sources": [source.to_api() for source in load_imap_sources(self.app.profile_manager)]}
+                )
             elif path == "/api/v1/mailboxes":
                 self.write_json({"mailboxes": self.app.db.list_mailboxes()})
             elif path == "/api/v1/migrations":
@@ -268,6 +278,20 @@ class MillieRequestHandler(BaseHTTPRequestHandler):
                     },
                     HTTPStatus.CREATED,
                 )
+            elif path == "/api/v1/imap-sources":
+                source = save_imap_source(self.app.profile_manager, payload)
+                self.write_json(
+                    {
+                        "source": source.to_api(),
+                        "sources": [item.to_api() for item in load_imap_sources(self.app.profile_manager)],
+                    },
+                    HTTPStatus.CREATED,
+                )
+            elif path.startswith("/api/v1/imap-sources/") and path.endswith("/sync"):
+                source_id = unquote(path.split("/")[-2])
+                source = get_imap_source(self.app.profile_manager, source_id)
+                result = sync_imap_source(self.app.db, source)
+                self.write_json({"sync": result.to_api()}, HTTPStatus.CREATED)
             elif path == "/api/v1/export":
                 output_path = Path(str(payload.get("outputPath") or payload.get("output_path") or "exports"))
                 message_ids = payload.get("messageIds") or payload.get("message_ids")

@@ -238,6 +238,60 @@ label {
   background: #f4ebe1;
 }
 
+.compact-note {
+  margin: 0;
+}
+
+.imap-options {
+  display: grid;
+  grid-template-columns: 1fr minmax(64px, 0.65fr) minmax(64px, 0.65fr);
+  gap: 8px;
+}
+
+.imap-source-list {
+  display: grid;
+  gap: 8px;
+  max-height: 180px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.imap-source-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  border: 1px solid #d9e0e4;
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 8px;
+}
+
+.imap-source-row > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.imap-source-row strong,
+.imap-source-row span,
+.imap-source-row small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.imap-source-row span,
+.imap-source-row small {
+  color: #5d6a72;
+  font-size: 0.78rem;
+}
+
+.imap-sync-button {
+  min-height: 32px;
+  padding: 0 9px;
+}
+
 .folder-list {
   overflow: auto;
   padding: 8px;

@@ -232,6 +232,36 @@ class ProfileManager:
         with self.connect() as conn:
             self.set_setting(conn, key, value)
 
+    @contextmanager
+    def connect_profile_settings(self, profile_id: str | None = None) -> Iterable[sqlite3.Connection]:
+        profile = self.profiles[profile_id or self.active_profile_id]
+        self.init_profile_settings(profile)
+        conn = sqlite3.connect(profile.settings_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            yield conn
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_profile_setting(self, key: str, profile_id: str | None = None) -> str | None:
+        with self.connect_profile_settings(profile_id) as conn:
+            row = conn.execute("SELECT value FROM profile_settings WHERE key = ?", (key,)).fetchone()
+            if row is None:
+                return None
+            return str(row["value"])
+
+    def set_profile_setting(self, key: str, value: str, profile_id: str | None = None) -> None:
+        with self.connect_profile_settings(profile_id) as conn:
+            conn.execute(
+                """
+                INSERT INTO profile_settings (key, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+                """,
+                (key, value, utc_now()),
+            )
+
     def init_profile_settings(self, profile: Profile) -> None:
         profile.settings_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(profile.settings_path)

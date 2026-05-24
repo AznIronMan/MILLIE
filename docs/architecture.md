@@ -48,7 +48,7 @@ Source connectors pull from live services and mail protocols.
 
 Planned connectors:
 
-- IMAP
+- IMAP, first as read-only UID-based sync
 - POP3
 - Microsoft Graph / Exchange
 - OAuth providers

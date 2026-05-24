@@ -113,6 +113,18 @@ PYTHONPATH=src python3 -m millie scan /path/to/Thunderbird --type thunderbird --
 
 The web app has the same scan path in the import panel. Scanning is read-only and currently covers Thunderbird profiles, Evolution local stores, Apple Mail stores/exports, Outlook vendor-store detection, and generic open mailbox files.
 
+## Sync IMAP
+
+```sh
+PYTHONPATH=src python3 -m millie imap-add "Test IMAP" --host imap.example.com --username user@example.com --folder INBOX
+PYTHONPATH=src python3 -m millie imap-sources
+PYTHONPATH=src python3 -m millie imap-sync test-imap
+```
+
+The initial IMAP connector is read-only and uses TLS by default. It stores source configs in the active profile `.settings` file and tracks per-folder UID cursors in the active profile mail database.
+
+For now, password/app-password values are stored directly in the profile settings SQLite file. Use app passwords or test accounts during development until keychain/encrypted secret storage is added.
+
 ## Search
 
 The web app search box and `/api/v1/search?q=...` use SQLite FTS5 over message subject, participants, and text body. Query text is normalized before it reaches FTS so searches with punctuation or email addresses are safe to run.

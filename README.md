@@ -30,7 +30,7 @@ Planned file and desktop-client import targets:
 
 Planned live source targets:
 
-- IMAP
+- IMAP, with a first read-only sync MVP now in place
 - POP3
 - Microsoft Exchange / Microsoft Graph
 - OAuth-based providers
@@ -90,6 +90,7 @@ MILLIE now has a first runnable foundation slice:
 - `.eml`, `mbox`, `maildir`, and `.eml` folder import paths
 - PST import through the optional `readpst`/`libpst` adapter
 - Thunderbird, Evolution, and Apple Mail source scanning to find importable mailbox candidates before import
+- Read-only IMAP source configs and incremental folder sync using UID cursors
 - `.eml`, `mbox`, and `maildir` export paths with manifests
 - Exact raw-MIME deduplication so repeat imports do not duplicate canonical messages
 - SQLite FTS search over subject, participants, and body text
@@ -101,4 +102,4 @@ MILLIE now has a first runnable foundation slice:
 - TypeScript/Vite web client for mailbox navigation, message viewing, import, and export
 - Basic import/export test coverage
 
-See [docs/development.md](docs/development.md) for setup and run commands, [docs/api.md](docs/api.md) for API notes, [docs/source-scanning.md](docs/source-scanning.md) for source scan helpers, [docs/profiles.md](docs/profiles.md) for profile switching, and [docs/outlook.md](docs/outlook.md) for Outlook PST/OLM/OST notes.
+See [docs/development.md](docs/development.md) for setup and run commands, [docs/api.md](docs/api.md) for API notes, [docs/source-scanning.md](docs/source-scanning.md) for source scan helpers, [docs/imap.md](docs/imap.md) for IMAP sync, [docs/profiles.md](docs/profiles.md) for profile switching, and [docs/outlook.md](docs/outlook.md) for Outlook PST/OLM/OST notes.

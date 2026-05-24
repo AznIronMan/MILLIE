@@ -88,6 +88,30 @@ type SourceCandidate = {
   importable: boolean;
 };
 
+type ImapSource = {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  username: string;
+  use_tls: boolean;
+  folders: string[];
+  sync_limit: number;
+  auth_method: string;
+  password_configured: boolean;
+};
+
+type ImapSyncResult = {
+  import_job_id: number;
+  source_id: number;
+  imported: number;
+  processed: number;
+  duplicates: number;
+  errors: number;
+  folders: string[];
+  format: string;
+};
+
 type ImportJobError = {
   id: number;
   import_job_id: number;
@@ -167,6 +191,7 @@ type State = {
   sourceScanPath: string;
   sourceScanType: string;
   sourceScanCandidates: SourceCandidate[];
+  imapSources: ImapSource[];
   mailboxes: Mailbox[];
   messages: MessageSummary[];
   selectedMailboxId: number | null;
@@ -194,6 +219,7 @@ const state: State = {
   sourceScanPath: "",
   sourceScanType: "thunderbird",
   sourceScanCandidates: [],
+  imapSources: [],
   mailboxes: [],
   messages: [],
   selectedMailboxId: null,
@@ -333,6 +359,36 @@ function render(): void {
             <button id="source-scan-button">Scan</button>
           </div>
           ${renderSourceCandidates()}
+          <div class="panel-rule"></div>
+          <label>
+            IMAP source
+            <input id="imap-name" placeholder="Work mailbox" />
+          </label>
+          <label>
+            Host
+            <input id="imap-host" placeholder="imap.example.com" />
+          </label>
+          <label>
+            Username
+            <input id="imap-username" autocomplete="username" />
+          </label>
+          <label>
+            Password
+            <input id="imap-password" type="password" autocomplete="current-password" />
+          </label>
+          <div class="inline-controls">
+            <input id="imap-folder" placeholder="INBOX" />
+            <button id="imap-save-button">Save</button>
+          </div>
+          <div class="imap-options">
+            <select id="imap-security">
+              <option value="tls">TLS</option>
+              <option value="plain">Plain</option>
+            </select>
+            <input id="imap-port" type="number" min="1" placeholder="993" />
+            <input id="imap-limit" type="number" min="1" placeholder="100" />
+          </div>
+          ${renderImapSources()}
         </section>
         <nav class="folder-list" aria-label="Mailboxes">
           <button class="folder-row ${state.selectedMailboxId === null ? "active" : ""}" data-mailbox-id="">
@@ -446,6 +502,30 @@ function renderSourceCandidate(candidate: SourceCandidate): string {
 function candidateEstimate(candidate: SourceCandidate): string {
   if (candidate.message_estimate === null) return "unknown";
   return `${candidate.message_estimate} message(s)`;
+}
+
+function renderImapSources(): string {
+  if (!state.imapSources.length) return `<p class="muted compact-note">No saved IMAP sources.</p>`;
+  return `
+    <div class="imap-source-list">
+      ${state.imapSources.map(renderImapSource).join("")}
+    </div>
+  `;
+}
+
+function renderImapSource(source: ImapSource): string {
+  const security = source.use_tls ? "TLS" : "plain";
+  const folders = source.folders.join(", ");
+  return `
+    <div class="imap-source-row">
+      <div>
+        <strong>${escapeHtml(source.name)}</strong>
+        <span>${escapeHtml(source.username)}@${escapeHtml(source.host)}:${source.port} · ${escapeHtml(security)}</span>
+        <small>${escapeHtml(folders)} · limit ${source.sync_limit} · ${source.password_configured ? "password set" : "no password"}</small>
+      </div>
+      <button class="imap-sync-button" data-imap-source-id="${escapeHtml(source.id)}">Sync</button>
+    </div>
+  `;
 }
 
 function renderAuthScreen(): void {
@@ -709,6 +789,12 @@ function bindEvents(): void {
       await importSourceCandidate(button.dataset.candidateId ?? "");
     });
   });
+  document.querySelector<HTMLButtonElement>("#imap-save-button")?.addEventListener("click", saveImapSource);
+  document.querySelectorAll<HTMLButtonElement>(".imap-sync-button").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await syncImapSource(button.dataset.imapSourceId ?? "");
+    });
+  });
   document.querySelector<HTMLButtonElement>("#export-button")?.addEventListener("click", exportMail);
   document.querySelector<HTMLSelectElement>("#export-profile")?.addEventListener("change", (event) => {
     state.selectedExportProfileId = (event.currentTarget as HTMLSelectElement).value;
@@ -761,6 +847,7 @@ async function loadInitial(): Promise<void> {
     await loadProfiles();
     await loadMigrations();
     await loadExportProfiles();
+    await loadImapSources();
     await loadJobs();
     await loadMailboxes();
     await loadMessages();
@@ -801,6 +888,11 @@ async function loadExportProfiles(): Promise<void> {
   if (!state.exportProfiles.some((profile) => profile.id === state.selectedExportProfileId)) {
     state.selectedExportProfileId = state.exportProfiles[0]?.id ?? "generic-eml";
   }
+}
+
+async function loadImapSources(): Promise<void> {
+  const payload = await api<{ sources: ImapSource[] }>("/api/v1/imap-sources");
+  state.imapSources = payload.sources;
 }
 
 async function loadImportJobDetail(id: number): Promise<void> {
@@ -926,6 +1018,74 @@ async function importSourceCandidate(candidateId: string): Promise<void> {
   }
 }
 
+async function saveImapSource(): Promise<void> {
+  const name = document.querySelector<HTMLInputElement>("#imap-name")?.value.trim() ?? "";
+  const host = document.querySelector<HTMLInputElement>("#imap-host")?.value.trim() ?? "";
+  const username = document.querySelector<HTMLInputElement>("#imap-username")?.value.trim() ?? "";
+  const password = document.querySelector<HTMLInputElement>("#imap-password")?.value ?? "";
+  const folderText = document.querySelector<HTMLInputElement>("#imap-folder")?.value.trim() || "INBOX";
+  const useTls = (document.querySelector<HTMLSelectElement>("#imap-security")?.value ?? "tls") === "tls";
+  const portText = document.querySelector<HTMLInputElement>("#imap-port")?.value.trim();
+  const limitText = document.querySelector<HTMLInputElement>("#imap-limit")?.value.trim();
+  const folders = folderText.split(",").map((item) => item.trim()).filter(Boolean);
+  if (!name || !host || !username) {
+    state.status = "IMAP source, host, and username are required.";
+    render();
+    return;
+  }
+  state.status = "Saving IMAP source...";
+  render();
+  try {
+    const port = portText ? Number(portText) : useTls ? 993 : 143;
+    const syncLimit = limitText ? Number(limitText) : 100;
+    const payload = await api<{ source: ImapSource; sources: ImapSource[] }>("/api/v1/imap-sources", {
+      method: "POST",
+      body: JSON.stringify({
+        name,
+        host,
+        username,
+        password,
+        folders,
+        use_tls: useTls,
+        port,
+        sync_limit: syncLimit,
+      }),
+    });
+    state.imapSources = payload.sources;
+    state.status = `Saved IMAP source ${payload.source.name}.`;
+    render();
+  } catch (error) {
+    state.status = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}
+
+async function syncImapSource(sourceId: string): Promise<void> {
+  const source = state.imapSources.find((item) => item.id === sourceId);
+  if (!source) {
+    state.status = "IMAP source is no longer available.";
+    render();
+    return;
+  }
+  state.status = `Syncing ${source.name}...`;
+  render();
+  try {
+    const payload = await api<{ sync: ImapSyncResult }>(`/api/v1/imap-sources/${encodeURIComponent(sourceId)}/sync`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    await loadMailboxes();
+    await loadJobs();
+    await loadMessages();
+    state.status = `IMAP sync processed ${payload.sync.processed} message(s); new=${payload.sync.imported}, duplicates=${payload.sync.duplicates}, errors=${payload.sync.errors}.`;
+    render();
+  } catch (error) {
+    await loadJobs();
+    state.status = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}
+
 async function switchProfile(event: Event): Promise<void> {
   const profileId = (event.currentTarget as HTMLSelectElement).value;
   if (!profileId || profileId === state.activeProfileId) return;
@@ -988,6 +1148,7 @@ async function refreshActiveProfileData(): Promise<void> {
   await loadProfiles();
   await loadMigrations();
   await loadExportProfiles();
+  await loadImapSources();
   await loadJobs();
   await loadMailboxes();
   await loadMessages();

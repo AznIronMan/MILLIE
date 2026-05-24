@@ -4,6 +4,7 @@ import tempfile
 import unittest
 import mailbox
 import json
+import re
 from email.message import EmailMessage
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from millie.auth import AuthManager, SESSION_COOKIE
 from millie.database import MillieDatabase
 from millie.exporters import export_messages
 from millie.importers import detect_format, import_path
+from millie.imap_connector import ImapSourceConfig, sync_imap_source
 from millie.profiles import ProfileManager
 from millie.source_scanners import scan_source
 
@@ -70,7 +72,7 @@ class CoreImportExportTests(unittest.TestCase):
             self.assertEqual(manifest["source_ids"], [result.source_id])
             self.assertEqual(manifest["items"][0]["source_id"], result.source_id)
             self.assertEqual(db.list_migrations()[0]["version"], 1)
-            self.assertEqual(db.list_migrations()[-1]["version"], 2)
+            self.assertEqual(db.list_migrations()[-1]["version"], 3)
 
     def test_repeat_import_deduplicates_by_raw_content_hash(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -364,6 +366,54 @@ class CoreImportExportTests(unittest.TestCase):
             self.assertTrue((root / "millie.settings").exists())
             self.assertTrue(created.settings_path.exists())
 
+    def test_imap_sync_imports_incrementally_by_uid(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = MillieDatabase(root / "millie.sqlite", root / "data")
+            db.init()
+            messages = {
+                "INBOX": {
+                    "1": build_message("imap-one@example.com", "IMAP One", "First IMAP body").as_bytes(),
+                    "2": build_message("imap-two@example.com", "IMAP Two", "Second IMAP body").as_bytes(),
+                }
+            }
+            config = ImapSourceConfig(
+                id="unit-imap",
+                name="Unit IMAP",
+                host="imap.example.test",
+                port=993,
+                username="user@example.test",
+                password="secret",
+                use_tls=True,
+                folders=["INBOX"],
+                sync_limit=50,
+            )
+
+            first = sync_imap_source(db, config, lambda _: FakeImapClient(messages))
+            self.assertEqual(first.processed, 2)
+            self.assertEqual(first.imported, 2)
+            self.assertEqual(first.duplicates, 0)
+            self.assertEqual(first.errors, 0)
+            self.assertEqual(len(db.list_messages()), 2)
+            self.assertEqual(db.list_migrations()[-1]["version"], 3)
+
+            state = db.get_source_sync_state(first.source_id, "folder:INBOX")
+            self.assertEqual(state["uidvalidity"], "999")
+            self.assertEqual(state["last_uid"], 2)
+
+            messages["INBOX"]["3"] = build_message(
+                "imap-three@example.com",
+                "IMAP Three",
+                "Third IMAP body",
+            ).as_bytes()
+            second = sync_imap_source(db, config, lambda _: FakeImapClient(messages))
+            self.assertEqual(second.processed, 1)
+            self.assertEqual(second.imported, 1)
+            self.assertEqual(second.duplicates, 0)
+            self.assertEqual(second.errors, 0)
+            self.assertEqual(len(db.list_messages()), 3)
+            self.assertEqual(db.get_source_sync_state(first.source_id, "folder:INBOX")["last_uid"], 3)
+
     def test_auth_defaults_to_dev_bypass_and_supports_sessions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -437,6 +487,52 @@ def build_multipart_message() -> EmailMessage:
 
 def build_emlx(raw_message: bytes) -> bytes:
     return str(len(raw_message)).encode("ascii") + b"\n" + raw_message + b"\n<plist></plist>\n"
+
+
+class FakeImapClient:
+    def __init__(self, messages: dict[str, dict[str, bytes]]):
+        self.messages = messages
+        self.selected = "INBOX"
+
+    def login(self, user: str, password: str) -> tuple[str, list[bytes]]:
+        if user and password:
+            return "OK", [b"logged in"]
+        return "NO", [b"missing credentials"]
+
+    def select(self, mailbox_name: str = "INBOX", readonly: bool = False) -> tuple[str, list[bytes]]:
+        del readonly
+        self.selected = mailbox_name.strip('"')
+        if self.selected not in self.messages:
+            return "NO", [b"unknown folder"]
+        return "OK", [str(len(self.messages[self.selected])).encode("ascii")]
+
+    def response(self, code: str) -> tuple[str, list[bytes | None]]:
+        if code.upper() == "UIDVALIDITY":
+            return "OK", [b"999"]
+        return "OK", [None]
+
+    def uid(self, command: str, *args: object) -> tuple[str, list[object]]:
+        if command.upper() == "SEARCH":
+            joined = " ".join(str(item) for item in args if item is not None)
+            match = re.search(r"(\d+):\*", joined)
+            start = int(match.group(1)) if match else 1
+            uids = [
+                uid.encode("ascii")
+                for uid in sorted(self.messages[self.selected], key=int)
+                if int(uid) >= start
+            ]
+            return "OK", [b" ".join(uids)]
+        if command.upper() == "FETCH":
+            uid = str(args[0])
+            raw = self.messages[self.selected][uid]
+            return "OK", [(f"{uid} (RFC822 {{{len(raw)}}}".encode("ascii"), raw)]
+        return "BAD", [b"unsupported command"]
+
+    def close(self) -> tuple[str, list[bytes]]:
+        return "OK", [b"closed"]
+
+    def logout(self) -> tuple[str, list[bytes]]:
+        return "OK", [b"logged out"]
 
 
 if __name__ == "__main__":

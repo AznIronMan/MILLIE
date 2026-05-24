@@ -146,6 +146,14 @@ CREATE TABLE IF NOT EXISTS import_errors (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS source_sync_states (
+    source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    scope TEXT NOT NULL,
+    state_json TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(source_id, scope)
+);
+
 CREATE TABLE IF NOT EXISTS export_jobs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     target_profile TEXT NOT NULL,
@@ -196,6 +204,21 @@ MIGRATIONS = [
         CREATE INDEX IF NOT EXISTS idx_messages_content_hash ON messages(content_hash);
         CREATE INDEX IF NOT EXISTS idx_message_mailboxes_message_id ON message_mailboxes(message_id);
         CREATE INDEX IF NOT EXISTS idx_message_mailboxes_mailbox_id ON message_mailboxes(mailbox_id);
+        """,
+    ),
+    (
+        3,
+        "source_sync_state",
+        """
+        CREATE TABLE IF NOT EXISTS source_sync_states (
+            source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+            scope TEXT NOT NULL,
+            state_json TEXT NOT NULL DEFAULT '{}',
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(source_id, scope)
+        );
+        CREATE INDEX IF NOT EXISTS idx_source_sync_states_source_id
+            ON source_sync_states(source_id);
         """,
     ),
 ]
@@ -343,6 +366,44 @@ class MillieDatabase:
             if row:
                 return int(row["id"])
         return self.create_source(kind, display_name, source_uri)
+
+    def touch_source_sync(self, source_id: int) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE sources SET last_sync_at = ?, status = 'active' WHERE id = ?",
+                (utc_now(), source_id),
+            )
+
+    def get_source_sync_state(self, source_id: int, scope: str) -> dict[str, Any]:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT state_json
+                FROM source_sync_states
+                WHERE source_id = ? AND scope = ?
+                """,
+                (source_id, scope),
+            ).fetchone()
+        if row is None:
+            return {}
+        try:
+            value = json.loads(str(row["state_json"]))
+        except json.JSONDecodeError:
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    def set_source_sync_state(self, source_id: int, scope: str, state: dict[str, Any]) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO source_sync_states (source_id, scope, state_json, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(source_id, scope) DO UPDATE SET
+                    state_json = excluded.state_json,
+                    updated_at = excluded.updated_at
+                """,
+                (source_id, scope, json.dumps(state, sort_keys=True), utc_now()),
+            )
 
     def get_or_create_mailbox(self, source_id: int, path: str, role: str | None = None) -> int:
         clean_path = path.strip("/") or "Imported"

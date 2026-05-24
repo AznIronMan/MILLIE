@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from getpass import getpass
 import json
 from pathlib import Path
 
@@ -8,6 +9,12 @@ from .config import AppConfig
 from .doctor import run_doctor
 from .exporters import export_messages
 from .importers import import_path
+from .imap_connector import (
+    get_imap_source,
+    load_imap_sources,
+    save_imap_source,
+    sync_imap_source,
+)
 from .api.server import run_server
 from .profiles import ProfileManager
 from .source_scanners import scan_source
@@ -52,6 +59,22 @@ def build_parser() -> argparse.ArgumentParser:
     scan_cmd.add_argument("path", help="Path to a mail file, mail folder, or desktop client profile")
     scan_cmd.add_argument("--type", default="auto", choices=["auto", "generic", "thunderbird", "evolution", "apple-mail"])
     scan_cmd.add_argument("--json", action="store_true", help="Print scan results as JSON")
+
+    imap_sources = subparsers.add_parser("imap-sources", help="List saved IMAP sources for the active profile")
+    imap_sources.add_argument("--json", action="store_true", help="Print source configs as JSON with secrets redacted")
+
+    imap_add = subparsers.add_parser("imap-add", help="Save an IMAP source for the active profile")
+    imap_add.add_argument("name", help="Source display name")
+    imap_add.add_argument("--host", required=True, help="IMAP server host")
+    imap_add.add_argument("--port", type=int, default=None, help="IMAP server port, default 993 with TLS")
+    imap_add.add_argument("--username", required=True, help="IMAP username")
+    imap_add.add_argument("--password", default=None, help="IMAP password or app password")
+    imap_add.add_argument("--folder", action="append", dest="folders", help="Folder to sync, repeatable")
+    imap_add.add_argument("--limit", type=int, default=100, help="Maximum new UIDs to attempt per sync")
+    imap_add.add_argument("--no-tls", action="store_true", help="Use plain IMAP instead of IMAPS")
+
+    imap_sync = subparsers.add_parser("imap-sync", help="Run read-only sync for a saved IMAP source")
+    imap_sync.add_argument("source_id", help="Saved IMAP source id")
 
     export_cmd = subparsers.add_parser("export", help="Export messages to a mailbox format")
     export_cmd.add_argument("--format", required=True, choices=["auto", "eml", "mbox", "maildir"])
@@ -157,6 +180,54 @@ def main(argv: list[str] | None = None) -> int:
                     f"{candidate.path}"
                 )
         return 0
+    if args.command == "imap-sources":
+        sources = load_imap_sources(profile_manager)
+        if args.json:
+            print(json.dumps({"sources": [source.to_api() for source in sources]}, indent=2))
+        else:
+            if not sources:
+                print("No IMAP sources saved for the active profile.")
+            for source in sources:
+                folders = ", ".join(source.folders)
+                security = "TLS" if source.use_tls else "plain"
+                secret = "password set" if source.password else "no password"
+                print(
+                    f"- {source.id}: {source.name} "
+                    f"({source.username}@{source.host}:{source.port}, "
+                    f"{security}, {secret}, folders={folders})"
+                )
+        return 0
+    if args.command == "imap-add":
+        use_tls = not args.no_tls
+        password = args.password if args.password is not None else getpass("IMAP password/app password: ")
+        source = save_imap_source(
+            profile_manager,
+            {
+                "name": args.name,
+                "host": args.host,
+                "port": args.port or (993 if use_tls else 143),
+                "username": args.username,
+                "password": password,
+                "use_tls": use_tls,
+                "folders": args.folders or ["INBOX"],
+                "sync_limit": args.limit,
+            },
+        )
+        print(f"Saved IMAP source {source.id}: {source.name}")
+        return 0
+    if args.command == "imap-sync":
+        try:
+            source = get_imap_source(profile_manager, args.source_id)
+            result = sync_imap_source(db, source)
+        except Exception as exc:  # noqa: BLE001
+            print(f"IMAP sync failed: {exc}")
+            return 1
+        print(
+            f"Import job {result.import_job_id}: processed={result.processed} "
+            f"imported={result.imported} duplicates={result.duplicates} "
+            f"errors={result.errors} folders={','.join(result.folders)}"
+        )
+        return 0 if result.errors == 0 else 1
     if args.command == "export":
         result = export_messages(
             db,

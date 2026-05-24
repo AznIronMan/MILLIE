@@ -181,6 +181,19 @@ Fields to consider:
 - `detail_json`
 - `created_at`
 
+### source_sync_states
+
+Tracks incremental connector state by source and scope.
+
+Fields to consider:
+
+- `source_id`
+- `scope`
+- `state_json`
+- `updated_at`
+
+For the first IMAP connector, scope is `folder:{folder_path}` and state stores `uidvalidity` plus `last_uid`.
+
 ### export_jobs
 
 Tracks export work.

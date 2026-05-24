@@ -50,6 +50,20 @@ Import responses and job rows distinguish:
 - `duplicates` / `duplicate_count`: source items that matched existing raw MIME content
 - `errors` / `error_count`: failed source items
 
+## IMAP Sources
+
+- `GET /api/v1/imap-sources`
+- `POST /api/v1/imap-sources`
+- `POST /api/v1/imap-sources/{id}/sync`
+
+IMAP source configs are stored per active profile. The current development implementation stores password/app-password values in the profile `.settings` SQLite file, so use test credentials or app passwords only until secret storage is hardened.
+
+`GET /api/v1/imap-sources` returns saved sources with the password redacted and `password_configured` set to `true` or `false`.
+
+`POST /api/v1/imap-sources` accepts `name`, `host`, `port`, `username`, `password`, `use_tls`, `folders`, and `sync_limit`. `folders` can be a string or list. TLS defaults to on.
+
+`POST /api/v1/imap-sources/{id}/sync` performs a read-only sync. It imports newly discovered UIDs through the same raw-MIME pipeline as file imports, creates an import job, and returns processed/new/duplicate/error counts.
+
 ## Export Jobs
 
 - `GET /api/v1/export-profiles`
