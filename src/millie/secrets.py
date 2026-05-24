@@ -161,6 +161,15 @@ class SecretManager:
         )
         return self.preferred_store().put(key, value)
 
+    def store_pop_password(self, source_id: str, value: str) -> str:
+        key = make_secret_key(
+            self.profile_manager.active_profile_id,
+            "pop",
+            source_id,
+            "password",
+        )
+        return self.preferred_store().put(key, value)
+
     def read_secret(self, ref: str | None) -> str | None:
         if not ref:
             return None

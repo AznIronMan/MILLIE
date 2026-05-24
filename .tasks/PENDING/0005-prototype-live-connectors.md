@@ -21,9 +21,9 @@ Add initial live mail import/sync support.
 - IMAP source configs now store credential references instead of raw passwords, with macOS Keychain support and a local development fallback.
 - Saved IMAP sources can discover folders, apply selected folder lists, sync, and be deleted through CLI, API, and web controls.
 - IMAP hardening now includes generic/Gmail provider presets, Gmail host normalization, one-off selected-folder sync, and capture of IMAP flags/internal dates.
+- Initial read-only POP3 support exists with safe probes, secret-backed source configs, UIDL incremental sync, CLI/API/web controls, and no server delete path.
 
 ## Remaining
 
-- Add POP3 import.
 - Select and prototype Microsoft Graph / Exchange connector path.
 - Add OAuth/provider credential flows and broader provider presets.

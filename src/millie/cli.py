@@ -19,6 +19,15 @@ from .imap_connector import (
     save_imap_source,
     sync_imap_source,
 )
+from .pop_connector import (
+    delete_pop_source,
+    get_pop_source,
+    load_pop_sources,
+    migrate_pop_source_secrets,
+    probe_pop_source,
+    save_pop_source,
+    sync_pop_source,
+)
 from .api.server import run_server
 from .profiles import ProfileManager
 from .secrets import SecretManager
@@ -99,8 +108,33 @@ def build_parser() -> argparse.ArgumentParser:
     imap_delete = subparsers.add_parser("imap-delete", help="Delete a saved IMAP source")
     imap_delete.add_argument("source_id", help="Saved IMAP source id")
 
+    pop_sources = subparsers.add_parser("pop-sources", help="List saved POP sources for the active profile")
+    pop_sources.add_argument("--json", action="store_true", help="Print source configs as JSON with secrets redacted")
+
+    pop_add = subparsers.add_parser("pop-add", help="Save a POP source for the active profile")
+    pop_add.add_argument("name", help="Source display name")
+    pop_add.add_argument("--id", dest="source_id", default=None, help="Existing source id to update")
+    pop_add.add_argument("--host", required=True, help="POP server host")
+    pop_add.add_argument("--port", type=int, default=None, help="POP server port, default 995 with SSL")
+    pop_add.add_argument("--username", required=True, help="POP username")
+    pop_add.add_argument("--password", default=None, help="POP password or app password")
+    pop_add.add_argument("--limit", type=int, default=100, help="Maximum new UIDLs to attempt per sync")
+    pop_add.add_argument("--no-ssl", action="store_true", help="Use plain POP3 instead of POP3S")
+
+    pop_probe = subparsers.add_parser("pop-probe", help="Probe a saved POP source without retrieving or deleting mail")
+    pop_probe.add_argument("source_id", help="Saved POP source id")
+    pop_probe.add_argument("--json", action="store_true", help="Print probe result as JSON")
+
+    pop_sync = subparsers.add_parser("pop-sync", help="Run read-only sync for a saved POP source")
+    pop_sync.add_argument("source_id", help="Saved POP source id")
+    pop_sync.add_argument("--limit", type=int, default=None, help="Override the saved sync limit for this run")
+
+    pop_delete = subparsers.add_parser("pop-delete", help="Delete a saved POP source")
+    pop_delete.add_argument("source_id", help="Saved POP source id")
+
     subparsers.add_parser("secrets-status", help="Show the active secret backend")
     subparsers.add_parser("imap-migrate-secrets", help="Move legacy IMAP passwords out of source configs")
+    subparsers.add_parser("pop-migrate-secrets", help="Move legacy POP passwords out of source configs")
 
     export_cmd = subparsers.add_parser("export", help="Export messages to a mailbox format")
     export_cmd.add_argument("--format", required=True, choices=["auto", "eml", "mbox", "maildir"])
@@ -287,12 +321,87 @@ def main(argv: list[str] | None = None) -> int:
             f"errors={result.errors} folders={','.join(result.folders)}"
         )
         return 0 if result.errors == 0 else 1
+    if args.command == "pop-sources":
+        sources = load_pop_sources(profile_manager)
+        if args.json:
+            print(json.dumps({"sources": [source.to_api() for source in sources]}, indent=2))
+        else:
+            if not sources:
+                print("No POP sources saved for the active profile.")
+            for source in sources:
+                security = "SSL" if source.use_ssl else "plain"
+                secret = source.to_api().get("secret_backend") or "no secret"
+                print(
+                    f"- {source.id}: {source.name} "
+                    f"({source.username}@{source.host}:{source.port}, "
+                    f"{security}, {secret}, limit={source.sync_limit})"
+                )
+        return 0
+    if args.command == "pop-add":
+        use_ssl = not args.no_ssl
+        password = args.password if args.password is not None else getpass("POP password/app password: ")
+        source = save_pop_source(
+            profile_manager,
+            {
+                "id": args.source_id,
+                "name": args.name,
+                "host": args.host,
+                "port": args.port or (995 if use_ssl else 110),
+                "username": args.username,
+                "password": password,
+                "use_ssl": use_ssl,
+                "sync_limit": args.limit,
+            },
+            secret_manager,
+        )
+        print(f"Saved POP source {source.id}: {source.name}")
+        return 0
+    if args.command == "pop-probe":
+        try:
+            source = get_pop_source(profile_manager, args.source_id, secret_manager)
+            result = probe_pop_source(source)
+        except Exception as exc:  # noqa: BLE001
+            print(f"POP probe failed: {exc}")
+            return 1
+        if args.json:
+            print(json.dumps({"probe": result.to_api()}, indent=2))
+        else:
+            print(
+                f"POP probe: messages={result.message_count} size={result.maildrop_size_bytes} "
+                f"uidl={'yes' if result.uidl_available else 'no'}"
+            )
+            print("No RETR or DELE commands were used.")
+        return 0
+    if args.command == "pop-delete":
+        deleted = delete_pop_source(profile_manager, args.source_id, secret_manager)
+        if not deleted:
+            print(f"Unknown POP source: {args.source_id}")
+            return 1
+        print(f"Deleted POP source {args.source_id}")
+        return 0
+    if args.command == "pop-sync":
+        try:
+            source = get_pop_source(profile_manager, args.source_id, secret_manager)
+            result = sync_pop_source(db, source, sync_limit=args.limit)
+        except Exception as exc:  # noqa: BLE001
+            print(f"POP sync failed: {exc}")
+            return 1
+        print(
+            f"Import job {result.import_job_id}: processed={result.processed} "
+            f"imported={result.imported} duplicates={result.duplicates} "
+            f"errors={result.errors}"
+        )
+        return 0 if result.errors == 0 else 1
     if args.command == "secrets-status":
         print(json.dumps(secret_manager.status(), indent=2))
         return 0
     if args.command == "imap-migrate-secrets":
         migrated = migrate_imap_source_secrets(profile_manager, secret_manager)
         print(f"Migrated {migrated} IMAP secret(s).")
+        return 0
+    if args.command == "pop-migrate-secrets":
+        migrated = migrate_pop_source_secrets(profile_manager, secret_manager)
+        print(f"Migrated {migrated} POP secret(s).")
         return 0
     if args.command == "export":
         result = export_messages(
@@ -323,4 +432,5 @@ def source_update_payload(source: ImapSourceConfig, folders: list[str]) -> dict[
         "folders": folders,
         "sync_limit": source.sync_limit,
         "auth_method": source.auth_method,
+        "provider": source.provider,
     }

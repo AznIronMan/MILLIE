@@ -76,6 +76,28 @@ IMAP source configs are stored per active profile. Saved configs store `auth_ref
 
 `POST /api/v1/imap-sources/migrate-secrets` migrates legacy raw IMAP passwords from `imap.sources.v1` into the configured secret backend.
 
+## POP Sources
+
+- `GET /api/v1/pop-sources`
+- `GET /api/v1/pop-providers`
+- `POST /api/v1/pop-sources`
+- `POST /api/v1/pop-sources/{id}/probe`
+- `POST /api/v1/pop-sources/{id}/sync`
+- `POST /api/v1/pop-sources/{id}/delete`
+- `POST /api/v1/pop-sources/migrate-secrets`
+
+POP source configs are stored per active profile. Saved configs store `auth_ref` secret references instead of raw password/app-password values.
+
+`GET /api/v1/pop-providers` returns provider presets such as generic POP3 and Gmail / Google Workspace.
+
+`POST /api/v1/pop-sources` accepts `name`, `provider`, `host`, `port`, `username`, `password`, `use_ssl`, and `sync_limit`.
+
+`POST /api/v1/pop-sources/{id}/probe` logs in and checks capabilities, message count, maildrop size, and `UIDL` availability without using `RETR` or `DELE`.
+
+`POST /api/v1/pop-sources/{id}/sync` performs a read-only sync with optional `sync_limit` override. It imports new `UIDL` values through the raw-MIME pipeline and never issues `DELE`.
+
+`POST /api/v1/pop-sources/{id}/delete` removes the saved source and deletes its secret reference.
+
 ## Export Jobs
 
 - `GET /api/v1/export-profiles`

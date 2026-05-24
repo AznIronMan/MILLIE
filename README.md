@@ -93,6 +93,7 @@ MILLIE now has a first runnable foundation slice:
 - Read-only IMAP source configs, folder discovery, source management, and incremental folder sync using UID cursors
 - Gmail-compatible IMAP folder discovery, including common Gmail special-folder roles and `imap.google.com` host normalization
 - IMAP provider presets, selected-folder one-off sync, and IMAP flags/internal-date capture
+- Read-only POP3 source configs, safe no-retrieve probes, UIDL-based incremental sync, and a never-delete server policy
 - Connector credential secret references with macOS Keychain support and a local development fallback
 - `.eml`, `mbox`, and `maildir` export paths with manifests
 - Exact raw-MIME deduplication so repeat imports do not duplicate canonical messages
@@ -105,4 +106,4 @@ MILLIE now has a first runnable foundation slice:
 - TypeScript/Vite web client for mailbox navigation, message viewing, import, and export
 - Basic import/export test coverage
 
-See [docs/development.md](docs/development.md) for setup and run commands, [docs/api.md](docs/api.md) for API notes, [docs/source-scanning.md](docs/source-scanning.md) for source scan helpers, [docs/imap.md](docs/imap.md) for IMAP sync, [docs/profiles.md](docs/profiles.md) for profile switching, and [docs/outlook.md](docs/outlook.md) for Outlook PST/OLM/OST notes.
+See [docs/development.md](docs/development.md) for setup and run commands, [docs/api.md](docs/api.md) for API notes, [docs/source-scanning.md](docs/source-scanning.md) for source scan helpers, [docs/imap.md](docs/imap.md) for IMAP sync, [docs/pop.md](docs/pop.md) for POP sync, [docs/profiles.md](docs/profiles.md) for profile switching, and [docs/outlook.md](docs/outlook.md) for Outlook PST/OLM/OST notes.

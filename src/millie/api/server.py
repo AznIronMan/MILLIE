@@ -24,6 +24,16 @@ from millie.imap_connector import (
     save_imap_source,
     sync_imap_source,
 )
+from millie.pop_connector import (
+    delete_pop_source,
+    get_pop_source,
+    list_pop_provider_presets,
+    load_pop_sources,
+    migrate_pop_source_secrets,
+    probe_pop_source,
+    save_pop_source,
+    sync_pop_source,
+)
 from millie.profiles import ProfileManager
 from millie.secrets import SecretManager
 from millie.source_scanners import scan_source
@@ -97,6 +107,12 @@ class MillieRequestHandler(BaseHTTPRequestHandler):
                 )
             elif path == "/api/v1/imap-providers":
                 self.write_json({"providers": [provider.to_api() for provider in list_imap_provider_presets()]})
+            elif path == "/api/v1/pop-sources":
+                self.write_json(
+                    {"sources": [source.to_api() for source in load_pop_sources(self.app.profile_manager)]}
+                )
+            elif path == "/api/v1/pop-providers":
+                self.write_json({"providers": [provider.to_api() for provider in list_pop_provider_presets()]})
             elif path == "/api/v1/mailboxes":
                 self.write_json({"mailboxes": self.app.db.list_mailboxes()})
             elif path == "/api/v1/migrations":
@@ -321,6 +337,41 @@ class MillieRequestHandler(BaseHTTPRequestHandler):
                 folders = parse_string_list(payload.get("folders"))
                 sync_limit = int(payload.get("sync_limit") or source.sync_limit)
                 result = sync_imap_source(self.app.db, source, folders=folders, sync_limit=sync_limit)
+                self.write_json({"sync": result.to_api()}, HTTPStatus.CREATED)
+            elif path == "/api/v1/pop-sources":
+                source = save_pop_source(self.app.profile_manager, payload, self.app.secret_manager)
+                self.write_json(
+                    {
+                        "source": source.to_api(),
+                        "sources": [item.to_api() for item in load_pop_sources(self.app.profile_manager)],
+                    },
+                    HTTPStatus.CREATED,
+                )
+            elif path == "/api/v1/pop-sources/migrate-secrets":
+                migrated = migrate_pop_source_secrets(self.app.profile_manager, self.app.secret_manager)
+                self.write_json({"migrated": migrated})
+            elif path.startswith("/api/v1/pop-sources/") and path.endswith("/probe"):
+                source_id = unquote(path.split("/")[-2])
+                source = get_pop_source(self.app.profile_manager, source_id, self.app.secret_manager)
+                probe = probe_pop_source(source)
+                self.write_json({"probe": probe.to_api()})
+            elif path.startswith("/api/v1/pop-sources/") and path.endswith("/delete"):
+                source_id = unquote(path.split("/")[-2])
+                deleted = delete_pop_source(self.app.profile_manager, source_id, self.app.secret_manager)
+                if not deleted:
+                    self.write_error(HTTPStatus.NOT_FOUND, "POP source not found")
+                    return
+                self.write_json(
+                    {
+                        "deleted": True,
+                        "sources": [item.to_api() for item in load_pop_sources(self.app.profile_manager)],
+                    }
+                )
+            elif path.startswith("/api/v1/pop-sources/") and path.endswith("/sync"):
+                source_id = unquote(path.split("/")[-2])
+                source = get_pop_source(self.app.profile_manager, source_id, self.app.secret_manager)
+                sync_limit = int(payload.get("sync_limit") or source.sync_limit)
+                result = sync_pop_source(self.app.db, source, sync_limit=sync_limit)
                 self.write_json({"sync": result.to_api()}, HTTPStatus.CREATED)
             elif path == "/api/v1/export":
                 output_path = Path(str(payload.get("outputPath") or payload.get("output_path") or "exports"))

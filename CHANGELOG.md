@@ -26,6 +26,7 @@ The project uses semantic versioning in `major.minor.patch` format.
 - Added IMAP folder discovery and saved-source management through CLI, API, and web controls.
 - Fixed Gmail IMAP folder discovery, normalized the common `imap.google.com` host typo to `imap.gmail.com`, and mapped Gmail special folders to roles.
 - Added IMAP provider presets, one-off selected-folder sync, and capture of IMAP flags/internal dates during message fetch.
+- Added an initial read-only POP3 connector with provider presets, secret-backed source configs, safe probes, UIDL incremental sync, CLI/API/web controls, and no server delete path.
 
 ## [0.1.0] - 2026-05-23
 

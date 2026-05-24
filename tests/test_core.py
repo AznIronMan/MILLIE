@@ -26,6 +26,18 @@ from millie.imap_connector import (
     save_imap_source,
     sync_imap_source,
 )
+from millie.pop_connector import (
+    POP_SOURCES_SETTING,
+    PopSourceConfig,
+    delete_pop_source,
+    get_pop_source,
+    list_pop_provider_presets,
+    load_pop_sources,
+    migrate_pop_source_secrets,
+    probe_pop_source,
+    save_pop_source,
+    sync_pop_source,
+)
 from millie.profiles import ProfileManager
 from millie.secrets import SecretManager
 from millie.source_scanners import scan_source
@@ -591,6 +603,122 @@ class CoreImportExportTests(unittest.TestCase):
             self.assertIn("auth_ref", raw_sources)
             self.assertEqual(get_imap_source(manager, "legacy-imap", secrets).password, "legacy-secret")
 
+    def test_pop_source_password_uses_secret_reference(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = ProfileManager(
+                root / "millie.settings",
+                root / "profiles",
+                root / "default.sqlite",
+                root / "default-data",
+            )
+            secrets = SecretManager(manager, "local")
+
+            source = save_pop_source(
+                manager,
+                {
+                    "name": "Secret POP",
+                    "host": "pop.example.test",
+                    "username": "secret@example.test",
+                    "password": "super-secret",
+                },
+                secrets,
+            )
+
+            raw_sources = manager.get_profile_setting(POP_SOURCES_SETTING) or ""
+            self.assertNotIn("super-secret", raw_sources)
+            self.assertIn("auth_ref", raw_sources)
+            self.assertEqual(load_pop_sources(manager)[0].password, "")
+            self.assertEqual(get_pop_source(manager, source.id, secrets).password, "super-secret")
+            self.assertTrue(delete_pop_source(manager, source.id, secrets))
+            self.assertIsNone(secrets.read_secret(source.auth_ref))
+
+    def test_pop_provider_presets_include_gmail_defaults(self) -> None:
+        presets = {provider.id: provider for provider in list_pop_provider_presets()}
+
+        self.assertIn("gmail", presets)
+        self.assertEqual(presets["gmail"].host, "pop.gmail.com")
+        self.assertEqual(presets["gmail"].port, 995)
+
+    def test_legacy_pop_password_migrates_to_secret_reference(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = ProfileManager(
+                root / "millie.settings",
+                root / "profiles",
+                root / "default.sqlite",
+                root / "default-data",
+            )
+            manager.set_profile_setting(
+                POP_SOURCES_SETTING,
+                json.dumps(
+                    [
+                        {
+                            "id": "legacy-pop",
+                            "name": "Legacy POP",
+                            "host": "pop.example.test",
+                            "port": 995,
+                            "username": "legacy@example.test",
+                            "password": "legacy-secret",
+                            "use_ssl": True,
+                            "sync_limit": 100,
+                        }
+                    ]
+                ),
+            )
+            secrets = SecretManager(manager, "local")
+
+            migrated = migrate_pop_source_secrets(manager, secrets)
+
+            self.assertEqual(migrated, 1)
+            raw_sources = manager.get_profile_setting(POP_SOURCES_SETTING) or ""
+            self.assertNotIn("legacy-secret", raw_sources)
+            self.assertIn("auth_ref", raw_sources)
+            self.assertEqual(get_pop_source(manager, "legacy-pop", secrets).password, "legacy-secret")
+
+    def test_pop_probe_uses_no_retr_or_dele(self) -> None:
+        source = pop_fixture_source()
+        client = FakePopClient({"uid-1": build_message("pop@example.com", "POP One", "POP body").as_bytes()})
+
+        result = probe_pop_source(source, lambda _: client)
+
+        self.assertEqual(result.message_count, 1)
+        self.assertTrue(result.uidl_available)
+        self.assertNotIn("RETR", client.commands)
+        self.assertNotIn("DELE", client.commands)
+
+    def test_pop_sync_imports_incrementally_without_delete(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = MillieDatabase(root / "millie.sqlite", root / "data")
+            db.init()
+            messages = {
+                "uid-1": build_message("pop-one@example.com", "POP One", "First POP body").as_bytes(),
+                "uid-2": build_message("pop-two@example.com", "POP Two", "Second POP body").as_bytes(),
+            }
+            source = pop_fixture_source(sync_limit=10)
+            client = FakePopClient(messages)
+
+            first = sync_pop_source(db, source, lambda _: client)
+            self.assertEqual(first.processed, 2)
+            self.assertEqual(first.imported, 2)
+            self.assertEqual(first.duplicates, 0)
+            self.assertEqual(first.errors, 0)
+            self.assertNotIn("DELE", client.commands)
+            self.assertEqual(len(db.list_messages()), 2)
+            state = db.get_source_sync_state(first.source_id, "maildrop")
+            self.assertEqual(state["delete_policy"], "never")
+            self.assertEqual(state["seen_uidls"], ["uid-1", "uid-2"])
+
+            messages["uid-3"] = build_message("pop-three@example.com", "POP Three", "Third POP body").as_bytes()
+            second_client = FakePopClient(messages)
+            second = sync_pop_source(db, source, lambda _: second_client)
+            self.assertEqual(second.processed, 1)
+            self.assertEqual(second.imported, 1)
+            self.assertEqual(second.errors, 0)
+            self.assertNotIn("DELE", second_client.commands)
+            self.assertEqual(len(db.list_messages()), 3)
+
     def test_auth_defaults_to_dev_bypass_and_supports_sessions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -666,6 +794,19 @@ def build_emlx(raw_message: bytes) -> bytes:
     return str(len(raw_message)).encode("ascii") + b"\n" + raw_message + b"\n<plist></plist>\n"
 
 
+def pop_fixture_source(sync_limit: int = 100) -> PopSourceConfig:
+    return PopSourceConfig(
+        id="unit-pop",
+        name="Unit POP",
+        host="pop.example.test",
+        port=995,
+        username="user@example.test",
+        password="secret",
+        use_ssl=True,
+        sync_limit=sync_limit,
+    )
+
+
 class FakeImapClient:
     def __init__(self, messages: dict[str, dict[str, bytes]]):
         self.messages = messages
@@ -728,6 +869,58 @@ class FakeImapClient:
 
     def logout(self) -> tuple[str, list[bytes]]:
         return "OK", [b"logged out"]
+
+
+class FakePopClient:
+    def __init__(self, messages: dict[str, bytes]):
+        self.messages = messages
+        self.commands: list[str] = []
+
+    def user(self, user: str) -> bytes:
+        self.commands.append("USER")
+        if not user:
+            raise RuntimeError("missing user")
+        return b"+OK"
+
+    def pass_(self, password: str) -> bytes:
+        self.commands.append("PASS")
+        if not password:
+            raise RuntimeError("missing password")
+        return b"+OK"
+
+    def stat(self) -> tuple[int, int]:
+        self.commands.append("STAT")
+        return len(self.messages), sum(len(message) for message in self.messages.values())
+
+    def uidl(self, which: int | None = None) -> tuple[bytes, list[bytes], int] | bytes:
+        self.commands.append("UIDL")
+        items = list(self.messages)
+        if which is not None:
+            return f"{which} {items[which - 1]}".encode("ascii")
+        lines = [f"{index} {uidl}".encode("ascii") for index, uidl in enumerate(items, start=1)]
+        return b"+OK", lines, sum(len(line) for line in lines)
+
+    def retr(self, which: int) -> tuple[bytes, list[bytes], int]:
+        self.commands.append("RETR")
+        uidl = list(self.messages)[which - 1]
+        raw = self.messages[uidl]
+        lines = raw.splitlines()
+        return b"+OK", lines, len(raw)
+
+    def dele(self, which: int) -> bytes:
+        self.commands.append("DELE")
+        raise AssertionError(f"POP delete must not be called for message {which}")
+
+    def capa(self) -> dict[bytes, list[bytes]]:
+        self.commands.append("CAPA")
+        return {b"UIDL": [], b"USER": []}
+
+    def quit(self) -> bytes:
+        self.commands.append("QUIT")
+        return b"+OK"
+
+    def close(self) -> None:
+        self.commands.append("CLOSE")
 
 
 if __name__ == "__main__":

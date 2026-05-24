@@ -134,6 +134,17 @@ If a profile has legacy IMAP source configs with raw passwords from an older dev
 PYTHONPATH=src python3 -m millie imap-migrate-secrets
 ```
 
+## Sync POP
+
+```sh
+PYTHONPATH=src python3 -m millie pop-add "Test POP" --host pop.example.com --username user@example.com
+PYTHONPATH=src python3 -m millie pop-sources
+PYTHONPATH=src python3 -m millie pop-probe test-pop
+PYTHONPATH=src python3 -m millie pop-sync test-pop --limit 5
+```
+
+The POP connector is read-only and uses SSL by default. `pop-probe` checks login, message count, and `UIDL` without retrieving message bodies. `pop-sync` retrieves new UIDLs for import, but never issues `DELE`.
+
 ## Search
 
 The web app search box and `/api/v1/search?q=...` use SQLite FTS5 over message subject, participants, and text body. Query text is normalized before it reaches FTS so searches with punctuation or email addresses are safe to run.

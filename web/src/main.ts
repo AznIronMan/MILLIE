@@ -132,6 +132,48 @@ type ImapSyncResult = {
   format: string;
 };
 
+type PopSource = {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  username: string;
+  use_ssl: boolean;
+  sync_limit: number;
+  auth_method: string;
+  provider: string;
+  password_configured: boolean;
+  secret_backend: string | null;
+};
+
+type PopProvider = {
+  id: string;
+  display_name: string;
+  host: string;
+  port: number;
+  use_ssl: boolean;
+  host_aliases: string[];
+};
+
+type PopProbeResult = {
+  message_count: number;
+  maildrop_size_bytes: number;
+  uidl_available: boolean;
+  uidl_sample_count: number;
+  capabilities: string[];
+  commands_not_used: string[];
+};
+
+type PopSyncResult = {
+  import_job_id: number;
+  source_id: number;
+  imported: number;
+  processed: number;
+  duplicates: number;
+  errors: number;
+  format: string;
+};
+
 type ImportJobError = {
   id: number;
   import_job_id: number;
@@ -223,6 +265,8 @@ type State = {
   imapSources: ImapSource[];
   imapDiscoveredSourceId: string | null;
   imapDiscoveredFolders: ImapFolder[];
+  popProviders: PopProvider[];
+  popSources: PopSource[];
   mailboxes: Mailbox[];
   messages: MessageSummary[];
   selectedMailboxId: number | null;
@@ -254,6 +298,8 @@ const state: State = {
   imapSources: [],
   imapDiscoveredSourceId: null,
   imapDiscoveredFolders: [],
+  popProviders: [],
+  popSources: [],
   mailboxes: [],
   messages: [],
   selectedMailboxId: null,
@@ -430,6 +476,42 @@ function render(): void {
           </div>
           ${renderImapSources()}
           ${renderImapFolderPicker()}
+          <div class="panel-rule"></div>
+          <label>
+            POP provider
+            <select id="pop-provider">
+              ${renderPopProviderOptions()}
+            </select>
+          </label>
+          <label>
+            POP source
+            <input id="pop-name" placeholder="Gmail POP" />
+          </label>
+          <label>
+            Host
+            <input id="pop-host" placeholder="pop.example.com" />
+          </label>
+          <label>
+            Username
+            <input id="pop-username" autocomplete="username" />
+          </label>
+          <label>
+            Password
+            <input id="pop-password" type="password" autocomplete="current-password" />
+          </label>
+          <div class="inline-controls">
+            <select id="pop-security">
+              <option value="ssl">SSL</option>
+              <option value="plain">Plain</option>
+            </select>
+            <button id="pop-save-button">Save</button>
+          </div>
+          <div class="imap-options">
+            <input id="pop-port" type="number" min="1" placeholder="995" />
+            <input id="pop-limit" type="number" min="1" placeholder="100" />
+            <span class="muted compact-note">No delete</span>
+          </div>
+          ${renderPopSources()}
         </section>
         <nav class="folder-list" aria-label="Mailboxes">
           <button class="folder-row ${state.selectedMailboxId === null ? "active" : ""}" data-mailbox-id="">
@@ -642,6 +724,61 @@ function imapFolderNote(folder: ImapFolder): string {
     return "archive · overlaps labels";
   }
   return folder.role ?? (folder.flags.join(", ") || "folder");
+}
+
+function renderPopProviderOptions(): string {
+  const providers = state.popProviders.length
+    ? state.popProviders
+    : [
+        {
+          id: "generic",
+          display_name: "Generic POP3",
+          host: "",
+          port: 995,
+          use_ssl: true,
+          host_aliases: [],
+        },
+      ];
+  return providers
+    .map(
+      (provider) => `
+        <option value="${escapeHtml(provider.id)}">${escapeHtml(provider.display_name)}</option>
+      `,
+    )
+    .join("");
+}
+
+function popProviderLabel(providerId: string): string {
+  return state.popProviders.find((provider) => provider.id === providerId)?.display_name ?? providerId;
+}
+
+function renderPopSources(): string {
+  if (!state.popSources.length) return `<p class="muted compact-note">No saved POP sources.</p>`;
+  return `
+    <div class="imap-source-list">
+      ${state.popSources.map(renderPopSource).join("")}
+    </div>
+  `;
+}
+
+function renderPopSource(source: PopSource): string {
+  const security = source.use_ssl ? "SSL" : "plain";
+  const secret = source.secret_backend ?? "no secret";
+  const provider = popProviderLabel(source.provider);
+  return `
+    <div class="imap-source-row">
+      <div>
+        <strong>${escapeHtml(source.name)}</strong>
+        <span>${escapeHtml(source.username)}@${escapeHtml(source.host)}:${source.port} · ${escapeHtml(security)} · ${escapeHtml(provider)}</span>
+        <small>limit ${source.sync_limit} · ${escapeHtml(secret)} · delete never</small>
+      </div>
+      <div class="imap-source-actions">
+        <button class="pop-probe-button" data-pop-source-id="${escapeHtml(source.id)}">Probe</button>
+        <button class="pop-sync-button" data-pop-source-id="${escapeHtml(source.id)}">Sync</button>
+        <button class="pop-delete-button" data-pop-source-id="${escapeHtml(source.id)}">Delete</button>
+      </div>
+    </div>
+  `;
 }
 
 function renderAuthScreen(): void {
@@ -945,6 +1082,23 @@ function bindEvents(): void {
       await deleteImapSource(button.dataset.imapSourceId ?? "");
     });
   });
+  document.querySelector<HTMLButtonElement>("#pop-save-button")?.addEventListener("click", savePopSource);
+  document.querySelector<HTMLSelectElement>("#pop-provider")?.addEventListener("change", applyPopProviderPreset);
+  document.querySelectorAll<HTMLButtonElement>(".pop-probe-button").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await probePopSource(button.dataset.popSourceId ?? "");
+    });
+  });
+  document.querySelectorAll<HTMLButtonElement>(".pop-sync-button").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await syncPopSource(button.dataset.popSourceId ?? "");
+    });
+  });
+  document.querySelectorAll<HTMLButtonElement>(".pop-delete-button").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await deletePopSource(button.dataset.popSourceId ?? "");
+    });
+  });
   document.querySelector<HTMLButtonElement>("#export-button")?.addEventListener("click", exportMail);
   document.querySelector<HTMLSelectElement>("#export-profile")?.addEventListener("change", (event) => {
     state.selectedExportProfileId = (event.currentTarget as HTMLSelectElement).value;
@@ -999,6 +1153,8 @@ async function loadInitial(): Promise<void> {
     await loadExportProfiles();
     await loadImapProviders();
     await loadImapSources();
+    await loadPopProviders();
+    await loadPopSources();
     await loadJobs();
     await loadMailboxes();
     await loadMessages();
@@ -1049,6 +1205,16 @@ async function loadImapProviders(): Promise<void> {
 async function loadImapSources(): Promise<void> {
   const payload = await api<{ sources: ImapSource[] }>("/api/v1/imap-sources");
   state.imapSources = payload.sources;
+}
+
+async function loadPopProviders(): Promise<void> {
+  const payload = await api<{ providers: PopProvider[] }>("/api/v1/pop-providers");
+  state.popProviders = payload.providers;
+}
+
+async function loadPopSources(): Promise<void> {
+  const payload = await api<{ sources: PopSource[] }>("/api/v1/pop-sources");
+  state.popSources = payload.sources;
 }
 
 async function loadImportJobDetail(id: number): Promise<void> {
@@ -1382,6 +1548,137 @@ async function syncImapSource(sourceId: string, folders?: string[]): Promise<voi
   }
 }
 
+function applyPopProviderPreset(event: Event): void {
+  const providerId = (event.currentTarget as HTMLSelectElement).value;
+  const provider = state.popProviders.find((item) => item.id === providerId);
+  if (!provider || provider.id === "generic") return;
+
+  const hostInput = document.querySelector<HTMLInputElement>("#pop-host");
+  const portInput = document.querySelector<HTMLInputElement>("#pop-port");
+  const securitySelect = document.querySelector<HTMLSelectElement>("#pop-security");
+  const nameInput = document.querySelector<HTMLInputElement>("#pop-name");
+  const usernameInput = document.querySelector<HTMLInputElement>("#pop-username");
+
+  if (hostInput && !hostInput.value.trim()) hostInput.value = provider.host;
+  if (portInput && !portInput.value.trim()) portInput.value = String(provider.port);
+  if (securitySelect) securitySelect.value = provider.use_ssl ? "ssl" : "plain";
+  if (nameInput && !nameInput.value.trim() && usernameInput?.value.trim()) {
+    nameInput.value = usernameInput.value.trim();
+  }
+}
+
+async function savePopSource(): Promise<void> {
+  const name = document.querySelector<HTMLInputElement>("#pop-name")?.value.trim() ?? "";
+  const provider = document.querySelector<HTMLSelectElement>("#pop-provider")?.value ?? "generic";
+  const host = document.querySelector<HTMLInputElement>("#pop-host")?.value.trim() ?? "";
+  const username = document.querySelector<HTMLInputElement>("#pop-username")?.value.trim() ?? "";
+  const password = document.querySelector<HTMLInputElement>("#pop-password")?.value ?? "";
+  const useSsl = (document.querySelector<HTMLSelectElement>("#pop-security")?.value ?? "ssl") === "ssl";
+  const portText = document.querySelector<HTMLInputElement>("#pop-port")?.value.trim();
+  const limitText = document.querySelector<HTMLInputElement>("#pop-limit")?.value.trim();
+  if (!name || !host || !username) {
+    state.status = "POP source, host, and username are required.";
+    render();
+    return;
+  }
+  state.status = "Saving POP source...";
+  render();
+  try {
+    const port = portText ? Number(portText) : useSsl ? 995 : 110;
+    const syncLimit = limitText ? Number(limitText) : 100;
+    const payload = await api<{ source: PopSource; sources: PopSource[] }>("/api/v1/pop-sources", {
+      method: "POST",
+      body: JSON.stringify({
+        name,
+        provider,
+        host,
+        username,
+        password,
+        use_ssl: useSsl,
+        port,
+        sync_limit: syncLimit,
+      }),
+    });
+    state.popSources = payload.sources;
+    state.status = `Saved POP source ${payload.source.name}.`;
+    render();
+  } catch (error) {
+    state.status = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}
+
+async function probePopSource(sourceId: string): Promise<void> {
+  const source = state.popSources.find((item) => item.id === sourceId);
+  if (!source) {
+    state.status = "POP source is no longer available.";
+    render();
+    return;
+  }
+  state.status = `Probing ${source.name} without retrieving or deleting mail...`;
+  render();
+  try {
+    const payload = await api<{ probe: PopProbeResult }>(`/api/v1/pop-sources/${encodeURIComponent(sourceId)}/probe`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    state.status = `POP probe found ${payload.probe.message_count} message(s), UIDL=${payload.probe.uidl_available ? "yes" : "no"}; no RETR/DELE used.`;
+    render();
+  } catch (error) {
+    state.status = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}
+
+async function syncPopSource(sourceId: string): Promise<void> {
+  const source = state.popSources.find((item) => item.id === sourceId);
+  if (!source) {
+    state.status = "POP source is no longer available.";
+    render();
+    return;
+  }
+  state.status = `Syncing ${source.name} by POP without delete...`;
+  render();
+  try {
+    const payload = await api<{ sync: PopSyncResult }>(`/api/v1/pop-sources/${encodeURIComponent(sourceId)}/sync`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    await loadMailboxes();
+    await loadJobs();
+    await loadMessages();
+    state.status = `POP sync processed ${payload.sync.processed} message(s); new=${payload.sync.imported}, duplicates=${payload.sync.duplicates}, errors=${payload.sync.errors}; delete never.`;
+    render();
+  } catch (error) {
+    await loadJobs();
+    state.status = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}
+
+async function deletePopSource(sourceId: string): Promise<void> {
+  const source = state.popSources.find((item) => item.id === sourceId);
+  if (!source) {
+    state.status = "POP source is no longer available.";
+    render();
+    return;
+  }
+  state.status = `Deleting ${source.name}...`;
+  render();
+  try {
+    const payload = await api<{ deleted: boolean; sources: PopSource[] }>(`/api/v1/pop-sources/${encodeURIComponent(sourceId)}/delete`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    state.popSources = payload.sources;
+    state.status = `Deleted ${source.name}.`;
+    render();
+  } catch (error) {
+    state.status = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}
+
 async function switchProfile(event: Event): Promise<void> {
   const profileId = (event.currentTarget as HTMLSelectElement).value;
   if (!profileId || profileId === state.activeProfileId) return;
@@ -1450,6 +1747,8 @@ async function refreshActiveProfileData(): Promise<void> {
   await loadExportProfiles();
   await loadImapProviders();
   await loadImapSources();
+  await loadPopProviders();
+  await loadPopSources();
   await loadJobs();
   await loadMailboxes();
   await loadMessages();
