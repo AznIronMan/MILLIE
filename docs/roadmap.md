@@ -52,7 +52,7 @@
 
 ## Phase 5: Live Connectors
 
-- Add IMAP sync. Initial read-only password/app-password sync is in place; OAuth, provider presets, flag capture, and hardened secret storage remain.
+- Add IMAP sync. Initial read-only password/app-password sync is in place with secret references; OAuth, provider presets, folder discovery, and flag capture remain.
 - Add POP3 import.
 - Add Microsoft Graph / Exchange support.
 - Add OAuth and app-password connection flows.

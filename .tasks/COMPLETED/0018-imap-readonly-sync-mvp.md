@@ -25,4 +25,4 @@ Add the first live mail connector path with read-only IMAP sync into the active 
 
 ## Notes
 
-Passwords/app passwords are stored directly in the profile settings SQLite file in this development slice. Production use should wait for keychain or encrypted secret storage.
+This slice originally used profile settings for development credentials. That has since been superseded by secret references with Keychain/local-backend support in task `0019-secret-store-hardening`.

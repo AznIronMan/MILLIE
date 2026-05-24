@@ -9,6 +9,7 @@ from typing import Any, Protocol
 from .database import MillieDatabase
 from .mailparse import parse_raw_message
 from .profiles import ProfileManager
+from .secrets import SecretManager, backend_from_ref
 
 
 IMAP_SOURCES_SETTING = "imap.sources.v1"
@@ -39,9 +40,11 @@ class ImapSourceConfig:
     use_tls: bool
     folders: list[str]
     sync_limit: int
+    auth_ref: str | None = None
     auth_method: str = "password"
 
     def to_api(self) -> dict[str, Any]:
+        secret_backend = backend_from_ref(self.auth_ref)
         return {
             "id": self.id,
             "name": self.name,
@@ -52,7 +55,8 @@ class ImapSourceConfig:
             "folders": self.folders,
             "sync_limit": self.sync_limit,
             "auth_method": self.auth_method,
-            "password_configured": bool(self.password),
+            "password_configured": bool(self.password or self.auth_ref),
+            "secret_backend": secret_backend or ("legacy-settings" if self.password else None),
         }
 
     def source_uri(self) -> str:
@@ -84,6 +88,17 @@ class ImapSyncResult:
 
 
 def load_imap_sources(profile_manager: ProfileManager) -> list[ImapSourceConfig]:
+    payload = load_imap_source_payloads(profile_manager)
+    sources: list[ImapSourceConfig] = []
+    for item in payload:
+        try:
+            sources.append(config_from_dict(item))
+        except ValueError:
+            continue
+    return sources
+
+
+def load_imap_source_payloads(profile_manager: ProfileManager) -> list[dict[str, object]]:
     raw = profile_manager.get_profile_setting(IMAP_SOURCES_SETTING)
     if not raw:
         return []
@@ -93,18 +108,16 @@ def load_imap_sources(profile_manager: ProfileManager) -> list[ImapSourceConfig]
         return []
     if not isinstance(payload, list):
         return []
-    sources: list[ImapSourceConfig] = []
-    for item in payload:
-        if not isinstance(item, dict):
-            continue
-        try:
-            sources.append(config_from_dict(item))
-        except ValueError:
-            continue
-    return sources
+    return [item for item in payload if isinstance(item, dict)]
 
 
-def save_imap_source(profile_manager: ProfileManager, payload: dict[str, object]) -> ImapSourceConfig:
+def save_imap_source(
+    profile_manager: ProfileManager,
+    payload: dict[str, object],
+    secret_manager: SecretManager | None = None,
+) -> ImapSourceConfig:
+    secret_manager = secret_manager or SecretManager(profile_manager)
+    migrate_imap_source_secrets(profile_manager, secret_manager)
     existing_sources = load_imap_sources(profile_manager)
     requested_id = str(payload.get("id") or "").strip()
     existing = next((item for item in existing_sources if item.id == requested_id), None)
@@ -114,8 +127,11 @@ def save_imap_source(profile_manager: ProfileManager, payload: dict[str, object]
     )
     config_payload = dict(payload)
     config_payload["id"] = source_id
-    if existing and not str(config_payload.get("password") or ""):
-        config_payload["password"] = existing.password
+    incoming_password = str(config_payload.get("password") or "")
+    if incoming_password:
+        config_payload["auth_ref"] = secret_manager.store_imap_password(source_id, incoming_password)
+    elif existing:
+        config_payload["auth_ref"] = existing.auth_ref
     config = config_from_dict(config_payload)
     merged = [item for item in existing_sources if item.id != config.id]
     merged.append(config)
@@ -126,11 +142,49 @@ def save_imap_source(profile_manager: ProfileManager, payload: dict[str, object]
     return config
 
 
-def get_imap_source(profile_manager: ProfileManager, source_id: str) -> ImapSourceConfig:
+def get_imap_source(
+    profile_manager: ProfileManager,
+    source_id: str,
+    secret_manager: SecretManager | None = None,
+) -> ImapSourceConfig:
+    secret_manager = secret_manager or SecretManager(profile_manager)
+    migrate_imap_source_secrets(profile_manager, secret_manager)
     for source in load_imap_sources(profile_manager):
         if source.id == source_id:
+            source.password = source.password or secret_manager.read_secret(source.auth_ref) or ""
             return source
     raise KeyError(f"Unknown IMAP source: {source_id}")
+
+
+def migrate_imap_source_secrets(
+    profile_manager: ProfileManager,
+    secret_manager: SecretManager | None = None,
+) -> int:
+    secret_manager = secret_manager or SecretManager(profile_manager)
+    payloads = load_imap_source_payloads(profile_manager)
+    migrated = 0
+    changed = False
+    updated_payloads: list[dict[str, object]] = []
+    for item in payloads:
+        candidate = dict(item)
+        password = str(candidate.get("password") or "")
+        auth_ref = str(candidate.get("auth_ref") or "")
+        if password and not auth_ref:
+            source_id = str(candidate.get("id") or candidate.get("name") or "imap")
+            candidate["auth_ref"] = secret_manager.store_imap_password(unique_slug(source_id), password)
+            migrated += 1
+            changed = True
+        if "password" in candidate:
+            candidate.pop("password", None)
+            changed = True
+        updated_payloads.append(candidate)
+
+    if changed:
+        profile_manager.set_profile_setting(
+            IMAP_SOURCES_SETTING,
+            json.dumps(updated_payloads, indent=2, sort_keys=True),
+        )
+    return migrated
 
 
 def config_from_dict(payload: dict[str, object]) -> ImapSourceConfig:
@@ -164,6 +218,7 @@ def config_from_dict(payload: dict[str, object]) -> ImapSourceConfig:
     sync_limit = max(1, int(payload.get("sync_limit") or payload.get("limit") or 100))
     source_id = str(payload.get("id") or "").strip() or unique_slug(name)
     auth_method = str(payload.get("auth_method") or "password").strip() or "password"
+    auth_ref = str(payload.get("auth_ref") or "").strip() or None
 
     return ImapSourceConfig(
         id=unique_slug(source_id),
@@ -175,6 +230,7 @@ def config_from_dict(payload: dict[str, object]) -> ImapSourceConfig:
         use_tls=use_tls_value,
         folders=folders or ["INBOX"],
         sync_limit=sync_limit,
+        auth_ref=auth_ref,
         auth_method=auth_method,
     )
 
@@ -186,7 +242,7 @@ def source_to_settings(config: ImapSourceConfig) -> dict[str, Any]:
         "host": config.host,
         "port": config.port,
         "username": config.username,
-        "password": config.password,
+        "auth_ref": config.auth_ref,
         "use_tls": config.use_tls,
         "folders": config.folders,
         "sync_limit": config.sync_limit,
@@ -215,6 +271,8 @@ def sync_imap_source(
     imap_factory: Any | None = None,
 ) -> ImapSyncResult:
     db.init()
+    if not config.password:
+        raise ValueError("IMAP password/app password is not configured")
     source_id = db.get_or_create_source("imap", config.name, config.source_uri())
     job_id = db.start_import_job(
         source_id,

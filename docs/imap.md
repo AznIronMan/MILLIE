@@ -7,6 +7,7 @@ MILLIE includes an initial read-only IMAP connector for importing live mailbox m
 Current IMAP support is intentionally narrow:
 
 - Password or app-password login through Python `imaplib`
+- Secret references for stored credentials
 - TLS by default, with plain IMAP available for local/dev testing
 - One or more configured folders, defaulting to `INBOX`
 - Incremental sync using per-folder UID cursors
@@ -17,9 +18,25 @@ This is not yet an OAuth flow, Exchange/Microsoft Graph connector, POP3 connecto
 
 ## Settings
 
-Saved IMAP source configs live in the active profile SQLite settings file under the `imap.sources.v1` key. In the current development slice, the password/app password is stored there directly so the connector can be tested end-to-end.
+Saved IMAP source configs live in the active profile SQLite settings file under the `imap.sources.v1` key.
 
-Do not use production mailbox credentials until secret storage is moved to a safer backend such as the OS keychain or an encrypted secret store.
+The source config stores an `auth_ref`, not the password/app password. On macOS, MILLIE uses Keychain by default when the `security` command is available. Other environments fall back to a profile-local development store under `secrets.local.v1`.
+
+Use the local settings fallback only for development or throwaway test credentials. It still stores the secret in the profile `.settings` SQLite file, just outside the source config.
+
+Use this to inspect the active backend:
+
+```sh
+PYTHONPATH=src python3 -m millie secrets-status
+```
+
+To force a backend for local testing:
+
+```sh
+PYTHONPATH=src python3 -m millie --secret-backend local imap-add "Test Mail" \
+  --host imap.example.com \
+  --username user@example.com
+```
 
 Incremental sync state lives in the profile mail database in `source_sync_states`, keyed by source and folder scope. The state currently stores `uidvalidity` and `last_uid`.
 
@@ -33,10 +50,13 @@ PYTHONPATH=src python3 -m millie imap-add "Work Mail" \
   --limit 100
 
 PYTHONPATH=src python3 -m millie imap-sources
+PYTHONPATH=src python3 -m millie imap-migrate-secrets
 PYTHONPATH=src python3 -m millie imap-sync work-mail
 ```
 
 Use `--no-tls` only for trusted local/dev servers.
+
+`imap-migrate-secrets` moves any legacy raw IMAP passwords from `imap.sources.v1` into the configured secret backend.
 
 ## API
 
@@ -59,9 +79,10 @@ Use `--no-tls` only for trusted local/dev servers.
 
 `POST /api/v1/imap-sources/{id}/sync` runs a read-only sync immediately and creates an import job.
 
+`POST /api/v1/imap-sources/migrate-secrets` moves legacy raw IMAP passwords into the configured secret backend.
+
 ## Follow-Up
 
-- Replace direct password storage with OS keychain or encrypted secret references.
 - Add OAuth/app-password setup flows.
 - Add provider presets for common IMAP hosts.
 - Capture IMAP flags and internal dates.

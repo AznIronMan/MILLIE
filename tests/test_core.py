@@ -12,8 +12,17 @@ from millie.auth import AuthManager, SESSION_COOKIE
 from millie.database import MillieDatabase
 from millie.exporters import export_messages
 from millie.importers import detect_format, import_path
-from millie.imap_connector import ImapSourceConfig, sync_imap_source
+from millie.imap_connector import (
+    IMAP_SOURCES_SETTING,
+    ImapSourceConfig,
+    get_imap_source,
+    load_imap_sources,
+    migrate_imap_source_secrets,
+    save_imap_source,
+    sync_imap_source,
+)
 from millie.profiles import ProfileManager
+from millie.secrets import SecretManager
 from millie.source_scanners import scan_source
 
 
@@ -413,6 +422,78 @@ class CoreImportExportTests(unittest.TestCase):
             self.assertEqual(second.errors, 0)
             self.assertEqual(len(db.list_messages()), 3)
             self.assertEqual(db.get_source_sync_state(first.source_id, "folder:INBOX")["last_uid"], 3)
+
+    def test_imap_source_password_uses_secret_reference(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = ProfileManager(
+                root / "millie.settings",
+                root / "profiles",
+                root / "default.sqlite",
+                root / "default-data",
+            )
+            secrets = SecretManager(manager, "local")
+
+            source = save_imap_source(
+                manager,
+                {
+                    "name": "Secret IMAP",
+                    "host": "imap.example.test",
+                    "username": "secret@example.test",
+                    "password": "super-secret",
+                    "folders": ["INBOX"],
+                },
+                secrets,
+            )
+
+            raw_sources = manager.get_profile_setting(IMAP_SOURCES_SETTING) or ""
+            self.assertNotIn("super-secret", raw_sources)
+            self.assertIn("auth_ref", raw_sources)
+
+            listed = load_imap_sources(manager)
+            self.assertEqual(len(listed), 1)
+            self.assertEqual(listed[0].password, "")
+            self.assertEqual(listed[0].to_api()["secret_backend"], "local-settings")
+
+            resolved = get_imap_source(manager, source.id, secrets)
+            self.assertEqual(resolved.password, "super-secret")
+
+    def test_legacy_imap_password_migrates_to_secret_reference(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = ProfileManager(
+                root / "millie.settings",
+                root / "profiles",
+                root / "default.sqlite",
+                root / "default-data",
+            )
+            manager.set_profile_setting(
+                IMAP_SOURCES_SETTING,
+                json.dumps(
+                    [
+                        {
+                            "id": "legacy-imap",
+                            "name": "Legacy IMAP",
+                            "host": "imap.example.test",
+                            "port": 993,
+                            "username": "legacy@example.test",
+                            "password": "legacy-secret",
+                            "use_tls": True,
+                            "folders": ["INBOX"],
+                            "sync_limit": 100,
+                        }
+                    ]
+                ),
+            )
+            secrets = SecretManager(manager, "local")
+
+            migrated = migrate_imap_source_secrets(manager, secrets)
+
+            self.assertEqual(migrated, 1)
+            raw_sources = manager.get_profile_setting(IMAP_SOURCES_SETTING) or ""
+            self.assertNotIn("legacy-secret", raw_sources)
+            self.assertIn("auth_ref", raw_sources)
+            self.assertEqual(get_imap_source(manager, "legacy-imap", secrets).password, "legacy-secret")
 
     def test_auth_defaults_to_dev_bypass_and_supports_sessions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

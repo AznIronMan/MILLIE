@@ -12,11 +12,13 @@ from .importers import import_path
 from .imap_connector import (
     get_imap_source,
     load_imap_sources,
+    migrate_imap_source_secrets,
     save_imap_source,
     sync_imap_source,
 )
 from .api.server import run_server
 from .profiles import ProfileManager
+from .secrets import SecretManager
 from .source_scanners import scan_source
 
 
@@ -26,6 +28,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--data-dir", default=None, help="Content-addressed data directory")
     parser.add_argument("--settings", "--profiles", dest="settings", default=None, help="Global SQLite settings file")
     parser.add_argument("--profiles-dir", default=None, help="Directory for profile databases and data")
+    parser.add_argument(
+        "--secret-backend",
+        default=None,
+        choices=["auto", "keychain", "local"],
+        help="Secret backend for connector credentials",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("init-db", help="Initialize the SQLite database")
@@ -76,6 +84,9 @@ def build_parser() -> argparse.ArgumentParser:
     imap_sync = subparsers.add_parser("imap-sync", help="Run read-only sync for a saved IMAP source")
     imap_sync.add_argument("source_id", help="Saved IMAP source id")
 
+    subparsers.add_parser("secrets-status", help="Show the active secret backend")
+    subparsers.add_parser("imap-migrate-secrets", help="Move legacy IMAP passwords out of source configs")
+
     export_cmd = subparsers.add_parser("export", help="Export messages to a mailbox format")
     export_cmd.add_argument("--format", required=True, choices=["auto", "eml", "mbox", "maildir"])
     export_cmd.add_argument("--output", required=True, help="Output directory")
@@ -118,6 +129,7 @@ def main(argv: list[str] | None = None) -> int:
         config.data_dir,
     )
     db = profile_manager.active_database()
+    secret_manager = SecretManager(profile_manager, args.secret_backend)
 
     if args.command == "init-db":
         db.init()
@@ -138,7 +150,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Selected profile {profile.id}: {profile.name}")
         return 0
     if args.command == "serve":
-        run_server(config)
+        run_server(config, args.secret_backend)
         return 0
     if args.command == "import":
         try:
@@ -190,7 +202,7 @@ def main(argv: list[str] | None = None) -> int:
             for source in sources:
                 folders = ", ".join(source.folders)
                 security = "TLS" if source.use_tls else "plain"
-                secret = "password set" if source.password else "no password"
+                secret = source.to_api().get("secret_backend") or "no secret"
                 print(
                     f"- {source.id}: {source.name} "
                     f"({source.username}@{source.host}:{source.port}, "
@@ -212,12 +224,13 @@ def main(argv: list[str] | None = None) -> int:
                 "folders": args.folders or ["INBOX"],
                 "sync_limit": args.limit,
             },
+            secret_manager,
         )
         print(f"Saved IMAP source {source.id}: {source.name}")
         return 0
     if args.command == "imap-sync":
         try:
-            source = get_imap_source(profile_manager, args.source_id)
+            source = get_imap_source(profile_manager, args.source_id, secret_manager)
             result = sync_imap_source(db, source)
         except Exception as exc:  # noqa: BLE001
             print(f"IMAP sync failed: {exc}")
@@ -228,6 +241,13 @@ def main(argv: list[str] | None = None) -> int:
             f"errors={result.errors} folders={','.join(result.folders)}"
         )
         return 0 if result.errors == 0 else 1
+    if args.command == "secrets-status":
+        print(json.dumps(secret_manager.status(), indent=2))
+        return 0
+    if args.command == "imap-migrate-secrets":
+        migrated = migrate_imap_source_secrets(profile_manager, secret_manager)
+        print(f"Migrated {migrated} IMAP secret(s).")
+        return 0
     if args.command == "export":
         result = export_messages(
             db,

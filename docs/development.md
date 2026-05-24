@@ -22,6 +22,8 @@ The previously selected profile opens automatically when the server starts.
 
 Local auth also uses `.private/local/millie.settings`. For the current development phase, `auth.dev_bypass` defaults to `true`. Set it to `false` in the global settings database when testing the first-run admin setup and session-cookie login flow.
 
+Connector credentials use a secret manager. The default `auto` backend uses macOS Keychain when available and falls back to a profile-local settings store for development. Use `--secret-backend local` for deterministic tests and smoke runs that should avoid Keychain writes.
+
 ## Prerequisites
 
 Run the doctor command to check Python, SQLite, Node.js, npm, optional `readpst/libpst`, `web/package.json`, `web/node_modules`, and optional `.venv` state:
@@ -118,12 +120,17 @@ The web app has the same scan path in the import panel. Scanning is read-only an
 ```sh
 PYTHONPATH=src python3 -m millie imap-add "Test IMAP" --host imap.example.com --username user@example.com --folder INBOX
 PYTHONPATH=src python3 -m millie imap-sources
+PYTHONPATH=src python3 -m millie secrets-status
 PYTHONPATH=src python3 -m millie imap-sync test-imap
 ```
 
-The initial IMAP connector is read-only and uses TLS by default. It stores source configs in the active profile `.settings` file and tracks per-folder UID cursors in the active profile mail database.
+The initial IMAP connector is read-only and uses TLS by default. It stores source configs in the active profile `.settings` file, stores only secret references in those configs, and tracks per-folder UID cursors in the active profile mail database.
 
-For now, password/app-password values are stored directly in the profile settings SQLite file. Use app passwords or test accounts during development until keychain/encrypted secret storage is added.
+If a profile has legacy IMAP source configs with raw passwords from an older development build, migrate them:
+
+```sh
+PYTHONPATH=src python3 -m millie imap-migrate-secrets
+```
 
 ## Search
 

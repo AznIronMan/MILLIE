@@ -99,6 +99,7 @@ type ImapSource = {
   sync_limit: number;
   auth_method: string;
   password_configured: boolean;
+  secret_backend: string | null;
 };
 
 type ImapSyncResult = {
@@ -516,12 +517,13 @@ function renderImapSources(): string {
 function renderImapSource(source: ImapSource): string {
   const security = source.use_tls ? "TLS" : "plain";
   const folders = source.folders.join(", ");
+  const secret = source.secret_backend ?? "no secret";
   return `
     <div class="imap-source-row">
       <div>
         <strong>${escapeHtml(source.name)}</strong>
         <span>${escapeHtml(source.username)}@${escapeHtml(source.host)}:${source.port} · ${escapeHtml(security)}</span>
-        <small>${escapeHtml(folders)} · limit ${source.sync_limit} · ${source.password_configured ? "password set" : "no password"}</small>
+        <small>${escapeHtml(folders)} · limit ${source.sync_limit} · ${escapeHtml(secret)}</small>
       </div>
       <button class="imap-sync-button" data-imap-source-id="${escapeHtml(source.id)}">Sync</button>
     </div>

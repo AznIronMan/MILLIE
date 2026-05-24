@@ -91,6 +91,7 @@ MILLIE now has a first runnable foundation slice:
 - PST import through the optional `readpst`/`libpst` adapter
 - Thunderbird, Evolution, and Apple Mail source scanning to find importable mailbox candidates before import
 - Read-only IMAP source configs and incremental folder sync using UID cursors
+- Connector credential secret references with macOS Keychain support and a local development fallback
 - `.eml`, `mbox`, and `maildir` export paths with manifests
 - Exact raw-MIME deduplication so repeat imports do not duplicate canonical messages
 - SQLite FTS search over subject, participants, and body text

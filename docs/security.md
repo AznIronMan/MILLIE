@@ -43,4 +43,4 @@ OAuth tokens, refresh tokens, app passwords, private keys, and API keys should n
 
 Use secret references in app data and keep secret values in a protected store.
 
-The first IMAP sync MVP temporarily stores password/app-password values in the active profile `.settings` SQLite file for development testing. Treat that file as sensitive and replace this with keychain or encrypted secret storage before using production credentials.
+IMAP source configs now store `auth_ref` values instead of raw passwords. The default secret backend uses macOS Keychain when available. Non-macOS or explicitly local development runs can use a profile-local settings fallback, which should still be treated as sensitive and limited to development/test credentials.

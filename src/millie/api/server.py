@@ -17,10 +17,12 @@ from millie.importers import import_path
 from millie.imap_connector import (
     get_imap_source,
     load_imap_sources,
+    migrate_imap_source_secrets,
     save_imap_source,
     sync_imap_source,
 )
 from millie.profiles import ProfileManager
+from millie.secrets import SecretManager
 from millie.source_scanners import scan_source
 
 
@@ -50,6 +52,7 @@ class MillieRequestHandler(BaseHTTPRequestHandler):
                         "version": __version__,
                         "auth": self.app.auth.status(self.headers.get("Cookie")).to_api(),
                         "profile": self.app.profile_manager.active_profile().to_api(),
+                        "secrets": self.app.secret_manager.status(),
                         "settings_path": str(self.app.profile_manager.settings_path),
                         "db_path": str(self.app.db.db_path),
                         "data_dir": str(self.app.db.data_dir),
@@ -279,7 +282,7 @@ class MillieRequestHandler(BaseHTTPRequestHandler):
                     HTTPStatus.CREATED,
                 )
             elif path == "/api/v1/imap-sources":
-                source = save_imap_source(self.app.profile_manager, payload)
+                source = save_imap_source(self.app.profile_manager, payload, self.app.secret_manager)
                 self.write_json(
                     {
                         "source": source.to_api(),
@@ -287,9 +290,12 @@ class MillieRequestHandler(BaseHTTPRequestHandler):
                     },
                     HTTPStatus.CREATED,
                 )
+            elif path == "/api/v1/imap-sources/migrate-secrets":
+                migrated = migrate_imap_source_secrets(self.app.profile_manager, self.app.secret_manager)
+                self.write_json({"migrated": migrated})
             elif path.startswith("/api/v1/imap-sources/") and path.endswith("/sync"):
                 source_id = unquote(path.split("/")[-2])
-                source = get_imap_source(self.app.profile_manager, source_id)
+                source = get_imap_source(self.app.profile_manager, source_id, self.app.secret_manager)
                 result = sync_imap_source(self.app.db, source)
                 self.write_json({"sync": result.to_api()}, HTTPStatus.CREATED)
             elif path == "/api/v1/export":
@@ -383,11 +389,18 @@ class MillieRequestHandler(BaseHTTPRequestHandler):
 
 
 class MillieHTTPServer(ThreadingHTTPServer):
-    def __init__(self, server_address: tuple[str, int], config: AppConfig, profile_manager: ProfileManager):
+    def __init__(
+        self,
+        server_address: tuple[str, int],
+        config: AppConfig,
+        profile_manager: ProfileManager,
+        secret_backend: str | None = None,
+    ):
         super().__init__(server_address, MillieRequestHandler)
         self.config = config
         self.profile_manager = profile_manager
         self.auth = AuthManager(profile_manager)
+        self.secret_manager = SecretManager(profile_manager, secret_backend)
         self.db = profile_manager.active_database()
 
     def is_authorized(self, cookie_header: str | None) -> bool:
@@ -405,7 +418,7 @@ class MillieHTTPServer(ThreadingHTTPServer):
         return profile
 
 
-def run_server(config: AppConfig) -> None:
+def run_server(config: AppConfig, secret_backend: str | None = None) -> None:
     resolved = config.resolved()
     profile_manager = ProfileManager(
         resolved.settings_path,
@@ -413,7 +426,7 @@ def run_server(config: AppConfig) -> None:
         resolved.db_path,
         resolved.data_dir,
     )
-    server = MillieHTTPServer((resolved.host, resolved.port), resolved, profile_manager)
+    server = MillieHTTPServer((resolved.host, resolved.port), resolved, profile_manager, secret_backend)
     print(f"MILLIE listening on http://{resolved.host}:{resolved.port}")
     print(f"Settings: {server.profile_manager.settings_path}")
     print(f"Profile: {server.profile_manager.active_profile().name}")
