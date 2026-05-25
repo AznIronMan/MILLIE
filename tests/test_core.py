@@ -16,10 +16,12 @@ from millie.graph_connector import (
     complete_graph_authorization,
     create_graph_authorization_request,
     delete_graph_source,
+    discover_graph_folders,
     list_graph_provider_presets,
     load_graph_sources,
     probe_graph_source,
     save_graph_source,
+    sync_graph_source,
 )
 from millie.importers import detect_format, import_path
 from millie.imap_connector import (
@@ -924,6 +926,143 @@ class CoreImportExportTests(unittest.TestCase):
             self.assertNotIn("new-access-token", raw_sources)
             self.assertNotIn("new-refresh-token", raw_sources)
 
+    def test_graph_folder_discovery_recurses_and_source_saves_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = ProfileManager(
+                root / "millie.settings",
+                root / "profiles",
+                root / "default.sqlite",
+                root / "default-data",
+            )
+            secrets = SecretManager(manager, "local")
+            source = save_graph_source(
+                manager,
+                {
+                    "name": "Graph Mail",
+                    "client_id": "client-id-123",
+                    "tenant_id": "tenant-123",
+                    "redirect_uri": "http://localhost",
+                },
+            )
+            token_ref = secrets.store_graph_token_payload(
+                source.id,
+                json.dumps({"access_token": "access-token-value", "expires_at": "2999-01-01T00:00:00+00:00"}),
+            )
+            source = save_graph_source(manager, {**source.to_api(), "token_ref": token_ref})
+            client = FakeGraphHttpClient(
+                token_response={},
+                get_responses=[
+                    {
+                        "value": [
+                            {
+                                "id": "inbox-id",
+                                "displayName": "Inbox",
+                                "parentFolderId": "root",
+                                "totalItemCount": 2,
+                                "unreadItemCount": 1,
+                                "childFolderCount": 1,
+                            }
+                        ]
+                    },
+                    {
+                        "value": [
+                            {
+                                "id": "child-id",
+                                "displayName": "Project",
+                                "parentFolderId": "inbox-id",
+                                "totalItemCount": 1,
+                                "unreadItemCount": 0,
+                                "childFolderCount": 0,
+                            }
+                        ]
+                    },
+                ],
+            )
+
+            folders = discover_graph_folders(manager, source.id, secrets, client)
+            updated = save_graph_source(
+                manager,
+                {
+                    **source.to_api(),
+                    "folders": [folders[1].to_selection().to_api()],
+                },
+            )
+
+            self.assertEqual([folder.path for folder in folders], ["Inbox", "Inbox/Project"])
+            self.assertEqual(updated.folders[0].id, "child-id")
+            self.assertEqual(updated.folders[0].path, "Inbox/Project")
+            raw_sources = manager.get_profile_setting(GRAPH_SOURCES_SETTING) or ""
+            self.assertIn("Inbox/Project", raw_sources)
+            self.assertNotIn("access-token-value", raw_sources)
+
+    def test_graph_sync_imports_mime_without_message_content_in_source_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = ProfileManager(
+                root / "millie.settings",
+                root / "profiles",
+                root / "default.sqlite",
+                root / "default-data",
+            )
+            db = MillieDatabase(root / "millie.sqlite", root / "data")
+            db.init()
+            secrets = SecretManager(manager, "local")
+            source = save_graph_source(
+                manager,
+                {
+                    "name": "Graph Mail",
+                    "client_id": "client-id-123",
+                    "tenant_id": "tenant-123",
+                    "redirect_uri": "http://localhost",
+                    "folders": [{"id": "inbox-id", "display_name": "Inbox", "path": "Inbox"}],
+                },
+            )
+            token_ref = secrets.store_graph_token_payload(
+                source.id,
+                json.dumps({"access_token": "access-token-value", "expires_at": "2999-01-01T00:00:00+00:00"}),
+            )
+            save_graph_source(manager, {**source.to_api(), "token_ref": token_ref})
+            raw_message = build_message("graph@example.com", "Graph One", "Graph body").as_bytes()
+            client = FakeGraphHttpClient(
+                token_response={},
+                get_responses=[
+                    {
+                        "value": [
+                            {
+                                "id": "message-id-1",
+                                "internetMessageId": "<graph-one@example.com>",
+                                "isRead": True,
+                                "categories": ["Blue"],
+                            }
+                        ]
+                    }
+                ],
+                byte_responses=[raw_message],
+            )
+
+            result = sync_graph_source(db, manager, source.id, secrets, client, sync_limit=10)
+            second = sync_graph_source(
+                db,
+                manager,
+                source.id,
+                secrets,
+                FakeGraphHttpClient(token_response={}, get_responses=[{"value": [{"id": "message-id-1"}]}]),
+                sync_limit=10,
+            )
+
+            self.assertEqual(result.processed, 1)
+            self.assertEqual(result.imported, 1)
+            self.assertEqual(result.errors, 0)
+            self.assertEqual(second.processed, 0)
+            self.assertEqual(len(db.list_messages()), 1)
+            state = db.get_source_sync_state(result.source_id, "folder:inbox-id")
+            self.assertEqual(state["seen_message_ids"], ["message-id-1"])
+            self.assertEqual(client.get_bytes_requests[0][1], "access-token-value")
+            raw_sources = manager.get_profile_setting(GRAPH_SOURCES_SETTING) or ""
+            self.assertNotIn("Graph body", raw_sources)
+            self.assertNotIn("access-token-value", raw_sources)
+
     def test_graph_provider_presets_include_read_only_scopes(self) -> None:
         presets = {provider.id: provider for provider in list_graph_provider_presets()}
 
@@ -966,11 +1105,14 @@ class FakeGraphHttpClient:
         self,
         token_response: dict[str, object],
         get_responses: list[dict[str, object]] | None = None,
+        byte_responses: list[bytes] | None = None,
     ):
         self.token_response = token_response
         self.get_responses = list(get_responses or [])
+        self.byte_responses = list(byte_responses or [])
         self.post_forms: list[tuple[str, dict[str, str]]] = []
         self.get_requests: list[tuple[str, str]] = []
+        self.get_bytes_requests: list[tuple[str, str]] = []
 
     def post_form(self, url: str, data: dict[str, str]) -> dict[str, object]:
         self.post_forms.append((url, dict(data)))
@@ -981,6 +1123,12 @@ class FakeGraphHttpClient:
         if not self.get_responses:
             return {}
         return self.get_responses.pop(0)
+
+    def get_bytes(self, url: str, access_token: str) -> bytes:
+        self.get_bytes_requests.append((url, access_token))
+        if not self.byte_responses:
+            return b""
+        return self.byte_responses.pop(0)
 
 
 def build_message(sender: str, subject: str, body: str) -> EmailMessage:

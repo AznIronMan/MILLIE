@@ -153,9 +153,12 @@ PYTHONPATH=src python3 -m millie graph-add "Work Microsoft 365" --client-id "<cl
 PYTHONPATH=src python3 -m millie graph-sources
 PYTHONPATH=src python3 -m millie graph-auth-url work-microsoft-365 --redirect-uri "http://localhost:22013"
 PYTHONPATH=src python3 -m millie graph-probe work-microsoft-365
+PYTHONPATH=src python3 -m millie graph-folders work-microsoft-365
+PYTHONPATH=src python3 -m millie graph-set-folders work-microsoft-365 --folder Inbox
+PYTHONPATH=src python3 -m millie graph-sync work-microsoft-365 --limit 25
 ```
 
-Run the MILLIE server on the same local port used in the OAuth redirect URI before opening the auth URL. The Graph connector can complete PKCE OAuth, store token payloads in the configured secret backend, refresh tokens, and run a read-only account/folder probe. Graph mail sync is not implemented yet. See [exchange-graph.md](exchange-graph.md) for the Entra app registration and OAuth setup checklist.
+Run the MILLIE server on the same local port used in the OAuth redirect URI before opening the auth URL. The Graph connector can complete PKCE OAuth, store token payloads in the configured secret backend, refresh tokens, discover folders, and run a limited read-only selected-folder sync using Graph MIME fetches. See [exchange-graph.md](exchange-graph.md) for the Entra app registration and OAuth setup checklist.
 
 ## Search
 

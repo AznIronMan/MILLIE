@@ -2,7 +2,7 @@
 
 MILLIE's planned Exchange path is Microsoft Graph, not legacy Exchange Web Services.
 
-This connector can save Microsoft Graph source configs, generate a PKCE authorization URL, receive the local OAuth callback, exchange authorization codes, store token payloads in the configured secret backend, refresh expired access tokens, and run a read-only mailbox probe. Graph mail sync is not implemented yet.
+This connector can save Microsoft Graph source configs, generate a PKCE authorization URL, receive the local OAuth callback, exchange authorization codes, store token payloads in the configured secret backend, refresh expired access tokens, discover folders, and run limited read-only sync from selected folders.
 
 ## Direction
 
@@ -36,7 +36,8 @@ Saved source config stores:
 - Redirect URI
 - Requested scopes
 - Mailbox selector, currently `me`
-- Sync limit for future syncs
+- Selected Graph folders
+- Sync limit
 - Secret references for token payloads and pending PKCE auth state
 
 Saved source config must not store:
@@ -61,12 +62,17 @@ PYTHONPATH=src python3 -m millie graph-add "Work Microsoft 365" \
 PYTHONPATH=src python3 -m millie graph-sources
 PYTHONPATH=src python3 -m millie graph-auth-url work-microsoft-365 --redirect-uri "http://localhost:22013"
 PYTHONPATH=src python3 -m millie graph-probe work-microsoft-365
+PYTHONPATH=src python3 -m millie graph-folders work-microsoft-365
+PYTHONPATH=src python3 -m millie graph-set-folders work-microsoft-365 --folder Inbox
+PYTHONPATH=src python3 -m millie graph-sync work-microsoft-365 --limit 25
 PYTHONPATH=src python3 -m millie graph-delete work-microsoft-365
 ```
 
 `graph-auth-url` creates a Microsoft authorization URL and stores the PKCE verifier in the configured secret backend. Keep the MILLIE API server running on the same local port used in the redirect URI so the browser can return with the authorization code.
 
 `graph-probe` calls `/me` and `/me/mailFolders` using the stored token payload. It refreshes expired access tokens when a refresh token is available and does not fetch messages.
+
+`graph-folders` discovers the Graph folder tree. `graph-set-folders` saves selected folders by path or id. `graph-sync` imports raw MIME for newly seen messages from the selected folders and never sends, moves, marks, or deletes mail.
 
 ## Current API
 
@@ -76,6 +82,8 @@ PYTHONPATH=src python3 -m millie graph-delete work-microsoft-365
 - `POST /api/v1/graph-sources`
 - `POST /api/v1/graph-sources/{id}/auth-url`
 - `POST /api/v1/graph-sources/{id}/probe`
+- `POST /api/v1/graph-sources/{id}/folders`
+- `POST /api/v1/graph-sources/{id}/sync`
 - `POST /api/v1/graph-sources/{id}/delete`
 
 `POST /api/v1/graph-sources` accepts:
@@ -86,6 +94,7 @@ PYTHONPATH=src python3 -m millie graph-delete work-microsoft-365
 - `redirect_uri`
 - `scopes`
 - `mailbox`
+- `folders`
 - `sync_limit`
 
 `POST /api/v1/graph-sources/{id}/auth-url` creates a PKCE authorization URL and stores pending auth state by secret reference.
@@ -93,6 +102,10 @@ PYTHONPATH=src python3 -m millie graph-delete work-microsoft-365
 `GET /` and `GET /api/v1/graph/oauth/callback` can complete the OAuth callback when the query contains `code` and `state`.
 
 `POST /api/v1/graph-sources/{id}/probe` refreshes the token if needed, calls read-only Graph metadata endpoints, and returns account and folder summaries.
+
+`POST /api/v1/graph-sources/{id}/folders` returns the discovered folder tree, including folder id, path, role hint, total count, unread count, and child count.
+
+`POST /api/v1/graph-sources/{id}/sync` imports from the source's saved selected folders using the existing raw-MIME parser. It accepts optional `sync_limit` and uses a conservative seen-message-id state until Graph delta sync is implemented.
 
 ## How To Set Up Graph OAuth
 
@@ -162,26 +175,33 @@ The working Graph connector now has:
 - Secret-backed token storage for access token, refresh token, expiry, tenant, scopes, and mailbox metadata.
 - Token refresh before Graph calls when the access token is expired or near expiry.
 - A read-only probe endpoint/CLI command that calls `/me` and `/me/mailFolders`.
+- Folder discovery and selected-folder management through CLI, API, and web controls.
+- A first read-only sync path that imports selected folders/messages into MILLIE's canonical raw-MIME pipeline.
 
-To turn the probe into full mail import, MILLIE still needs:
+To turn the MVP sync into a production-shaped sync, MILLIE still needs:
 
-- A first read-only sync path that imports selected folders/messages into MILLIE's canonical message pipeline.
 - Clear error handling for expired consent, revoked refresh tokens, conditional access, MFA, and permission mismatch.
 
 ## Sync Design
 
+Current sync:
+
+- Enumerates mail folders through Graph
+- Lists selected folder messages
+- Fetches each selected message as MIME with `/$value`
+- Imports MIME through the same parser used by file, IMAP, and POP sources
+- Tracks seen Graph message ids per folder in `source_sync_states`
+- Preserves read-only behavior: no send, update, move, mark-read, or delete operations
+
 Future sync should:
 
-- Probe `/me` or `/me/mailFolders` once token exchange exists
-- Enumerate mail folders through Graph
 - Use per-folder message delta queries for incremental sync
 - Store Graph delta links in `source_sync_states`
-- Fetch enough message fields to preserve subject, sender, recipients, timestamps, body, internet message id, conversation id, headers where available, and attachments
-- Preserve read-only behavior: no send, update, move, or delete operations without explicit future approval
+- Replace seen-id backfill with durable delta links
+- Add richer handling for deleted/moved messages without mutating the remote mailbox
 
 Message delta is per-folder, so MILLIE should track each selected folder independently.
 
 ## Follow-Up
 
-- Add folder discovery and selected-folder sync.
 - Add Graph delta sync into the canonical raw-message pipeline or a Graph-native normalization path.

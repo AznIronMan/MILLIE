@@ -294,7 +294,7 @@ label {
 
 .imap-source-actions {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(62px, 1fr));
   gap: 6px;
 }
 
@@ -310,7 +310,9 @@ label {
   color: #7a2d2d;
 }
 
-.graph-probe-button:disabled {
+.graph-discover-button:disabled,
+.graph-probe-button:disabled,
+.graph-sync-button:disabled {
   color: #6d6258;
   cursor: not-allowed;
   background: #f4ebe1;

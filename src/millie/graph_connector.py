@@ -11,6 +11,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
+from .database import MillieDatabase
+from .mailparse import parse_raw_message
 from .profiles import ProfileManager
 from .secrets import SecretManager, backend_from_ref
 
@@ -28,6 +30,8 @@ class GraphHttpClient(Protocol):
     def post_form(self, url: str, data: Mapping[str, str]) -> dict[str, Any]: ...
 
     def get_json(self, url: str, access_token: str) -> dict[str, Any]: ...
+
+    def get_bytes(self, url: str, access_token: str) -> bytes: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +67,20 @@ GRAPH_PROVIDER_PRESETS = {
 }
 
 
+@dataclass(frozen=True, slots=True)
+class GraphFolderSelection:
+    id: str
+    display_name: str
+    path: str
+
+    def to_api(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "display_name": self.display_name,
+            "path": self.path,
+        }
+
+
 @dataclass(slots=True)
 class GraphSourceConfig:
     id: str
@@ -72,6 +90,7 @@ class GraphSourceConfig:
     redirect_uri: str
     scopes: list[str]
     mailbox: str
+    folders: list[GraphFolderSelection]
     sync_limit: int
     token_ref: str | None = None
     pending_auth_ref: str | None = None
@@ -88,6 +107,7 @@ class GraphSourceConfig:
             "redirect_uri": self.redirect_uri,
             "scopes": self.scopes,
             "mailbox": self.mailbox,
+            "folders": [folder.to_api() for folder in self.folders],
             "sync_limit": self.sync_limit,
             "auth_method": self.auth_method,
             "provider": self.provider,
@@ -142,6 +162,8 @@ class GraphAuthCompletion:
 class GraphFolderSummary:
     id: str
     display_name: str
+    path: str
+    parent_folder_id: str | None
     total_item_count: int | None
     unread_item_count: int | None
     child_folder_count: int | None
@@ -150,10 +172,16 @@ class GraphFolderSummary:
         return {
             "id": self.id,
             "display_name": self.display_name,
+            "path": self.path,
+            "parent_folder_id": self.parent_folder_id,
             "total_item_count": self.total_item_count,
             "unread_item_count": self.unread_item_count,
             "child_folder_count": self.child_folder_count,
+            "role": graph_folder_role(self.path),
         }
+
+    def to_selection(self) -> GraphFolderSelection:
+        return GraphFolderSelection(id=self.id, display_name=self.display_name, path=self.path)
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,6 +205,32 @@ class GraphProbeResult:
             "folder_count": self.folder_count,
             "folders": [folder.to_api() for folder in self.folders],
             "token_refreshed": self.token_refreshed,
+            "read_only": True,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class GraphSyncResult:
+    import_job_id: int
+    source_id: int
+    processed: int
+    imported: int
+    duplicates: int
+    errors: int
+    folders: list[str]
+    token_refreshed: bool
+
+    def to_api(self) -> dict[str, Any]:
+        return {
+            "import_job_id": self.import_job_id,
+            "source_id": self.source_id,
+            "processed": self.processed,
+            "imported": self.imported,
+            "duplicates": self.duplicates,
+            "errors": self.errors,
+            "folders": self.folders,
+            "token_refreshed": self.token_refreshed,
+            "format": "graph",
             "read_only": True,
         }
 
@@ -207,6 +261,28 @@ class UrllibGraphHttpClient:
             method="GET",
         )
         return self.open_json(request)
+
+    def get_bytes(self, url: str, access_token: str) -> bytes:
+        request = Request(
+            url,
+            headers={
+                "Accept": "message/rfc822",
+                "Authorization": f"Bearer {access_token}",
+            },
+            method="GET",
+        )
+        return self.open_bytes(request)
+
+    def open_bytes(self, request: Request) -> bytes:
+        try:
+            with urlopen(request, timeout=self.timeout_seconds) as response:  # noqa: S310
+                return response.read()
+        except HTTPError as exc:
+            raw = exc.read()
+            detail = graph_error_detail(raw) or exc.reason or "request failed"
+            raise RuntimeError(f"Microsoft Graph request failed ({exc.code}): {detail}") from exc
+        except URLError as exc:
+            raise RuntimeError(f"Microsoft Graph request failed: {exc.reason}") from exc
 
     def open_json(self, request: Request) -> dict[str, Any]:
         try:
@@ -453,6 +529,134 @@ def probe_graph_source(
     )
 
 
+def discover_graph_folders(
+    profile_manager: ProfileManager,
+    source_id: str,
+    secret_manager: SecretManager | None = None,
+    http_client: GraphHttpClient | None = None,
+) -> list[GraphFolderSummary]:
+    secret_manager = secret_manager or SecretManager(profile_manager)
+    http_client = http_client or UrllibGraphHttpClient()
+    source = get_graph_source(profile_manager, source_id)
+    access_token, _ = graph_access_token(profile_manager, source, secret_manager, http_client)
+    mailbox_path = graph_mailbox_path(source.mailbox)
+    root_url = (
+        f"{GRAPH_API_BASE}/{mailbox_path}/mailFolders?"
+        f"{urlencode({'$top': '100', '$select': 'id,parentFolderId,displayName,totalItemCount,unreadItemCount,childFolderCount'})}"
+    )
+    return graph_folder_tree(http_client, access_token, root_url, mailbox_path=mailbox_path)
+
+
+def sync_graph_source(
+    db: MillieDatabase,
+    profile_manager: ProfileManager,
+    source_id: str,
+    secret_manager: SecretManager | None = None,
+    http_client: GraphHttpClient | None = None,
+    folders: list[GraphFolderSelection] | None = None,
+    sync_limit: int | None = None,
+) -> GraphSyncResult:
+    db.init()
+    secret_manager = secret_manager or SecretManager(profile_manager)
+    http_client = http_client or UrllibGraphHttpClient()
+    source = get_graph_source(profile_manager, source_id)
+    sync_folders = folders or source.folders
+    if not sync_folders:
+        raise ValueError("Select at least one Microsoft Graph folder before syncing")
+    effective_limit = max(1, int(sync_limit or source.sync_limit))
+    access_token, token_refreshed = graph_access_token(profile_manager, source, secret_manager, http_client)
+    db_source_id = db.get_or_create_source("graph", source.name, graph_source_uri(source))
+    job_id = db.start_import_job(
+        db_source_id,
+        "graph",
+        {
+            "source_config_id": source.id,
+            "tenant_id": source.tenant_id,
+            "mailbox": source.mailbox,
+            "folders": [folder.to_api() for folder in sync_folders],
+            "sync_limit": effective_limit,
+            "sync_mode": "seen-message-id-mvp",
+            "read_only": True,
+        },
+    )
+    processed = 0
+    imported = 0
+    duplicates = 0
+    errors = 0
+    attempted = 0
+    synced_folders: list[str] = []
+
+    try:
+        for folder in sync_folders:
+            if attempted >= effective_limit:
+                break
+            try:
+                synced = sync_graph_folder(
+                    db,
+                    http_client,
+                    access_token,
+                    source,
+                    db_source_id,
+                    job_id,
+                    folder,
+                    effective_limit - attempted,
+                )
+                attempted += synced["attempted"]
+                processed += synced["processed"]
+                imported += synced["imported"]
+                duplicates += synced["duplicates"]
+                errors += synced["errors"]
+                synced_folders.append(folder.path)
+            except Exception as exc:  # noqa: BLE001
+                errors += 1
+                db.record_import_error(
+                    job_id,
+                    folder.path,
+                    "error",
+                    str(exc),
+                    {"folder_id": folder.id, "folder_path": folder.path},
+                )
+    except Exception as exc:
+        errors += 1
+        db.record_import_error(
+            job_id,
+            graph_source_uri(source),
+            "error",
+            str(exc),
+            {"source_config_id": source.id, "mailbox": source.mailbox},
+        )
+        db.finish_import_job(
+            job_id,
+            "failed",
+            processed,
+            errors,
+            new_message_count=imported,
+            duplicate_count=duplicates,
+        )
+        raise
+
+    status = "completed_with_errors" if errors else "completed"
+    db.touch_source_sync(db_source_id)
+    db.finish_import_job(
+        job_id,
+        status,
+        processed,
+        errors,
+        new_message_count=imported,
+        duplicate_count=duplicates,
+    )
+    return GraphSyncResult(
+        import_job_id=job_id,
+        source_id=db_source_id,
+        processed=processed,
+        imported=imported,
+        duplicates=duplicates,
+        errors=errors,
+        folders=synced_folders,
+        token_refreshed=token_refreshed,
+    )
+
+
 def config_from_dict(payload: dict[str, object]) -> GraphSourceConfig:
     name = str(payload.get("name") or "").strip()
     client_id = str(payload.get("client_id") or payload.get("clientId") or "").strip()
@@ -479,6 +683,7 @@ def config_from_dict(payload: dict[str, object]) -> GraphSourceConfig:
     else:
         scopes = list(DEFAULT_GRAPH_SCOPES)
     scopes = dedupe_scopes(scopes or list(DEFAULT_GRAPH_SCOPES))
+    folders = parse_graph_folder_selections(payload.get("folders"))
     sync_limit = max(1, int(payload.get("sync_limit") or payload.get("limit") or 100))
     source_id = str(payload.get("id") or "").strip() or unique_slug(name)
     token_ref = str(payload.get("token_ref") or "").strip() or None
@@ -493,6 +698,7 @@ def config_from_dict(payload: dict[str, object]) -> GraphSourceConfig:
         redirect_uri=redirect_uri,
         scopes=scopes,
         mailbox=mailbox,
+        folders=folders,
         sync_limit=sync_limit,
         token_ref=token_ref,
         pending_auth_ref=pending_auth_ref,
@@ -510,6 +716,7 @@ def source_to_settings(config: GraphSourceConfig) -> dict[str, Any]:
         "redirect_uri": config.redirect_uri,
         "scopes": config.scopes,
         "mailbox": config.mailbox,
+        "folders": [folder.to_api() for folder in config.folders],
         "sync_limit": config.sync_limit,
         "token_ref": config.token_ref,
         "pending_auth_ref": config.pending_auth_ref,
@@ -649,6 +856,150 @@ def graph_access_token(
     return str(refreshed_payload["access_token"]), True
 
 
+def graph_folder_tree(
+    http_client: GraphHttpClient,
+    access_token: str,
+    start_url: str,
+    mailbox_path: str,
+    parent_path: str = "",
+    seen: set[str] | None = None,
+) -> list[GraphFolderSummary]:
+    seen = seen or set()
+    folders: list[GraphFolderSummary] = []
+    for item in graph_collection_items(http_client, access_token, start_url):
+        if not isinstance(item, dict):
+            continue
+        folder = graph_folder_from_payload(item, parent_path)
+        if not folder.id or folder.id in seen:
+            continue
+        seen.add(folder.id)
+        folders.append(folder)
+        if (folder.child_folder_count or 0) > 0:
+            child_url = (
+                f"{GRAPH_API_BASE}/{mailbox_path}/mailFolders/{quote(folder.id, safe='')}/childFolders?"
+                f"{urlencode({'$top': '100', '$select': 'id,parentFolderId,displayName,totalItemCount,unreadItemCount,childFolderCount'})}"
+            )
+            folders.extend(graph_folder_tree(http_client, access_token, child_url, mailbox_path, folder.path, seen))
+    return folders
+
+
+def graph_collection_items(
+    http_client: GraphHttpClient,
+    access_token: str,
+    start_url: str,
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    url: str | None = start_url
+    while url:
+        payload = http_client.get_json(url, access_token)
+        raw_items = payload.get("value") if isinstance(payload.get("value"), list) else []
+        items.extend(item for item in raw_items if isinstance(item, dict))
+        url = string_or_none(payload.get("@odata.nextLink"))
+    return items
+
+
+def sync_graph_folder(
+    db: MillieDatabase,
+    http_client: GraphHttpClient,
+    access_token: str,
+    source: GraphSourceConfig,
+    db_source_id: int,
+    job_id: int,
+    folder: GraphFolderSelection,
+    limit: int,
+) -> dict[str, int]:
+    mailbox_path = graph_mailbox_path(source.mailbox)
+    folder_id = quote(folder.id, safe="")
+    messages_url = (
+        f"{GRAPH_API_BASE}/{mailbox_path}/mailFolders/{folder_id}/messages?"
+        f"{urlencode({'$top': str(min(limit, 50)), '$select': 'id,internetMessageId,isRead,categories,receivedDateTime,sentDateTime', '$orderby': 'receivedDateTime desc'})}"
+    )
+    mailbox_id = db.get_or_create_mailbox(db_source_id, folder.path, role=graph_folder_role(folder.path))
+    scope = f"folder:{folder.id}"
+    state = db.get_source_sync_state(db_source_id, scope)
+    seen_message_ids = {str(item) for item in state.get("seen_message_ids", []) if str(item)}
+    synced_message_ids: list[str] = []
+    attempted = 0
+    processed = 0
+    imported = 0
+    duplicates = 0
+    errors = 0
+    next_url: str | None = messages_url
+    scanned = 0
+    scan_limit = max(limit * 5, 100)
+
+    while next_url and attempted < limit and scanned < scan_limit:
+        payload = http_client.get_json(next_url, access_token)
+        raw_messages = payload.get("value") if isinstance(payload.get("value"), list) else []
+        for item in raw_messages:
+            if attempted >= limit or scanned >= scan_limit:
+                break
+            if not isinstance(item, dict):
+                continue
+            scanned += 1
+            message_id = str(item.get("id") or "")
+            if not message_id or message_id in seen_message_ids:
+                continue
+            attempted += 1
+            try:
+                raw = http_client.get_bytes(
+                    f"{GRAPH_API_BASE}/{mailbox_path}/mailFolders/{folder_id}/messages/{quote(message_id, safe='')}/$value",
+                    access_token,
+                )
+                parsed = parse_raw_message(db, raw)
+                flags = ["\\Seen"] if bool(item.get("isRead")) else []
+                labels = parse_graph_categories(item.get("categories"))
+                result = db.insert_message(
+                    source_id=db_source_id,
+                    mailbox_id=mailbox_id,
+                    source_uid=f"GRAPH:{folder.id}:{message_id}",
+                    fields=parsed["fields"],
+                    headers=parsed["headers"],
+                    addresses=parsed["addresses"],
+                    attachments=parsed["attachments"],
+                    participants_text=parsed["participants_text"],
+                    flags=flags,
+                    labels=labels,
+                )
+                processed += 1
+                if result.created:
+                    imported += 1
+                else:
+                    duplicates += 1
+                synced_message_ids.append(message_id)
+            except Exception as exc:  # noqa: BLE001
+                errors += 1
+                db.record_import_error(
+                    job_id,
+                    f"{folder.path}:{message_id}",
+                    "error",
+                    str(exc),
+                    {"folder_id": folder.id, "message_id": message_id},
+                )
+        next_url = string_or_none(payload.get("@odata.nextLink"))
+
+    seen_message_ids.update(synced_message_ids)
+    db.set_source_sync_state(
+        db_source_id,
+        scope,
+        {
+            "seen_message_ids": sorted(seen_message_ids),
+            "last_seen_count": len(seen_message_ids),
+            "last_scan_count": scanned,
+            "folder_id": folder.id,
+            "folder_path": folder.path,
+            "sync_mode": "seen-message-id-mvp",
+        },
+    )
+    return {
+        "attempted": attempted,
+        "processed": processed,
+        "imported": imported,
+        "duplicates": duplicates,
+        "errors": errors,
+    }
+
+
 def token_needs_refresh(token_payload: dict[str, Any]) -> bool:
     expires_at = string_or_none(token_payload.get("expires_at"))
     if not expires_at:
@@ -672,6 +1023,40 @@ def parse_scope_list(value: object, fallback: list[str]) -> list[str]:
     return dedupe_scopes(scopes or fallback)
 
 
+def parse_graph_folder_selections(value: object) -> list[GraphFolderSelection]:
+    if not isinstance(value, list):
+        return []
+    folders: list[GraphFolderSelection] = []
+    seen: set[str] = set()
+    for item in value:
+        if isinstance(item, dict):
+            folder_id = str(item.get("id") or "").strip()
+            display_name = str(item.get("display_name") or item.get("displayName") or item.get("name") or "").strip()
+            path = str(item.get("path") or display_name or folder_id).strip()
+        else:
+            folder_id = str(item or "").strip()
+            display_name = folder_id
+            path = folder_id
+        if not folder_id or folder_id in seen:
+            continue
+        folders.append(GraphFolderSelection(id=folder_id, display_name=display_name or path, path=path or display_name))
+        seen.add(folder_id)
+    return folders
+
+
+def parse_graph_categories(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    seen: set[str] = set()
+    categories: list[str] = []
+    for item in value:
+        category = str(item).strip()
+        if category and category not in seen:
+            categories.append(category)
+            seen.add(category)
+    return categories
+
+
 def graph_mailbox_path(mailbox: str) -> str:
     cleaned = mailbox.strip()
     if not cleaned or cleaned == "me":
@@ -679,14 +1064,41 @@ def graph_mailbox_path(mailbox: str) -> str:
     return f"users/{quote(cleaned, safe='')}"
 
 
-def graph_folder_from_payload(payload: dict[str, Any]) -> GraphFolderSummary:
+def graph_folder_from_payload(payload: dict[str, Any], parent_path: str = "") -> GraphFolderSummary:
+    display_name = str(payload.get("displayName") or "")
+    path = "/".join(item for item in [parent_path.strip("/"), display_name.strip("/")] if item) or display_name
     return GraphFolderSummary(
         id=str(payload.get("id") or ""),
-        display_name=str(payload.get("displayName") or ""),
+        display_name=display_name,
+        path=path,
+        parent_folder_id=string_or_none(payload.get("parentFolderId")),
         total_item_count=optional_int(payload.get("totalItemCount")),
         unread_item_count=optional_int(payload.get("unreadItemCount")),
         child_folder_count=optional_int(payload.get("childFolderCount")),
     )
+
+
+def graph_folder_role(path: str) -> str | None:
+    normalized = path.strip().lower().replace("\\", "/").rsplit("/", 1)[-1]
+    if normalized in {"inbox"}:
+        return "inbox"
+    if normalized in {"sent", "sent items", "sent mail"}:
+        return "sent"
+    if normalized == "drafts":
+        return "drafts"
+    if normalized in {"deleted items", "deleted", "trash"}:
+        return "trash"
+    if normalized in {"junk email", "junk", "spam"}:
+        return "junk"
+    if normalized in {"archive", "all mail"}:
+        return "archive"
+    if normalized == "outbox":
+        return "outbox"
+    return None
+
+
+def graph_source_uri(source: GraphSourceConfig) -> str:
+    return f"graph://{source.tenant_id}/{source.mailbox}/{source.id}"
 
 
 def optional_int(value: object) -> int | None:

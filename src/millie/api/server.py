@@ -19,11 +19,13 @@ from millie.graph_connector import (
     complete_graph_authorization,
     create_graph_authorization_request,
     delete_graph_source,
+    discover_graph_folders,
     get_graph_source,
     list_graph_provider_presets,
     load_graph_sources,
     probe_graph_source,
     save_graph_source,
+    sync_graph_source,
 )
 from millie.imap_connector import (
     delete_imap_source,
@@ -422,6 +424,25 @@ class MillieRequestHandler(BaseHTTPRequestHandler):
                     self.app.secret_manager,
                 )
                 self.write_json({"probe": probe.to_api()})
+            elif path.startswith("/api/v1/graph-sources/") and path.endswith("/folders"):
+                source_id = unquote(path.split("/")[-2])
+                folders = discover_graph_folders(
+                    self.app.profile_manager,
+                    source_id,
+                    self.app.secret_manager,
+                )
+                self.write_json({"folders": [folder.to_api() for folder in folders]})
+            elif path.startswith("/api/v1/graph-sources/") and path.endswith("/sync"):
+                source_id = unquote(path.split("/")[-2])
+                sync_limit = int(payload.get("sync_limit") or payload.get("limit") or 0) or None
+                result = sync_graph_source(
+                    self.app.db,
+                    self.app.profile_manager,
+                    source_id,
+                    self.app.secret_manager,
+                    sync_limit=sync_limit,
+                )
+                self.write_json({"sync": result.to_api()}, HTTPStatus.CREATED)
             elif path.startswith("/api/v1/graph-sources/") and path.endswith("/delete"):
                 source_id = unquote(path.split("/")[-2])
                 deleted = delete_graph_source(self.app.profile_manager, source_id, self.app.secret_manager)

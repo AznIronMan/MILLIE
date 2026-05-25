@@ -29,6 +29,7 @@ The project uses semantic versioning in `major.minor.patch` format.
 - Added an initial read-only POP3 connector with provider presets, secret-backed source configs, safe probes, UIDL incremental sync, CLI/API/web controls, and no server delete path.
 - Added a Microsoft Graph / Exchange connector skeleton with source configs, provider metadata, PKCE authorization URL generation, secret-backed pending auth state, CLI/API endpoints, and design docs.
 - Added Microsoft Graph OAuth callback/token exchange, secret-backed token storage, token refresh, read-only account/folder probe, and web controls for saved Graph sources.
+- Added Microsoft Graph folder discovery, selected-folder management, and limited read-only sync through raw MIME fetches.
 
 ## [0.1.0] - 2026-05-23
 

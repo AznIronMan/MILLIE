@@ -182,12 +182,27 @@ type GraphSource = {
   redirect_uri: string;
   scopes: string[];
   mailbox: string;
+  folders: GraphFolderSelection[];
   sync_limit: number;
   auth_method: string;
   provider: string;
   token_configured: boolean;
   pending_auth_configured: boolean;
   secret_backend: string | null;
+};
+
+type GraphFolderSelection = {
+  id: string;
+  display_name: string;
+  path: string;
+};
+
+type GraphFolder = GraphFolderSelection & {
+  parent_folder_id: string | null;
+  total_item_count: number | null;
+  unread_item_count: number | null;
+  child_folder_count: number | null;
+  role: string | null;
 };
 
 type GraphProvider = {
@@ -219,6 +234,19 @@ type GraphProbeResult = {
   mail: string | null;
   folder_count: number;
   token_refreshed: boolean;
+  read_only: boolean;
+};
+
+type GraphSyncResult = {
+  import_job_id: number;
+  source_id: number;
+  processed: number;
+  imported: number;
+  duplicates: number;
+  errors: number;
+  folders: string[];
+  token_refreshed: boolean;
+  format: string;
   read_only: boolean;
 };
 
@@ -317,6 +345,8 @@ type State = {
   popSources: PopSource[];
   graphProviders: GraphProvider[];
   graphSources: GraphSource[];
+  graphDiscoveredSourceId: string | null;
+  graphDiscoveredFolders: GraphFolder[];
   mailboxes: Mailbox[];
   messages: MessageSummary[];
   selectedMailboxId: number | null;
@@ -352,6 +382,8 @@ const state: State = {
   popSources: [],
   graphProviders: [],
   graphSources: [],
+  graphDiscoveredSourceId: null,
+  graphDiscoveredFolders: [],
   mailboxes: [],
   messages: [],
   selectedMailboxId: null,
@@ -597,6 +629,7 @@ function render(): void {
             <span class="muted compact-note">Read-only</span>
           </div>
           ${renderGraphSources()}
+          ${renderGraphFolderPicker()}
         </section>
         <nav class="folder-list" aria-label="Mailboxes">
           <button class="folder-row ${state.selectedMailboxId === null ? "active" : ""}" data-mailbox-id="">
@@ -775,7 +808,7 @@ function renderImapFolderPicker(): string {
   const selected = new Set(source?.folders ?? []);
   const selectable = state.imapDiscoveredFolders.filter((folder) => folder.selectable);
   return `
-    <div class="imap-folder-picker">
+    <div class="imap-folder-picker imap-folder-picker-panel">
       <div class="imap-folder-picker-header">
         <strong>${escapeHtml(source?.name ?? "IMAP folders")}</strong>
         <div class="inline-actions">
@@ -906,20 +939,67 @@ function renderGraphSource(source: GraphSource): string {
   const provider = graphProviderLabel(source.provider);
   const secret = source.secret_backend ?? "no token";
   const token = source.token_configured ? "connected" : source.pending_auth_configured ? "pending" : "not connected";
+  const folders = source.folders.length ? `${source.folders.length} folder(s)` : "no folders selected";
   return `
     <div class="imap-source-row">
       <div>
         <strong>${escapeHtml(source.name)}</strong>
         <span>${escapeHtml(provider)} · ${escapeHtml(source.mailbox)} · ${escapeHtml(token)}</span>
-        <small>${escapeHtml(source.tenant_id)} · ${escapeHtml(secret)} · limit ${source.sync_limit}</small>
+        <small>${escapeHtml(folders)} · ${escapeHtml(secret)} · limit ${source.sync_limit}</small>
       </div>
       <div class="imap-source-actions">
         <button class="graph-connect-button" data-graph-source-id="${escapeHtml(source.id)}">Connect</button>
+        <button class="graph-discover-button" data-graph-source-id="${escapeHtml(source.id)}" ${source.token_configured ? "" : "disabled"}>Folders</button>
         <button class="graph-probe-button" data-graph-source-id="${escapeHtml(source.id)}" ${source.token_configured ? "" : "disabled"}>Probe</button>
+        <button class="graph-sync-button" data-graph-source-id="${escapeHtml(source.id)}" ${source.token_configured && source.folders.length ? "" : "disabled"}>Sync</button>
         <button class="graph-delete-button" data-graph-source-id="${escapeHtml(source.id)}">Delete</button>
       </div>
     </div>
   `;
+}
+
+function renderGraphFolderPicker(): string {
+  if (!state.graphDiscoveredSourceId || !state.graphDiscoveredFolders.length) return "";
+  const source = state.graphSources.find((item) => item.id === state.graphDiscoveredSourceId);
+  const selected = new Set(source?.folders.map((folder) => folder.id) ?? []);
+  return `
+    <div class="imap-folder-picker graph-folder-picker">
+      <div class="imap-folder-picker-header">
+        <strong>${escapeHtml(source?.name ?? "Graph folders")}</strong>
+        <div class="inline-actions">
+          <button id="graph-sync-selected-folders-button">Sync Selected</button>
+          <button id="graph-apply-folders-button">Use Selected</button>
+        </div>
+      </div>
+      <div class="imap-folder-list">
+        ${state.graphDiscoveredFolders
+          .map(
+            (folder) => `
+              <label class="imap-folder-option">
+                <input
+                  type="checkbox"
+                  value="${escapeHtml(folder.id)}"
+                  ${selected.has(folder.id) || (!selected.size && graphFolderDefaultChecked(folder)) ? "checked" : ""}
+                />
+                <span>${escapeHtml(folder.path)}</span>
+                <small>${escapeHtml(graphFolderNote(folder))}</small>
+              </label>
+            `,
+          )
+          .join("")}
+      </div>
+    </div>
+  `;
+}
+
+function graphFolderDefaultChecked(folder: GraphFolder): boolean {
+  return folder.path.toLowerCase() === "inbox";
+}
+
+function graphFolderNote(folder: GraphFolder): string {
+  const total = folder.total_item_count === null ? "unknown" : String(folder.total_item_count);
+  const unread = folder.unread_item_count === null ? "unknown" : String(folder.unread_item_count);
+  return `${total} total · ${unread} unread`;
 }
 
 function renderAuthScreen(): void {
@@ -1242,14 +1322,26 @@ function bindEvents(): void {
   });
   document.querySelector<HTMLButtonElement>("#graph-save-button")?.addEventListener("click", saveGraphSource);
   document.querySelector<HTMLSelectElement>("#graph-provider")?.addEventListener("change", applyGraphProviderPreset);
+  document.querySelector<HTMLButtonElement>("#graph-apply-folders-button")?.addEventListener("click", applyDiscoveredGraphFolders);
+  document.querySelector<HTMLButtonElement>("#graph-sync-selected-folders-button")?.addEventListener("click", syncSelectedGraphFolders);
   document.querySelectorAll<HTMLButtonElement>(".graph-connect-button").forEach((button) => {
     button.addEventListener("click", async () => {
       await connectGraphSource(button.dataset.graphSourceId ?? "");
     });
   });
+  document.querySelectorAll<HTMLButtonElement>(".graph-discover-button").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await discoverGraphFolders(button.dataset.graphSourceId ?? "");
+    });
+  });
   document.querySelectorAll<HTMLButtonElement>(".graph-probe-button").forEach((button) => {
     button.addEventListener("click", async () => {
       await probeGraphSource(button.dataset.graphSourceId ?? "");
+    });
+  });
+  document.querySelectorAll<HTMLButtonElement>(".graph-sync-button").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await syncGraphSource(button.dataset.graphSourceId ?? "");
     });
   });
   document.querySelectorAll<HTMLButtonElement>(".graph-delete-button").forEach((button) => {
@@ -1659,7 +1751,7 @@ async function syncSelectedImapFolders(): Promise<void> {
 }
 
 function selectedDiscoveredImapFolders(): string[] {
-  return Array.from(document.querySelectorAll<HTMLInputElement>(".imap-folder-option input:checked"))
+  return Array.from(document.querySelectorAll<HTMLInputElement>(".imap-folder-picker-panel .imap-folder-option input:checked"))
     .map((input) => input.value)
     .filter(Boolean);
 }
@@ -1956,6 +2048,154 @@ async function probeGraphSource(sourceId: string): Promise<void> {
   }
 }
 
+async function discoverGraphFolders(sourceId: string): Promise<void> {
+  const source = state.graphSources.find((item) => item.id === sourceId);
+  if (!source) {
+    state.status = "Graph source is no longer available.";
+    render();
+    return;
+  }
+  state.status = `Discovering Graph folders for ${source.name}...`;
+  render();
+  try {
+    const payload = await api<{ folders: GraphFolder[] }>(`/api/v1/graph-sources/${encodeURIComponent(sourceId)}/folders`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    state.graphDiscoveredSourceId = sourceId;
+    state.graphDiscoveredFolders = payload.folders;
+    state.status = `Found ${payload.folders.length} Graph folder(s).`;
+    render();
+  } catch (error) {
+    state.status = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}
+
+async function applyDiscoveredGraphFolders(): Promise<void> {
+  const sourceId = state.graphDiscoveredSourceId;
+  const source = state.graphSources.find((item) => item.id === sourceId);
+  if (!sourceId || !source) {
+    state.status = "Discover Graph folders before applying a folder list.";
+    render();
+    return;
+  }
+  const folders = selectedDiscoveredGraphFolders();
+  if (!folders.length) {
+    state.status = "Select at least one Graph folder.";
+    render();
+    return;
+  }
+  state.status = `Saving Graph folders for ${source.name}...`;
+  render();
+  try {
+    const payload = await api<{ source: GraphSource; sources: GraphSource[] }>("/api/v1/graph-sources", {
+      method: "POST",
+      body: JSON.stringify({
+        id: source.id,
+        name: source.name,
+        client_id: source.client_id,
+        tenant_id: source.tenant_id,
+        redirect_uri: source.redirect_uri,
+        scopes: source.scopes,
+        mailbox: source.mailbox,
+        folders,
+        sync_limit: source.sync_limit,
+        auth_method: source.auth_method,
+        provider: source.provider,
+      }),
+    });
+    state.graphSources = payload.sources;
+    state.status = `Saved ${folders.length} Graph folder(s) for ${payload.source.name}.`;
+    render();
+  } catch (error) {
+    state.status = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}
+
+async function syncSelectedGraphFolders(): Promise<void> {
+  const sourceId = state.graphDiscoveredSourceId;
+  if (!sourceId) {
+    state.status = "Discover Graph folders before syncing a selected folder list.";
+    render();
+    return;
+  }
+  const folders = selectedDiscoveredGraphFolders();
+  if (!folders.length) {
+    state.status = "Select at least one Graph folder.";
+    render();
+    return;
+  }
+  await saveGraphFoldersForSync(sourceId, folders);
+  await syncGraphSource(sourceId);
+}
+
+function selectedDiscoveredGraphFolders(): GraphFolderSelection[] {
+  const selectedIds = new Set(
+    Array.from(document.querySelectorAll<HTMLInputElement>(".graph-folder-picker .imap-folder-option input:checked"))
+      .map((input) => input.value)
+      .filter(Boolean),
+  );
+  return state.graphDiscoveredFolders
+    .filter((folder) => selectedIds.has(folder.id))
+    .map((folder) => ({ id: folder.id, display_name: folder.display_name, path: folder.path }));
+}
+
+async function saveGraphFoldersForSync(sourceId: string, folders: GraphFolderSelection[]): Promise<void> {
+  const source = state.graphSources.find((item) => item.id === sourceId);
+  if (!source) return;
+  const payload = await api<{ source: GraphSource; sources: GraphSource[] }>("/api/v1/graph-sources", {
+    method: "POST",
+    body: JSON.stringify({
+      id: source.id,
+      name: source.name,
+      client_id: source.client_id,
+      tenant_id: source.tenant_id,
+      redirect_uri: source.redirect_uri,
+      scopes: source.scopes,
+      mailbox: source.mailbox,
+      folders,
+      sync_limit: source.sync_limit,
+      auth_method: source.auth_method,
+      provider: source.provider,
+    }),
+  });
+  state.graphSources = payload.sources;
+}
+
+async function syncGraphSource(sourceId: string): Promise<void> {
+  const source = state.graphSources.find((item) => item.id === sourceId);
+  if (!source) {
+    state.status = "Graph source is no longer available.";
+    render();
+    return;
+  }
+  if (!source.folders.length) {
+    state.status = "Select Graph folders before syncing.";
+    render();
+    return;
+  }
+  state.status = `Syncing ${source.name} by Microsoft Graph...`;
+  render();
+  try {
+    const payload = await api<{ sync: GraphSyncResult }>(`/api/v1/graph-sources/${encodeURIComponent(sourceId)}/sync`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    await loadMailboxes();
+    await loadJobs();
+    await loadMessages();
+    await loadGraphSources();
+    state.status = `Graph sync processed ${payload.sync.processed} message(s); new=${payload.sync.imported}, duplicates=${payload.sync.duplicates}, errors=${payload.sync.errors}.`;
+    render();
+  } catch (error) {
+    await loadJobs();
+    state.status = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}
+
 async function deleteGraphSource(sourceId: string): Promise<void> {
   const source = state.graphSources.find((item) => item.id === sourceId);
   if (!source) {
@@ -1971,6 +2211,10 @@ async function deleteGraphSource(sourceId: string): Promise<void> {
       body: JSON.stringify({}),
     });
     state.graphSources = payload.sources;
+    if (state.graphDiscoveredSourceId === sourceId) {
+      state.graphDiscoveredSourceId = null;
+      state.graphDiscoveredFolders = [];
+    }
     state.status = `Deleted ${source.name}.`;
     render();
   } catch (error) {
@@ -1996,6 +2240,8 @@ async function switchProfile(event: Event): Promise<void> {
     state.sourceScanCandidates = [];
     state.imapDiscoveredSourceId = null;
     state.imapDiscoveredFolders = [];
+    state.graphDiscoveredSourceId = null;
+    state.graphDiscoveredFolders = [];
     state.query = "";
     await refreshActiveProfileData();
     state.status = `Profile switched to ${state.health?.profile.name ?? profileId}.`;
@@ -2029,6 +2275,8 @@ async function createProfile(): Promise<void> {
     state.sourceScanCandidates = [];
     state.imapDiscoveredSourceId = null;
     state.imapDiscoveredFolders = [];
+    state.graphDiscoveredSourceId = null;
+    state.graphDiscoveredFolders = [];
     state.query = "";
     await refreshActiveProfileData();
     state.status = `Profile created: ${state.health?.profile.name ?? name}.`;

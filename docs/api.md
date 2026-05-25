@@ -106,19 +106,25 @@ POP source configs are stored per active profile. Saved configs store `auth_ref`
 - `POST /api/v1/graph-sources`
 - `POST /api/v1/graph-sources/{id}/auth-url`
 - `POST /api/v1/graph-sources/{id}/probe`
+- `POST /api/v1/graph-sources/{id}/folders`
+- `POST /api/v1/graph-sources/{id}/sync`
 - `POST /api/v1/graph-sources/{id}/delete`
 
-Microsoft Graph source configs are stored per active profile. Source configs store client id, tenant id, redirect URI, scopes, mailbox selector, and secret references for token payloads or pending PKCE auth state.
+Microsoft Graph source configs are stored per active profile. Source configs store client id, tenant id, redirect URI, scopes, mailbox selector, selected folders, and secret references for token payloads or pending PKCE auth state.
 
 `GET /api/v1/graph-providers` returns the Microsoft Graph provider preset and default read-only delegated scopes.
 
-`POST /api/v1/graph-sources` accepts `name`, `client_id`, `tenant_id`, `redirect_uri`, `scopes`, `mailbox`, and `sync_limit`.
+`POST /api/v1/graph-sources` accepts `name`, `client_id`, `tenant_id`, `redirect_uri`, `scopes`, `mailbox`, `folders`, and `sync_limit`.
 
 `POST /api/v1/graph-sources/{id}/auth-url` creates an OAuth authorization URL using authorization code flow with PKCE. MILLIE stores the PKCE code verifier in the configured secret backend and returns the authorization URL, state, scopes, and code challenge metadata. For localhost redirect URIs, the API uses the active local server port so the browser returns to the running MILLIE instance.
 
 `GET /` and `GET /api/v1/graph/oauth/callback` complete the OAuth callback when the browser returns with `code` and `state`. MILLIE exchanges the code, stores token payloads in the configured secret backend, clears pending auth state, and never writes raw tokens into the source config.
 
-`POST /api/v1/graph-sources/{id}/probe` refreshes an expired access token when possible, then calls read-only Graph metadata endpoints for account and mail-folder summaries. Graph mail sync is not implemented yet.
+`POST /api/v1/graph-sources/{id}/probe` refreshes an expired access token when possible, then calls read-only Graph metadata endpoints for account and mail-folder summaries.
+
+`POST /api/v1/graph-sources/{id}/folders` returns the discovered Graph folder tree with stable folder ids, display names, folder paths, count metadata, and role hints.
+
+`POST /api/v1/graph-sources/{id}/sync` performs a limited read-only sync from the saved selected folders. It fetches message MIME with Microsoft Graph `/$value`, imports through the same raw-MIME pipeline as file/IMAP/POP imports, tracks seen Graph message ids per folder, and never sends, moves, marks, or deletes remote mail.
 
 ## Export Jobs
 

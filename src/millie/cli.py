@@ -11,10 +11,13 @@ from .exporters import export_messages
 from .graph_connector import (
     create_graph_authorization_request,
     delete_graph_source,
+    discover_graph_folders,
+    get_graph_source,
     list_graph_provider_presets,
     load_graph_sources,
     probe_graph_source,
     save_graph_source,
+    sync_graph_source,
 )
 from .importers import import_path
 from .imap_connector import (
@@ -172,6 +175,18 @@ def build_parser() -> argparse.ArgumentParser:
     graph_probe = subparsers.add_parser("graph-probe", help="Probe a connected Microsoft Graph source")
     graph_probe.add_argument("source_id", help="Saved Microsoft Graph source id")
     graph_probe.add_argument("--json", action="store_true", help="Print probe result as JSON")
+
+    graph_folders = subparsers.add_parser("graph-folders", help="Discover folders for a connected Microsoft Graph source")
+    graph_folders.add_argument("source_id", help="Saved Microsoft Graph source id")
+    graph_folders.add_argument("--json", action="store_true", help="Print discovered folders as JSON")
+
+    graph_set_folders = subparsers.add_parser("graph-set-folders", help="Set saved Microsoft Graph folders by discovered folder id or path")
+    graph_set_folders.add_argument("source_id", help="Saved Microsoft Graph source id")
+    graph_set_folders.add_argument("--folder", action="append", dest="folders", required=True, help="Folder id or path from graph-folders, repeatable")
+
+    graph_sync = subparsers.add_parser("graph-sync", help="Run read-only sync for a connected Microsoft Graph source")
+    graph_sync.add_argument("source_id", help="Saved Microsoft Graph source id")
+    graph_sync.add_argument("--limit", type=int, default=None, help="Override the saved sync limit for this run")
 
     graph_delete = subparsers.add_parser("graph-delete", help="Delete a saved Microsoft Graph source")
     graph_delete.add_argument("source_id", help="Saved Microsoft Graph source id")
@@ -509,6 +524,60 @@ def main(argv: list[str] | None = None) -> int:
                 count = "unknown" if folder.total_item_count is None else str(folder.total_item_count)
                 print(f"- {folder.display_name}: {count} message(s)")
         return 0
+    if args.command == "graph-folders":
+        try:
+            folders = discover_graph_folders(profile_manager, args.source_id, secret_manager)
+        except Exception as exc:  # noqa: BLE001
+            print(f"Microsoft Graph folder discovery failed: {exc}")
+            return 1
+        if args.json:
+            print(json.dumps({"folders": [folder.to_api() for folder in folders]}, indent=2))
+        else:
+            for folder in folders:
+                total = "unknown" if folder.total_item_count is None else str(folder.total_item_count)
+                unread = "unknown" if folder.unread_item_count is None else str(folder.unread_item_count)
+                print(f"- {folder.path}: {total} message(s), {unread} unread, id={folder.id}")
+        return 0
+    if args.command == "graph-set-folders":
+        try:
+            source = get_graph_source(profile_manager, args.source_id)
+            discovered = discover_graph_folders(profile_manager, args.source_id, secret_manager)
+            selected = []
+            for value in args.folders:
+                match = next((folder for folder in discovered if folder.id == value or folder.path == value), None)
+                if match is None:
+                    raise ValueError(f"Unknown Graph folder id/path: {value}")
+                selected.append(match.to_selection())
+            updated = save_graph_source(
+                profile_manager,
+                {
+                    **source.to_api(),
+                    "folders": [folder.to_api() for folder in selected],
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"Microsoft Graph folder update failed: {exc}")
+            return 1
+        print(f"Updated Microsoft Graph source {updated.id}: folders={','.join(folder.path for folder in updated.folders)}")
+        return 0
+    if args.command == "graph-sync":
+        try:
+            result = sync_graph_source(
+                db,
+                profile_manager,
+                args.source_id,
+                secret_manager,
+                sync_limit=args.limit,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"Microsoft Graph sync failed: {exc}")
+            return 1
+        print(
+            f"Import job {result.import_job_id}: processed={result.processed} "
+            f"imported={result.imported} duplicates={result.duplicates} "
+            f"errors={result.errors} folders={','.join(result.folders)}"
+        )
+        return 0 if result.errors == 0 else 1
     if args.command == "graph-delete":
         deleted = delete_graph_source(profile_manager, args.source_id, secret_manager)
         if not deleted:
