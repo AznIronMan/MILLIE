@@ -174,6 +174,54 @@ type PopSyncResult = {
   format: string;
 };
 
+type GraphSource = {
+  id: string;
+  name: string;
+  client_id: string;
+  tenant_id: string;
+  redirect_uri: string;
+  scopes: string[];
+  mailbox: string;
+  sync_limit: number;
+  auth_method: string;
+  provider: string;
+  token_configured: boolean;
+  pending_auth_configured: boolean;
+  secret_backend: string | null;
+};
+
+type GraphProvider = {
+  id: string;
+  display_name: string;
+  authority_host: string;
+  api_base_url: string;
+  default_tenant: string;
+  default_scopes: string[];
+  auth_flow: string;
+};
+
+type GraphAuthRequest = {
+  authorization_url: string;
+  tenant_id: string;
+  client_id: string;
+  redirect_uri: string;
+  scopes: string[];
+  state: string;
+  code_challenge: string;
+  code_challenge_method: string;
+};
+
+type GraphProbeResult = {
+  source_id: string;
+  mailbox: string;
+  display_name: string | null;
+  user_principal_name: string | null;
+  mail: string | null;
+  folder_count: number;
+  token_refreshed: boolean;
+  read_only: boolean;
+};
+
 type ImportJobError = {
   id: number;
   import_job_id: number;
@@ -267,6 +315,8 @@ type State = {
   imapDiscoveredFolders: ImapFolder[];
   popProviders: PopProvider[];
   popSources: PopSource[];
+  graphProviders: GraphProvider[];
+  graphSources: GraphSource[];
   mailboxes: Mailbox[];
   messages: MessageSummary[];
   selectedMailboxId: number | null;
@@ -300,6 +350,8 @@ const state: State = {
   imapDiscoveredFolders: [],
   popProviders: [],
   popSources: [],
+  graphProviders: [],
+  graphSources: [],
   mailboxes: [],
   messages: [],
   selectedMailboxId: null,
@@ -512,6 +564,39 @@ function render(): void {
             <span class="muted compact-note">No delete</span>
           </div>
           ${renderPopSources()}
+          <div class="panel-rule"></div>
+          <label>
+            Graph provider
+            <select id="graph-provider">
+              ${renderGraphProviderOptions()}
+            </select>
+          </label>
+          <label>
+            Graph source
+            <input id="graph-name" placeholder="CNB Portland Connector" />
+          </label>
+          <label>
+            Client ID
+            <input id="graph-client-id" placeholder="Application client ID" />
+          </label>
+          <label>
+            Tenant ID
+            <input id="graph-tenant-id" placeholder="Directory tenant ID" />
+          </label>
+          <label>
+            Redirect URI
+            <input id="graph-redirect-uri" placeholder="http://localhost" />
+          </label>
+          <div class="inline-controls">
+            <input id="graph-mailbox" placeholder="me" />
+            <button id="graph-save-button">Save</button>
+          </div>
+          <div class="imap-options">
+            <input id="graph-scopes" placeholder="openid offline_access User.Read Mail.Read" />
+            <input id="graph-limit" type="number" min="1" placeholder="100" />
+            <span class="muted compact-note">Read-only</span>
+          </div>
+          ${renderGraphSources()}
         </section>
         <nav class="folder-list" aria-label="Mailboxes">
           <button class="folder-row ${state.selectedMailboxId === null ? "active" : ""}" data-mailbox-id="">
@@ -776,6 +861,62 @@ function renderPopSource(source: PopSource): string {
         <button class="pop-probe-button" data-pop-source-id="${escapeHtml(source.id)}">Probe</button>
         <button class="pop-sync-button" data-pop-source-id="${escapeHtml(source.id)}">Sync</button>
         <button class="pop-delete-button" data-pop-source-id="${escapeHtml(source.id)}">Delete</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderGraphProviderOptions(): string {
+  const providers = state.graphProviders.length
+    ? state.graphProviders
+    : [
+        {
+          id: "microsoft-graph",
+          display_name: "Microsoft Graph",
+          authority_host: "https://login.microsoftonline.com",
+          api_base_url: "https://graph.microsoft.com/v1.0",
+          default_tenant: "common",
+          default_scopes: ["openid", "offline_access", "User.Read", "Mail.Read"],
+          auth_flow: "authorization_code_pkce",
+        },
+      ];
+  return providers
+    .map(
+      (provider) => `
+        <option value="${escapeHtml(provider.id)}">${escapeHtml(provider.display_name)}</option>
+      `,
+    )
+    .join("");
+}
+
+function graphProviderLabel(providerId: string): string {
+  return state.graphProviders.find((provider) => provider.id === providerId)?.display_name ?? providerId;
+}
+
+function renderGraphSources(): string {
+  if (!state.graphSources.length) return `<p class="muted compact-note">No saved Graph sources.</p>`;
+  return `
+    <div class="imap-source-list">
+      ${state.graphSources.map(renderGraphSource).join("")}
+    </div>
+  `;
+}
+
+function renderGraphSource(source: GraphSource): string {
+  const provider = graphProviderLabel(source.provider);
+  const secret = source.secret_backend ?? "no token";
+  const token = source.token_configured ? "connected" : source.pending_auth_configured ? "pending" : "not connected";
+  return `
+    <div class="imap-source-row">
+      <div>
+        <strong>${escapeHtml(source.name)}</strong>
+        <span>${escapeHtml(provider)} · ${escapeHtml(source.mailbox)} · ${escapeHtml(token)}</span>
+        <small>${escapeHtml(source.tenant_id)} · ${escapeHtml(secret)} · limit ${source.sync_limit}</small>
+      </div>
+      <div class="imap-source-actions">
+        <button class="graph-connect-button" data-graph-source-id="${escapeHtml(source.id)}">Connect</button>
+        <button class="graph-probe-button" data-graph-source-id="${escapeHtml(source.id)}" ${source.token_configured ? "" : "disabled"}>Probe</button>
+        <button class="graph-delete-button" data-graph-source-id="${escapeHtml(source.id)}">Delete</button>
       </div>
     </div>
   `;
@@ -1099,6 +1240,23 @@ function bindEvents(): void {
       await deletePopSource(button.dataset.popSourceId ?? "");
     });
   });
+  document.querySelector<HTMLButtonElement>("#graph-save-button")?.addEventListener("click", saveGraphSource);
+  document.querySelector<HTMLSelectElement>("#graph-provider")?.addEventListener("change", applyGraphProviderPreset);
+  document.querySelectorAll<HTMLButtonElement>(".graph-connect-button").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await connectGraphSource(button.dataset.graphSourceId ?? "");
+    });
+  });
+  document.querySelectorAll<HTMLButtonElement>(".graph-probe-button").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await probeGraphSource(button.dataset.graphSourceId ?? "");
+    });
+  });
+  document.querySelectorAll<HTMLButtonElement>(".graph-delete-button").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await deleteGraphSource(button.dataset.graphSourceId ?? "");
+    });
+  });
   document.querySelector<HTMLButtonElement>("#export-button")?.addEventListener("click", exportMail);
   document.querySelector<HTMLSelectElement>("#export-profile")?.addEventListener("change", (event) => {
     state.selectedExportProfileId = (event.currentTarget as HTMLSelectElement).value;
@@ -1155,6 +1313,8 @@ async function loadInitial(): Promise<void> {
     await loadImapSources();
     await loadPopProviders();
     await loadPopSources();
+    await loadGraphProviders();
+    await loadGraphSources();
     await loadJobs();
     await loadMailboxes();
     await loadMessages();
@@ -1215,6 +1375,16 @@ async function loadPopProviders(): Promise<void> {
 async function loadPopSources(): Promise<void> {
   const payload = await api<{ sources: PopSource[] }>("/api/v1/pop-sources");
   state.popSources = payload.sources;
+}
+
+async function loadGraphProviders(): Promise<void> {
+  const payload = await api<{ providers: GraphProvider[] }>("/api/v1/graph-providers");
+  state.graphProviders = payload.providers;
+}
+
+async function loadGraphSources(): Promise<void> {
+  const payload = await api<{ sources: GraphSource[] }>("/api/v1/graph-sources");
+  state.graphSources = payload.sources;
 }
 
 async function loadImportJobDetail(id: number): Promise<void> {
@@ -1679,6 +1849,136 @@ async function deletePopSource(sourceId: string): Promise<void> {
   }
 }
 
+function applyGraphProviderPreset(event: Event): void {
+  const providerId = (event.currentTarget as HTMLSelectElement).value;
+  const provider = state.graphProviders.find((item) => item.id === providerId);
+  if (!provider) return;
+
+  const tenantInput = document.querySelector<HTMLInputElement>("#graph-tenant-id");
+  const scopesInput = document.querySelector<HTMLInputElement>("#graph-scopes");
+  const redirectInput = document.querySelector<HTMLInputElement>("#graph-redirect-uri");
+
+  if (tenantInput && !tenantInput.value.trim()) tenantInput.value = provider.default_tenant;
+  if (scopesInput && !scopesInput.value.trim()) scopesInput.value = provider.default_scopes.join(" ");
+  if (redirectInput && !redirectInput.value.trim()) redirectInput.value = "http://localhost";
+}
+
+async function saveGraphSource(): Promise<void> {
+  const name = document.querySelector<HTMLInputElement>("#graph-name")?.value.trim() ?? "";
+  const provider = document.querySelector<HTMLSelectElement>("#graph-provider")?.value ?? "microsoft-graph";
+  const clientId = document.querySelector<HTMLInputElement>("#graph-client-id")?.value.trim() ?? "";
+  const tenantId = document.querySelector<HTMLInputElement>("#graph-tenant-id")?.value.trim() || "common";
+  const redirectUri = document.querySelector<HTMLInputElement>("#graph-redirect-uri")?.value.trim() || "http://localhost";
+  const mailbox = document.querySelector<HTMLInputElement>("#graph-mailbox")?.value.trim() || "me";
+  const scopeText =
+    document.querySelector<HTMLInputElement>("#graph-scopes")?.value.trim() ||
+    "openid offline_access User.Read Mail.Read";
+  const limitText = document.querySelector<HTMLInputElement>("#graph-limit")?.value.trim();
+  if (!name || !clientId) {
+    state.status = "Graph source and client ID are required.";
+    render();
+    return;
+  }
+  state.status = "Saving Graph source...";
+  render();
+  try {
+    const payload = await api<{ source: GraphSource; sources: GraphSource[] }>("/api/v1/graph-sources", {
+      method: "POST",
+      body: JSON.stringify({
+        name,
+        provider,
+        client_id: clientId,
+        tenant_id: tenantId,
+        redirect_uri: redirectUri,
+        scopes: scopeText.split(/[\s,]+/).filter(Boolean),
+        mailbox,
+        sync_limit: limitText ? Number(limitText) : 100,
+      }),
+    });
+    state.graphSources = payload.sources;
+    state.status = `Saved Graph source ${payload.source.name}.`;
+    render();
+  } catch (error) {
+    state.status = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}
+
+async function connectGraphSource(sourceId: string): Promise<void> {
+  const source = state.graphSources.find((item) => item.id === sourceId);
+  if (!source) {
+    state.status = "Graph source is no longer available.";
+    render();
+    return;
+  }
+  state.status = `Opening Microsoft sign-in for ${source.name}...`;
+  render();
+  try {
+    const payload = await api<{ auth: GraphAuthRequest }>(`/api/v1/graph-sources/${encodeURIComponent(sourceId)}/auth-url`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    const opened = window.open(payload.auth.authorization_url, "_blank", "noopener,noreferrer");
+    if (!opened) {
+      window.location.href = payload.auth.authorization_url;
+      return;
+    }
+    state.status = `Microsoft sign-in opened for ${source.name}.`;
+    await loadGraphSources();
+    render();
+  } catch (error) {
+    state.status = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}
+
+async function probeGraphSource(sourceId: string): Promise<void> {
+  const source = state.graphSources.find((item) => item.id === sourceId);
+  if (!source) {
+    state.status = "Graph source is no longer available.";
+    render();
+    return;
+  }
+  state.status = `Probing ${source.name} by Microsoft Graph...`;
+  render();
+  try {
+    const payload = await api<{ probe: GraphProbeResult }>(`/api/v1/graph-sources/${encodeURIComponent(sourceId)}/probe`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    await loadGraphSources();
+    const account = payload.probe.user_principal_name || payload.probe.mail || payload.probe.display_name || payload.probe.mailbox;
+    state.status = `Graph probe found ${payload.probe.folder_count} folder(s) for ${account}; token refreshed=${payload.probe.token_refreshed ? "yes" : "no"}.`;
+    render();
+  } catch (error) {
+    state.status = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}
+
+async function deleteGraphSource(sourceId: string): Promise<void> {
+  const source = state.graphSources.find((item) => item.id === sourceId);
+  if (!source) {
+    state.status = "Graph source is no longer available.";
+    render();
+    return;
+  }
+  state.status = `Deleting ${source.name}...`;
+  render();
+  try {
+    const payload = await api<{ deleted: boolean; sources: GraphSource[] }>(`/api/v1/graph-sources/${encodeURIComponent(sourceId)}/delete`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    state.graphSources = payload.sources;
+    state.status = `Deleted ${source.name}.`;
+    render();
+  } catch (error) {
+    state.status = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}
+
 async function switchProfile(event: Event): Promise<void> {
   const profileId = (event.currentTarget as HTMLSelectElement).value;
   if (!profileId || profileId === state.activeProfileId) return;
@@ -1749,6 +2049,8 @@ async function refreshActiveProfileData(): Promise<void> {
   await loadImapSources();
   await loadPopProviders();
   await loadPopSources();
+  await loadGraphProviders();
+  await loadGraphSources();
   await loadJobs();
   await loadMailboxes();
   await loadMessages();

@@ -2,7 +2,7 @@
 
 MILLIE's planned Exchange path is Microsoft Graph, not legacy Exchange Web Services.
 
-This connector is currently a source/credential skeleton. It can save Microsoft Graph source configs and generate a PKCE authorization URL, but it does not exchange authorization codes, store Graph tokens, or sync mail yet.
+This connector can save Microsoft Graph source configs, generate a PKCE authorization URL, receive the local OAuth callback, exchange authorization codes, store token payloads in the configured secret backend, refresh expired access tokens, and run a read-only mailbox probe. Graph mail sync is not implemented yet.
 
 ## Direction
 
@@ -59,18 +59,23 @@ PYTHONPATH=src python3 -m millie graph-add "Work Microsoft 365" \
   --redirect-uri "http://localhost"
 
 PYTHONPATH=src python3 -m millie graph-sources
-PYTHONPATH=src python3 -m millie graph-auth-url work-microsoft-365
+PYTHONPATH=src python3 -m millie graph-auth-url work-microsoft-365 --redirect-uri "http://localhost:22013"
+PYTHONPATH=src python3 -m millie graph-probe work-microsoft-365
 PYTHONPATH=src python3 -m millie graph-delete work-microsoft-365
 ```
 
-`graph-auth-url` creates a Microsoft authorization URL and stores the PKCE verifier in the configured secret backend. The callback and token exchange are not implemented yet.
+`graph-auth-url` creates a Microsoft authorization URL and stores the PKCE verifier in the configured secret backend. Keep the MILLIE API server running on the same local port used in the redirect URI so the browser can return with the authorization code.
+
+`graph-probe` calls `/me` and `/me/mailFolders` using the stored token payload. It refreshes expired access tokens when a refresh token is available and does not fetch messages.
 
 ## Current API
 
 - `GET /api/v1/graph-providers`
 - `GET /api/v1/graph-sources`
+- `GET /api/v1/graph/oauth/callback`
 - `POST /api/v1/graph-sources`
 - `POST /api/v1/graph-sources/{id}/auth-url`
+- `POST /api/v1/graph-sources/{id}/probe`
 - `POST /api/v1/graph-sources/{id}/delete`
 
 `POST /api/v1/graph-sources` accepts:
@@ -84,6 +89,10 @@ PYTHONPATH=src python3 -m millie graph-delete work-microsoft-365
 - `sync_limit`
 
 `POST /api/v1/graph-sources/{id}/auth-url` creates a PKCE authorization URL and stores pending auth state by secret reference.
+
+`GET /` and `GET /api/v1/graph/oauth/callback` can complete the OAuth callback when the query contains `code` and `state`.
+
+`POST /api/v1/graph-sources/{id}/probe` refreshes the token if needed, calls read-only Graph metadata endpoints, and returns account and folder summaries.
 
 ## How To Set Up Graph OAuth
 
@@ -100,7 +109,7 @@ Recommended first development setup:
 
 Entra does not call back into localhost from Microsoft's servers. It redirects the signed-in user's browser, and that browser is running on the same workstation as MILLIE.
 
-Microsoft treats localhost loopback redirect URIs specially for native apps: the port can vary, but the path still needs to match. If MILLIE later uses a path-based callback such as `/api/v1/graph/oauth/callback`, add a matching redirect URI path in Entra, for example `http://localhost/api/v1/graph/oauth/callback`, and have MILLIE request the same path on its active local port.
+Microsoft treats localhost loopback redirect URIs specially for native apps: the port can vary, but the path still needs to match. With the current `http://localhost` CNB registration, MILLIE can request `http://localhost:<active-port>` and receive the callback at the app root. If MILLIE later uses a path-based callback such as `/api/v1/graph/oauth/callback`, add a matching redirect URI path in Entra, for example `http://localhost/api/v1/graph/oauth/callback`, and have MILLIE request the same path on its active local port.
 
 ### Entra Portal Steps
 
@@ -140,17 +149,22 @@ PYTHONPATH=src python3 -m millie graph-add "CNB Portland Connector" \
 
 MILLIE normalizes the source id to `cnb-portland-connector`.
 
-The redirect URI in Azure must exactly match the redirect URI saved in the MILLIE source.
+The redirect URI path in Azure must match the redirect URI path requested by MILLIE. For the current root `http://localhost` setup, MILLIE can add the active local port when generating the auth URL.
+
+To connect this source from the web app, start the API/web server, click `Connect` on the saved Graph source, sign in with the mailbox account, and let Microsoft redirect the browser back to `http://localhost:<active-port>`.
 
 ## What OAuth Needs Next
 
-To turn the saved source into a working Graph connector, MILLIE needs:
+The working Graph connector now has:
 
-- OAuth start flow that generates PKCE state and verifier and opens the Microsoft authorization URL. The skeleton already does this.
+- OAuth start flow that generates PKCE state and verifier and opens the Microsoft authorization URL.
 - A callback handler that receives `code` and `state`, validates the pending state, and exchanges the code at the tenant token endpoint.
-- Secret-backed token storage for access token, refresh token, expiry, tenant, scopes, and account metadata.
+- Secret-backed token storage for access token, refresh token, expiry, tenant, scopes, and mailbox metadata.
 - Token refresh before Graph calls when the access token is expired or near expiry.
 - A read-only probe endpoint/CLI command that calls `/me` and `/me/mailFolders`.
+
+To turn the probe into full mail import, MILLIE still needs:
+
 - A first read-only sync path that imports selected folders/messages into MILLIE's canonical message pipeline.
 - Clear error handling for expired consent, revoked refresh tokens, conditional access, MFA, and permission mismatch.
 
@@ -169,9 +183,5 @@ Message delta is per-folder, so MILLIE should track each selected folder indepen
 
 ## Follow-Up
 
-- Add OAuth callback and authorization-code token exchange.
-- Store token payloads in the secret backend.
-- Add token refresh.
-- Add Graph source probe.
 - Add folder discovery and selected-folder sync.
 - Add Graph delta sync into the canonical raw-message pipeline or a Graph-native normalization path.

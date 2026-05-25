@@ -94,7 +94,7 @@ MILLIE now has a first runnable foundation slice:
 - Gmail-compatible IMAP folder discovery, including common Gmail special-folder roles and `imap.google.com` host normalization
 - IMAP provider presets, selected-folder one-off sync, and IMAP flags/internal-date capture
 - Read-only POP3 source configs, safe no-retrieve probes, UIDL-based incremental sync, and a never-delete server policy
-- Microsoft Graph / Exchange source config skeleton with PKCE authorization URL generation and secret-backed pending auth state
+- Microsoft Graph / Exchange source configs with PKCE OAuth callback/token storage, token refresh, and read-only account/folder probe
 - Connector credential secret references with macOS Keychain support and a local development fallback
 - `.eml`, `mbox`, and `maildir` export paths with manifests
 - Exact raw-MIME deduplication so repeat imports do not duplicate canonical messages

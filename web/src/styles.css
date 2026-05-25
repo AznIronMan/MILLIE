@@ -305,8 +305,15 @@ label {
 }
 
 .imap-delete-button,
-.pop-delete-button {
+.pop-delete-button,
+.graph-delete-button {
   color: #7a2d2d;
+}
+
+.graph-probe-button:disabled {
+  color: #6d6258;
+  cursor: not-allowed;
+  background: #f4ebe1;
 }
 
 .imap-folder-picker {

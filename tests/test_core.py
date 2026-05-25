@@ -13,10 +13,12 @@ from millie.database import MillieDatabase
 from millie.exporters import export_messages
 from millie.graph_connector import (
     GRAPH_SOURCES_SETTING,
+    complete_graph_authorization,
     create_graph_authorization_request,
     delete_graph_source,
     list_graph_provider_presets,
     load_graph_sources,
+    probe_graph_source,
     save_graph_source,
 )
 from millie.importers import detect_format, import_path
@@ -790,6 +792,138 @@ class CoreImportExportTests(unittest.TestCase):
             self.assertEqual(load_graph_sources(manager), [])
             self.assertIsNone(secrets.read_secret(updated.pending_auth_ref))
 
+    def test_graph_auth_completion_stores_tokens_in_secret_backend(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = ProfileManager(
+                root / "millie.settings",
+                root / "profiles",
+                root / "default.sqlite",
+                root / "default-data",
+            )
+            secrets = SecretManager(manager, "local")
+            source = save_graph_source(
+                manager,
+                {
+                    "name": "Graph Mail",
+                    "client_id": "client-id-123",
+                    "tenant_id": "tenant-123",
+                    "redirect_uri": "http://localhost",
+                },
+            )
+            auth_request = create_graph_authorization_request(
+                manager,
+                source.id,
+                secrets,
+                redirect_uri="http://localhost:22013",
+            )
+            pending_ref = load_graph_sources(manager)[0].pending_auth_ref
+            client = FakeGraphHttpClient(
+                token_response={
+                    "access_token": "access-token-value",
+                    "refresh_token": "refresh-token-value",
+                    "expires_in": 3600,
+                    "token_type": "Bearer",
+                    "scope": "openid offline_access User.Read Mail.Read",
+                }
+            )
+
+            completion = complete_graph_authorization(
+                manager,
+                "authorization-code",
+                auth_request.state,
+                secrets,
+                client,
+            )
+
+            self.assertTrue(completion.source.token_ref)
+            self.assertFalse(completion.source.pending_auth_ref)
+            self.assertEqual(client.post_forms[0][0], "https://login.microsoftonline.com/tenant-123/oauth2/v2.0/token")
+            self.assertEqual(client.post_forms[0][1]["grant_type"], "authorization_code")
+            self.assertEqual(client.post_forms[0][1]["code"], "authorization-code")
+            self.assertEqual(client.post_forms[0][1]["redirect_uri"], "http://localhost:22013")
+            self.assertTrue(client.post_forms[0][1]["code_verifier"])
+            raw_sources = manager.get_profile_setting(GRAPH_SOURCES_SETTING) or ""
+            self.assertIn("token_ref", raw_sources)
+            self.assertNotIn("access-token-value", raw_sources)
+            self.assertNotIn("refresh-token-value", raw_sources)
+            self.assertIsNone(secrets.read_secret(pending_ref))
+            token_payload = secrets.read_secret(completion.source.token_ref)
+            self.assertIn("access-token-value", token_payload or "")
+            self.assertIn("refresh-token-value", token_payload or "")
+
+    def test_graph_probe_refreshes_expired_token_and_reads_folder_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = ProfileManager(
+                root / "millie.settings",
+                root / "profiles",
+                root / "default.sqlite",
+                root / "default-data",
+            )
+            secrets = SecretManager(manager, "local")
+            source = save_graph_source(
+                manager,
+                {
+                    "name": "Graph Mail",
+                    "client_id": "client-id-123",
+                    "tenant_id": "tenant-123",
+                    "redirect_uri": "http://localhost",
+                },
+            )
+            token_ref = secrets.store_graph_token_payload(
+                source.id,
+                json.dumps(
+                    {
+                        "access_token": "expired-access-token",
+                        "refresh_token": "refresh-token-value",
+                        "expires_at": "2000-01-01T00:00:00+00:00",
+                        "token_type": "Bearer",
+                        "scope": "openid offline_access User.Read Mail.Read",
+                    }
+                ),
+            )
+            save_graph_source(manager, {**source.to_api(), "token_ref": token_ref})
+            client = FakeGraphHttpClient(
+                token_response={
+                    "access_token": "new-access-token",
+                    "refresh_token": "new-refresh-token",
+                    "expires_in": 3600,
+                    "token_type": "Bearer",
+                    "scope": "openid offline_access User.Read Mail.Read",
+                },
+                get_responses=[
+                    {
+                        "displayName": "Graph User",
+                        "userPrincipalName": "user@example.com",
+                        "mail": "user@example.com",
+                    },
+                    {
+                        "value": [
+                            {
+                                "id": "inbox-id",
+                                "displayName": "Inbox",
+                                "totalItemCount": 12,
+                                "unreadItemCount": 3,
+                                "childFolderCount": 0,
+                            }
+                        ]
+                    },
+                ],
+            )
+
+            result = probe_graph_source(manager, source.id, secrets, client)
+
+            self.assertTrue(result.token_refreshed)
+            self.assertEqual(result.user_principal_name, "user@example.com")
+            self.assertEqual(result.folder_count, 1)
+            self.assertEqual(result.folders[0].display_name, "Inbox")
+            self.assertEqual(client.post_forms[0][1]["grant_type"], "refresh_token")
+            self.assertEqual(client.get_requests[0][1], "new-access-token")
+            raw_sources = manager.get_profile_setting(GRAPH_SOURCES_SETTING) or ""
+            self.assertNotIn("new-access-token", raw_sources)
+            self.assertNotIn("new-refresh-token", raw_sources)
+
     def test_graph_provider_presets_include_read_only_scopes(self) -> None:
         presets = {provider.id: provider for provider in list_graph_provider_presets()}
 
@@ -825,6 +959,28 @@ class CoreImportExportTests(unittest.TestCase):
             self.assertTrue(auth.status(f"{SESSION_COOKIE}={login_token}").authenticated)
             with self.assertRaises(ValueError):
                 auth.login("admin", "wrong-password")
+
+
+class FakeGraphHttpClient:
+    def __init__(
+        self,
+        token_response: dict[str, object],
+        get_responses: list[dict[str, object]] | None = None,
+    ):
+        self.token_response = token_response
+        self.get_responses = list(get_responses or [])
+        self.post_forms: list[tuple[str, dict[str, str]]] = []
+        self.get_requests: list[tuple[str, str]] = []
+
+    def post_form(self, url: str, data: dict[str, str]) -> dict[str, object]:
+        self.post_forms.append((url, dict(data)))
+        return dict(self.token_response)
+
+    def get_json(self, url: str, access_token: str) -> dict[str, object]:
+        self.get_requests.append((url, access_token))
+        if not self.get_responses:
+            return {}
+        return self.get_responses.pop(0)
 
 
 def build_message(sender: str, subject: str, body: str) -> EmailMessage:

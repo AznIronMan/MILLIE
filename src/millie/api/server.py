@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import re
+from html import escape
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -15,10 +16,13 @@ from millie.export_profiles import list_export_profiles
 from millie.exporters import export_messages
 from millie.importers import import_path
 from millie.graph_connector import (
+    complete_graph_authorization,
     create_graph_authorization_request,
     delete_graph_source,
+    get_graph_source,
     list_graph_provider_presets,
     load_graph_sources,
+    probe_graph_source,
     save_graph_source,
 )
 from millie.imap_connector import (
@@ -61,7 +65,9 @@ class MillieRequestHandler(BaseHTTPRequestHandler):
         path = parsed.path
         query = parse_qs(parsed.query)
         try:
-            if path == "/api/v1/auth/status":
+            if is_graph_oauth_callback(path, query):
+                self.handle_graph_oauth_callback(query)
+            elif path == "/api/v1/auth/status":
                 self.write_json({"auth": self.app.auth.status(self.headers.get("Cookie")).to_api()})
             elif path.startswith("/api/v1/") and not self.app.is_authorized(self.headers.get("Cookie")):
                 self.write_error(HTTPStatus.UNAUTHORIZED, "Authentication required")
@@ -397,12 +403,25 @@ class MillieRequestHandler(BaseHTTPRequestHandler):
                 )
             elif path.startswith("/api/v1/graph-sources/") and path.endswith("/auth-url"):
                 source_id = unquote(path.split("/")[-2])
+                source = get_graph_source(self.app.profile_manager, source_id)
+                redirect_uri = str(payload.get("redirect_uri") or payload.get("redirectUri") or "").strip()
+                if not redirect_uri:
+                    redirect_uri = self.local_graph_redirect_uri(source.redirect_uri)
                 auth_request = create_graph_authorization_request(
                     self.app.profile_manager,
                     source_id,
                     self.app.secret_manager,
+                    redirect_uri=redirect_uri,
                 )
                 self.write_json({"auth": auth_request.to_api()})
+            elif path.startswith("/api/v1/graph-sources/") and path.endswith("/probe"):
+                source_id = unquote(path.split("/")[-2])
+                probe = probe_graph_source(
+                    self.app.profile_manager,
+                    source_id,
+                    self.app.secret_manager,
+                )
+                self.write_json({"probe": probe.to_api()})
             elif path.startswith("/api/v1/graph-sources/") and path.endswith("/delete"):
                 source_id = unquote(path.split("/")[-2])
                 deleted = delete_graph_source(self.app.profile_manager, source_id, self.app.secret_manager)
@@ -445,6 +464,110 @@ class MillieRequestHandler(BaseHTTPRequestHandler):
                 self.write_error(HTTPStatus.NOT_FOUND, "Unknown API endpoint")
         except Exception as exc:  # noqa: BLE001
             self.write_error(HTTPStatus.BAD_REQUEST, str(exc))
+
+    def handle_graph_oauth_callback(self, query: dict[str, list[str]]) -> None:
+        error = (query.get("error") or [""])[0]
+        if error:
+            description = (query.get("error_description") or [error])[0]
+            self.write_html(
+                "Microsoft Graph Sign-In Failed",
+                f"<p>{escape(description)}</p>",
+                HTTPStatus.BAD_REQUEST,
+            )
+            return
+        code = (query.get("code") or [""])[0]
+        state = (query.get("state") or [""])[0]
+        try:
+            completion = complete_graph_authorization(
+                self.app.profile_manager,
+                code,
+                state,
+                self.app.secret_manager,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.write_html(
+                "Microsoft Graph Sign-In Failed",
+                f"<p>{escape(str(exc))}</p>",
+                HTTPStatus.BAD_REQUEST,
+            )
+            return
+        self.write_html(
+            "Microsoft Graph Connected",
+            (
+                f"<p>{escape(completion.source.name)} is connected to MILLIE.</p>"
+                "<p>You can close this tab and return to the MILLIE app.</p>"
+            ),
+        )
+
+    def write_html(
+        self,
+        title: str,
+        content: str,
+        status: HTTPStatus = HTTPStatus.OK,
+    ) -> None:
+        body = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{escape(title)}</title>
+  <style>
+    body {{
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f5f7f8;
+      color: #1f2a30;
+    }}
+    main {{
+      width: min(520px, calc(100vw - 32px));
+      background: #fff;
+      border: 1px solid #d7e0e5;
+      border-radius: 8px;
+      padding: 24px;
+      box-shadow: 0 12px 40px rgba(31, 42, 48, 0.12);
+    }}
+    h1 {{
+      margin: 0 0 12px;
+      font-size: 1.4rem;
+    }}
+    p {{
+      line-height: 1.5;
+    }}
+    a {{
+      color: #1c5d72;
+    }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>{escape(title)}</h1>
+    {content}
+    <p><a href="/">Return to MILLIE</a></p>
+  </main>
+</body>
+</html>""".encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_cors_headers()
+        self.end_headers()
+        self.wfile.write(body)
+
+    def local_graph_redirect_uri(self, registered_redirect_uri: str) -> str:
+        parsed = urlparse(registered_redirect_uri)
+        if parsed.scheme != "http" or (parsed.hostname or "").lower() not in {"localhost", "127.0.0.1", "::1"}:
+            return registered_redirect_uri
+        host_header = self.headers.get("Host") or f"localhost:{self.app.config.port}"
+        port = self.app.config.port
+        if ":" in host_header and not host_header.startswith("["):
+            maybe_port = host_header.rsplit(":", 1)[-1]
+            if maybe_port.isdigit():
+                port = int(maybe_port)
+        path = parsed.path or ""
+        return f"http://localhost:{port}{path}"
 
     def read_json(self) -> dict[str, object]:
         length = int(self.headers.get("content-length", "0"))
@@ -575,3 +698,9 @@ def parse_string_list(value: object) -> list[str] | None:
     else:
         return None
     return [item for item in items if item]
+
+
+def is_graph_oauth_callback(path: str, query: dict[str, list[str]]) -> bool:
+    if path not in {"/", "/api/v1/graph/oauth/callback"}:
+        return False
+    return bool(query.get("state")) and bool(query.get("code") or query.get("error"))

@@ -13,6 +13,7 @@ from .graph_connector import (
     delete_graph_source,
     list_graph_provider_presets,
     load_graph_sources,
+    probe_graph_source,
     save_graph_source,
 )
 from .importers import import_path
@@ -161,7 +162,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     graph_auth_url = subparsers.add_parser("graph-auth-url", help="Create a Microsoft Graph OAuth authorization URL")
     graph_auth_url.add_argument("source_id", help="Saved Microsoft Graph source id")
+    graph_auth_url.add_argument(
+        "--redirect-uri",
+        default=None,
+        help="Override the saved redirect URI for this one authorization request",
+    )
     graph_auth_url.add_argument("--json", action="store_true", help="Print authorization request as JSON")
+
+    graph_probe = subparsers.add_parser("graph-probe", help="Probe a connected Microsoft Graph source")
+    graph_probe.add_argument("source_id", help="Saved Microsoft Graph source id")
+    graph_probe.add_argument("--json", action="store_true", help="Print probe result as JSON")
 
     graph_delete = subparsers.add_parser("graph-delete", help="Delete a saved Microsoft Graph source")
     graph_delete.add_argument("source_id", help="Saved Microsoft Graph source id")
@@ -470,6 +480,7 @@ def main(argv: list[str] | None = None) -> int:
                 profile_manager,
                 args.source_id,
                 secret_manager,
+                redirect_uri=args.redirect_uri,
             )
         except Exception as exc:  # noqa: BLE001
             print(f"Microsoft Graph auth URL failed: {exc}")
@@ -479,6 +490,24 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(auth_request.authorization_url)
             print("PKCE verifier was stored in the configured secret backend.")
+        return 0
+    if args.command == "graph-probe":
+        try:
+            result = probe_graph_source(profile_manager, args.source_id, secret_manager)
+        except Exception as exc:  # noqa: BLE001
+            print(f"Microsoft Graph probe failed: {exc}")
+            return 1
+        if args.json:
+            print(json.dumps({"probe": result.to_api()}, indent=2))
+        else:
+            account = result.user_principal_name or result.mail or result.display_name or result.mailbox
+            print(
+                f"Microsoft Graph probe: account={account} folders={result.folder_count} "
+                f"token_refreshed={'yes' if result.token_refreshed else 'no'}"
+            )
+            for folder in result.folders:
+                count = "unknown" if folder.total_item_count is None else str(folder.total_item_count)
+                print(f"- {folder.display_name}: {count} message(s)")
         return 0
     if args.command == "graph-delete":
         deleted = delete_graph_source(profile_manager, args.source_id, secret_manager)

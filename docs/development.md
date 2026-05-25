@@ -151,10 +151,11 @@ The POP connector is read-only and uses SSL by default. `pop-probe` checks login
 PYTHONPATH=src python3 -m millie graph-providers
 PYTHONPATH=src python3 -m millie graph-add "Work Microsoft 365" --client-id "<client-id>" --tenant-id common --redirect-uri "http://localhost"
 PYTHONPATH=src python3 -m millie graph-sources
-PYTHONPATH=src python3 -m millie graph-auth-url work-microsoft-365
+PYTHONPATH=src python3 -m millie graph-auth-url work-microsoft-365 --redirect-uri "http://localhost:22013"
+PYTHONPATH=src python3 -m millie graph-probe work-microsoft-365
 ```
 
-The Graph connector is currently a source and OAuth skeleton. It can generate a PKCE authorization URL and store pending auth state in the configured secret backend, but it does not exchange tokens or sync mail yet. See [exchange-graph.md](exchange-graph.md) for the Entra app registration and OAuth setup checklist.
+Run the MILLIE server on the same local port used in the OAuth redirect URI before opening the auth URL. The Graph connector can complete PKCE OAuth, store token payloads in the configured secret backend, refresh tokens, and run a read-only account/folder probe. Graph mail sync is not implemented yet. See [exchange-graph.md](exchange-graph.md) for the Entra app registration and OAuth setup checklist.
 
 ## Search
 
