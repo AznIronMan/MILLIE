@@ -149,12 +149,12 @@ The POP connector is read-only and uses SSL by default. `pop-probe` checks login
 
 ```sh
 PYTHONPATH=src python3 -m millie graph-providers
-PYTHONPATH=src python3 -m millie graph-add "Work Microsoft 365" --client-id "<client-id>" --tenant-id common
+PYTHONPATH=src python3 -m millie graph-add "Work Microsoft 365" --client-id "<client-id>" --tenant-id common --redirect-uri "http://localhost"
 PYTHONPATH=src python3 -m millie graph-sources
 PYTHONPATH=src python3 -m millie graph-auth-url work-microsoft-365
 ```
 
-The Graph connector is currently a source and OAuth skeleton. It can generate a PKCE authorization URL and store pending auth state in the configured secret backend, but it does not exchange tokens or sync mail yet.
+The Graph connector is currently a source and OAuth skeleton. It can generate a PKCE authorization URL and store pending auth state in the configured secret backend, but it does not exchange tokens or sync mail yet. See [exchange-graph.md](exchange-graph.md) for the Entra app registration and OAuth setup checklist.
 
 ## Search
 
