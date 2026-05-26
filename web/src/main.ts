@@ -1235,8 +1235,8 @@ function renderSyncState(sync: SyncState): string {
 
 function syncCursor(sync: SyncState): string {
   if (sync.state.last_uid !== undefined) return `uid ${String(sync.state.last_uid)}`;
-  if (sync.state.next_link) return "next link saved";
-  if (sync.state.delta_link) return "delta link saved";
+  if (sync.state.next_link_configured || sync.state.next_link) return "next link saved";
+  if (sync.state.delta_link_configured || sync.state.delta_link) return "delta link saved";
   if (Array.isArray(sync.state.seen_uidls)) return `${sync.state.seen_uidls.length} UIDLs seen`;
   return "";
 }

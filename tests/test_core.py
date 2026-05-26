@@ -1424,6 +1424,9 @@ class CoreImportExportTests(unittest.TestCase):
             self.assertEqual(state["delta_link"], "https://graph.example/delta-2")
             self.assertEqual(state["removed_message_ids"], ["message-id-1"])
             self.assertEqual(state["sync_mode"], "delta")
+            listed_state = db.list_source_sync_states()[0]
+            self.assertNotIn("https://graph.example/delta-2", listed_state["state_json"])
+            self.assertTrue(listed_state["state"]["delta_link_configured"])
             self.assertEqual(client.get_bytes_requests[0][1], "access-token-value")
             export_result = export_messages(db, root / "exports", "eml")
             self.assertEqual(export_result.exported, 1)

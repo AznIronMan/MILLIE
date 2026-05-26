@@ -54,7 +54,7 @@ Import responses and job rows distinguish:
 
 - `GET /api/v1/sync-states`
 
-`GET /api/v1/sync-states` returns parsed connector cursor/recovery state for IMAP, POP, and Graph scopes. Each row includes source identity, scope, `updated_at`, raw `state_json`, and parsed `state`.
+`GET /api/v1/sync-states` returns parsed connector cursor/recovery state for IMAP, POP, and Graph scopes. Each row includes source identity, scope, `updated_at`, redacted `state_json`, and parsed `state`. Provider cursor links such as Graph delta/next URLs are redacted while preserving configured/not-configured signals.
 
 ## IMAP Sources
 

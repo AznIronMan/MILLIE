@@ -246,6 +246,20 @@ def normalize_fts_query(value: str | None) -> str | None:
     return " ".join(quoted) or None
 
 
+SENSITIVE_SYNC_STATE_KEYS = {"delta_link", "next_link"}
+
+
+def redact_sync_state(state: dict[str, Any]) -> dict[str, Any]:
+    redacted: dict[str, Any] = {}
+    for key, value in state.items():
+        if key in SENSITIVE_SYNC_STATE_KEYS and value:
+            redacted[key] = "[redacted]"
+            redacted[f"{key}_configured"] = True
+        else:
+            redacted[key] = value
+    return redacted
+
+
 @dataclass(slots=True)
 class InsertMessageResult:
     message_id: int
@@ -412,7 +426,9 @@ class MillieDatabase:
                 state = json.loads(str(item.get("state_json") or "{}"))
             except json.JSONDecodeError:
                 state = {}
-            item["state"] = state if isinstance(state, dict) else {}
+            redacted_state = redact_sync_state(state) if isinstance(state, dict) else {}
+            item["state"] = redacted_state
+            item["state_json"] = json.dumps(redacted_state, sort_keys=True)
             states.append(item)
         return states
 
