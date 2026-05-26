@@ -61,6 +61,7 @@ The internal model should be relational rather than a single giant row. A messag
 - API: Versioned local HTTP API for the web app and third-party integrations.
 - Web app: Outlook/webmail-style navigation over folders, conversations, messages, attachments, and search.
 - Local IMAP facade: Read-only-first mail server interface for Mail, Outlook, Evolution, Thunderbird, and similar clients.
+- Backup layer: Portable profile ZIP archives with manifests and secret redaction by default.
 
 ## Networking Direction
 
@@ -106,7 +107,8 @@ MILLIE now has a first runnable foundation slice:
 - Local admin/session authentication path with development bypass currently enabled by default
 - Import/export job drill-downs for errors and generated export items
 - Export profiles for generic EML/MBOX/Maildir, Thunderbird, Evolution, Apple Mail, and Outlook workflow bundles
+- Portable active-profile backup ZIPs with manifests and default redaction for local secret settings
 - TypeScript/Vite web client for mailbox navigation, message viewing, import, and export
 - Basic import/export test coverage
 
-See [docs/development.md](docs/development.md) for setup and run commands, [docs/api.md](docs/api.md) for API notes, [docs/source-scanning.md](docs/source-scanning.md) for source scan helpers, [docs/imap.md](docs/imap.md) for IMAP sync, [docs/imap-facade.md](docs/imap-facade.md) for the local IMAP facade, [docs/pop.md](docs/pop.md) for POP sync, [docs/exchange-graph.md](docs/exchange-graph.md) for Microsoft Graph / Exchange planning, [docs/profiles.md](docs/profiles.md) for profile switching, and [docs/outlook.md](docs/outlook.md) for Outlook PST/OLM/OST notes.
+See [docs/development.md](docs/development.md) for setup and run commands, [docs/api.md](docs/api.md) for API notes, [docs/source-scanning.md](docs/source-scanning.md) for source scan helpers, [docs/imap.md](docs/imap.md) for IMAP sync, [docs/imap-facade.md](docs/imap-facade.md) for the local IMAP facade, [docs/pop.md](docs/pop.md) for POP sync, [docs/exchange-graph.md](docs/exchange-graph.md) for Microsoft Graph / Exchange planning, [docs/backup.md](docs/backup.md) for backup packaging, [docs/profiles.md](docs/profiles.md) for profile switching, and [docs/outlook.md](docs/outlook.md) for Outlook PST/OLM/OST notes.

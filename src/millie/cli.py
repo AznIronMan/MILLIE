@@ -5,6 +5,7 @@ from getpass import getpass
 import json
 from pathlib import Path
 
+from .backup import create_backup
 from .config import AppConfig
 from .doctor import run_doctor
 from .exporters import export_messages
@@ -217,6 +218,14 @@ def build_parser() -> argparse.ArgumentParser:
     export_cmd.add_argument("--profile", default="generic-eml")
     export_cmd.add_argument("--mailbox-id", type=int, default=None)
     export_cmd.add_argument("--message-id", action="append", type=int, dest="message_ids")
+
+    backup_cmd = subparsers.add_parser("backup", help="Create a portable backup ZIP for the active profile")
+    backup_cmd.add_argument("--output", required=True, help="Output .zip path or directory")
+    backup_cmd.add_argument(
+        "--include-secrets",
+        action="store_true",
+        help="Include local secret settings in the backup; default redacts secret-bearing settings",
+    )
     return parser
 
 
@@ -648,6 +657,15 @@ def main(argv: list[str] | None = None) -> int:
             f"errors={result.errors} warnings={result.warnings} manifest={result.manifest_path}"
         )
         return 0 if result.errors == 0 else 1
+    if args.command == "backup":
+        result = create_backup(profile_manager, Path(args.output), include_secrets=args.include_secrets)
+        print(
+            f"Backup created: {result.output_path} "
+            f"profile={result.profile_id} files={result.file_count} include_secrets={result.include_secrets}"
+        )
+        for warning in result.warnings:
+            print(f"Warning: {warning}")
+        return 0
     parser.error(f"Unknown command: {args.command}")
     return 2
 

@@ -7,10 +7,12 @@ import mailbox
 import json
 import re
 import threading
+import zipfile
 from email.message import EmailMessage
 from pathlib import Path
 
 from millie.auth import AuthManager, SESSION_COOKIE
+from millie.backup import create_backup
 from millie.config import AppConfig
 from millie.database import MillieDatabase
 from millie.exporters import export_messages
@@ -253,6 +255,43 @@ class CoreImportExportTests(unittest.TestCase):
             self.assertEqual(jobs[0]["message_count"], 1)
             self.assertEqual(jobs[0]["new_message_count"], 0)
             self.assertEqual(jobs[0]["duplicate_count"], 1)
+
+    def test_backup_packages_active_profile_and_redacts_local_secrets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = ProfileManager(
+                root / "millie.settings",
+                root / "profiles",
+                root / "default.sqlite",
+                root / "default-data",
+            )
+            db = manager.active_database()
+            source = root / "sample.eml"
+            source.write_bytes(SAMPLE_EML)
+            import_path(db, source, "eml", "Backup Fixture")
+            manager.set_app_setting("auth.session_secret", "super-secret-session")
+            manager.set_app_setting("auth.admin.password_hash", "super-secret-hash")
+            manager.set_profile_setting("secrets.local.v1", json.dumps({"token": "super-secret-token"}))
+
+            result = create_backup(manager, root / "backups")
+
+            self.assertTrue(result.output_path.exists())
+            self.assertFalse(result.include_secrets)
+            with zipfile.ZipFile(result.output_path) as archive:
+                names = set(archive.namelist())
+                self.assertIn("manifest.json", names)
+                self.assertIn("profile/millie.sqlite", names)
+                self.assertIn("settings/millie.settings", names)
+                self.assertIn("settings/profile.settings", names)
+                manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+                self.assertEqual(manifest["profile"]["id"], "default")
+                self.assertFalse(manifest["include_secrets"])
+                payload = b"".join(archive.read(name) for name in names)
+
+            self.assertIn(b"Hello from MILLIE", payload)
+            self.assertNotIn(b"super-secret-session", payload)
+            self.assertNotIn(b"super-secret-hash", payload)
+            self.assertNotIn(b"super-secret-token", payload)
 
     def test_search_handles_addresses_and_punctuation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

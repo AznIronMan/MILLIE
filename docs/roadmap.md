@@ -70,5 +70,5 @@
 - Add PostgreSQL adapter.
 - Add MySQL/MariaDB adapter.
 - Evaluate document/NoSQL storage options.
-- Add backup/export tooling.
+- Add backup/export tooling. Initial redacted active-profile backup ZIPs are in place.
 - Harden TLS, auth, audit logs, secrets, and diagnostics.

@@ -52,3 +52,7 @@ OAuth tokens, refresh tokens, app passwords, private keys, and API keys should n
 Use secret references in app data and keep secret values in a protected store.
 
 IMAP source configs now store `auth_ref` values instead of raw passwords. The default secret backend uses macOS Keychain when available. Non-macOS or explicitly local development runs can use a profile-local settings fallback, which should still be treated as sensitive and limited to development/test credentials.
+
+## Backups
+
+`millie backup` redacts known secret-bearing settings by default, including session secrets, password hashes, and profile-local secret stores. Backups created with `--include-secrets` can contain local fallback secrets and should be protected like credentials.

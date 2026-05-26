@@ -201,6 +201,14 @@ PYTHONPATH=src python3 -m millie export --profile thunderbird --format auto --ou
 
 Export profiles currently include `generic-eml`, `generic-mbox`, `generic-maildir`, `thunderbird`, `evolution`, `apple-mail`, and `outlook-workflow`.
 
+## Backup Active Profile
+
+```sh
+PYTHONPATH=src python3 -m millie backup --output .private/local/backups
+```
+
+Backups are ZIP files with a manifest, active profile database, blob data, and redacted settings snapshots by default. Use `--include-secrets` only for controlled local moves where secret-bearing local settings must be preserved.
+
 ## Test
 
 ```sh
