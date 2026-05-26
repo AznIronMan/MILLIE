@@ -56,3 +56,5 @@ IMAP source configs now store `auth_ref` values instead of raw passwords. The de
 ## Backups
 
 `millie backup` redacts known secret-bearing settings by default, including session secrets, password hashes, and profile-local secret stores. Backups created with `--include-secrets` can contain local fallback secrets and should be protected like credentials.
+
+Backup restore validates manifest hashes before copying profile data into a new profile.

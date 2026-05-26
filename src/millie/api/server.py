@@ -12,7 +12,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from millie import __version__
 from millie.auth import AuthManager, expired_session_cookie, session_cookie
-from millie.backup import create_backup
+from millie.backup import create_backup, restore_backup
 from millie.config import AppConfig
 from millie.export_profiles import list_export_profiles
 from millie.exporters import export_messages
@@ -493,6 +493,29 @@ class MillieRequestHandler(BaseHTTPRequestHandler):
                     include_secrets=bool(payload.get("includeSecrets") or payload.get("include_secrets")),
                 )
                 self.write_json({"backup": result.to_api()}, HTTPStatus.CREATED)
+            elif path == "/api/v1/restore-backup":
+                raw_backup_path = str(payload.get("path") or payload.get("backupPath") or payload.get("backup_path") or "").strip()
+                if not raw_backup_path:
+                    self.write_error(HTTPStatus.BAD_REQUEST, "Backup path is required")
+                    return
+                backup_path = Path(raw_backup_path)
+                result = restore_backup(
+                    self.app.profile_manager,
+                    backup_path,
+                    profile_name=str(payload.get("name") or payload.get("profileName") or "").strip() or None,
+                    profile_id=str(payload.get("profileId") or payload.get("profile_id") or "").strip() or None,
+                    switch=bool(payload.get("switch", True)),
+                )
+                if result.switched:
+                    self.app.db = self.app.profile_manager.active_database()
+                self.write_json(
+                    {
+                        "restore": result.to_api(),
+                        "active_profile_id": self.app.profile_manager.active_profile_id,
+                        "profiles": self.app.profile_manager.list_profiles(),
+                    },
+                    HTTPStatus.CREATED,
+                )
             else:
                 self.write_error(HTTPStatus.NOT_FOUND, "Unknown API endpoint")
         except Exception as exc:  # noqa: BLE001

@@ -5,7 +5,7 @@ from getpass import getpass
 import json
 from pathlib import Path
 
-from .backup import create_backup
+from .backup import create_backup, restore_backup
 from .config import AppConfig
 from .doctor import run_doctor
 from .exporters import export_messages
@@ -226,6 +226,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Include local secret settings in the backup; default redacts secret-bearing settings",
     )
+
+    restore_cmd = subparsers.add_parser("restore-backup", help="Restore a backup ZIP into a new profile")
+    restore_cmd.add_argument("path", help="Backup .zip path")
+    restore_cmd.add_argument("--name", default=None, help="New profile display name")
+    restore_cmd.add_argument("--id", dest="profile_id", default=None, help="New profile id")
+    restore_cmd.add_argument("--no-switch", action="store_true", help="Do not switch to the restored profile")
     return parser
 
 
@@ -662,6 +668,21 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"Backup created: {result.output_path} "
             f"profile={result.profile_id} files={result.file_count} include_secrets={result.include_secrets}"
+        )
+        for warning in result.warnings:
+            print(f"Warning: {warning}")
+        return 0
+    if args.command == "restore-backup":
+        result = restore_backup(
+            profile_manager,
+            Path(args.path),
+            profile_name=args.name,
+            profile_id=args.profile_id,
+            switch=not args.no_switch,
+        )
+        print(
+            f"Backup restored: {result.input_path} "
+            f"profile={result.profile_id} name={result.profile_name!r} files={result.file_count} switched={result.switched}"
         )
         for warning in result.warnings:
             print(f"Warning: {warning}")

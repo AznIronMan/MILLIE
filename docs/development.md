@@ -209,6 +209,12 @@ PYTHONPATH=src python3 -m millie backup --output .private/local/backups
 
 Backups are ZIP files with a manifest, active profile database, blob data, and redacted settings snapshots by default. Use `--include-secrets` only for controlled local moves where secret-bearing local settings must be preserved.
 
+Restore a backup into a new profile:
+
+```sh
+PYTHONPATH=src python3 -m millie restore-backup .private/local/backups/default/millie-backup-default.zip --name "Restored Archive"
+```
+
 ## Test
 
 ```sh

@@ -34,8 +34,16 @@ PYTHONPATH=src python3 -m millie backup --output .private/local/backups --includ
 
 `--include-secrets` can package sensitive local material. Treat that ZIP like a password vault.
 
-## Restore Status
+## Restore
 
-Automated restore is not implemented yet. For now, backup archives are intended for portable preservation, inspection, and manual recovery.
+Restore a backup into a new profile:
 
-The next restore design should validate manifest hashes before copying files into a profile location.
+```sh
+PYTHONPATH=src python3 -m millie restore-backup .private/local/backups/default/millie-backup-default.zip \
+  --name "Restored Archive" \
+  --id restored-archive
+```
+
+MILLIE validates every manifest file hash before copying data. Restore creates a new profile and switches to it by default. Use `--no-switch` to leave the current profile active.
+
+The web app can also restore a backup ZIP from the message detail toolbar.

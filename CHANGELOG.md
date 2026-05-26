@@ -36,6 +36,7 @@ The project uses semantic versioning in `major.minor.patch` format.
 - Hardened the local IMAP facade with optional exact login, non-loopback safety checks, direct IMAPS config, `AUTHENTICATE PLAIN`, metadata fetches, header/text fetches, and partial body literals.
 - Added active-profile backup ZIP creation with manifests, file hashes, and default redaction of local secret settings.
 - Added local API and web controls for creating active-profile backup ZIPs.
+- Added backup restore into new profiles with manifest hash validation, CLI/API support, and web restore controls.
 
 ## [0.1.0] - 2026-05-23
 

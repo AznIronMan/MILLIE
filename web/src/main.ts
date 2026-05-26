@@ -82,6 +82,15 @@ type BackupResult = {
   warnings: string[];
 };
 
+type RestoreResult = {
+  input_path: string;
+  profile_id: string;
+  profile_name: string;
+  file_count: number;
+  switched: boolean;
+  warnings: string[];
+};
+
 type SourceCandidate = {
   id: string;
   source_type: string;
@@ -699,6 +708,15 @@ function render(): void {
             Include secrets
           </label>
           <button id="backup-button">Backup</button>
+          <label>
+            Restore ZIP
+            <input id="restore-path" placeholder=".private/local/backups/default/millie-backup-default.zip" />
+          </label>
+          <label>
+            Restore as
+            <input id="restore-name" placeholder="Restored profile" />
+          </label>
+          <button id="restore-button">Restore</button>
         </div>
         <div class="detail-content">
           ${state.selectedMessage ? renderDetail(state.selectedMessage) : `<div class="empty detail-empty">Select a message to inspect it.</div>`}
@@ -1370,6 +1388,7 @@ function bindEvents(): void {
   });
   document.querySelector<HTMLButtonElement>("#export-button")?.addEventListener("click", exportMail);
   document.querySelector<HTMLButtonElement>("#backup-button")?.addEventListener("click", backupActiveProfile);
+  document.querySelector<HTMLButtonElement>("#restore-button")?.addEventListener("click", restoreBackup);
   document.querySelector<HTMLSelectElement>("#export-profile")?.addEventListener("change", (event) => {
     state.selectedExportProfileId = (event.currentTarget as HTMLSelectElement).value;
     state.selectedExportFormat = "auto";
@@ -2413,6 +2432,40 @@ async function backupActiveProfile(): Promise<void> {
     });
     const warningText = payload.backup.warnings.length ? ` warnings=${payload.backup.warnings.length}` : "";
     state.status = `Backup created: ${payload.backup.output_path} (${payload.backup.file_count} file(s), secrets=${payload.backup.include_secrets ? "included" : "redacted"}${warningText}).`;
+    render();
+  } catch (error) {
+    state.status = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}
+
+async function restoreBackup(): Promise<void> {
+  const path = document.querySelector<HTMLInputElement>("#restore-path")?.value.trim() ?? "";
+  const name = document.querySelector<HTMLInputElement>("#restore-name")?.value.trim() ?? "";
+  if (!path) {
+    state.status = "Enter a backup ZIP path to restore.";
+    render();
+    return;
+  }
+  state.status = "Restoring backup...";
+  render();
+  try {
+    const payload = await api<{
+      restore: RestoreResult;
+      active_profile_id: string;
+      profiles: Profile[];
+    }>("/api/v1/restore-backup", {
+      method: "POST",
+      body: JSON.stringify({
+        path,
+        name,
+        switch: true,
+      }),
+    });
+    state.profiles = payload.profiles;
+    state.activeProfileId = payload.active_profile_id;
+    state.status = `Restored ${payload.restore.profile_name} (${payload.restore.file_count} file(s)) and switched profiles.`;
+    await refreshActiveProfileData();
     render();
   } catch (error) {
     state.status = error instanceof Error ? error.message : String(error);

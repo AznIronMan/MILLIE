@@ -14,7 +14,9 @@ Create a portable backup package for the active MILLIE profile.
 - Includes file sizes and SHA-256 hashes in the manifest.
 - Redacts known secret-bearing settings by default.
 - Supports `--include-secrets` for controlled local moves where preserving local fallback secrets is explicitly needed.
+- Added `restore-backup`, `POST /api/v1/restore-backup`, and web restore controls that validate manifest hashes before restoring into a new profile.
 - Added unit coverage that verifies the archive contents and default secret redaction.
+- Added unit coverage that rejects a tampered backup with a hash mismatch or unlisted archive file.
 
 ## Verification
 

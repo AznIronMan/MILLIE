@@ -12,7 +12,7 @@ from email.message import EmailMessage
 from pathlib import Path
 
 from millie.auth import AuthManager, SESSION_COOKIE
-from millie.backup import create_backup
+from millie.backup import create_backup, restore_backup
 from millie.config import AppConfig
 from millie.database import MillieDatabase
 from millie.exporters import export_messages
@@ -292,6 +292,68 @@ class CoreImportExportTests(unittest.TestCase):
             self.assertNotIn(b"super-secret-session", payload)
             self.assertNotIn(b"super-secret-hash", payload)
             self.assertNotIn(b"super-secret-token", payload)
+
+            restored = restore_backup(
+                manager,
+                result.output_path,
+                profile_name="Restored Backup",
+                profile_id="restored-backup",
+            )
+
+            self.assertEqual(restored.profile_id, "restored-backup")
+            self.assertTrue(restored.switched)
+            self.assertEqual(manager.active_profile_id, "restored-backup")
+            self.assertEqual(len(manager.active_database().list_messages(query="Hello")), 1)
+
+    def test_restore_rejects_backup_with_hash_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = ProfileManager(
+                root / "millie.settings",
+                root / "profiles",
+                root / "default.sqlite",
+                root / "default-data",
+            )
+            db = manager.active_database()
+            source = root / "sample.eml"
+            source.write_bytes(SAMPLE_EML)
+            import_path(db, source, "eml", "Backup Fixture")
+            result = create_backup(manager, root / "backups")
+
+            tampered = root / "tampered.zip"
+            with zipfile.ZipFile(result.output_path) as source_zip, zipfile.ZipFile(tampered, "w") as target_zip:
+                for item in source_zip.infolist():
+                    data = source_zip.read(item.filename)
+                    if item.filename == "profile/millie.sqlite":
+                        data += b"tamper"
+                    target_zip.writestr(item, data)
+
+            with self.assertRaisesRegex(ValueError, "hash mismatch"):
+                restore_backup(manager, tampered, profile_id="tampered")
+
+    def test_restore_rejects_unlisted_backup_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = ProfileManager(
+                root / "millie.settings",
+                root / "profiles",
+                root / "default.sqlite",
+                root / "default-data",
+            )
+            db = manager.active_database()
+            source = root / "sample.eml"
+            source.write_bytes(SAMPLE_EML)
+            import_path(db, source, "eml", "Backup Fixture")
+            result = create_backup(manager, root / "backups")
+
+            extra = root / "extra.zip"
+            with zipfile.ZipFile(result.output_path) as source_zip, zipfile.ZipFile(extra, "w") as target_zip:
+                for item in source_zip.infolist():
+                    target_zip.writestr(item, source_zip.read(item.filename))
+                target_zip.writestr("profile/data/unlisted.bin", b"not in manifest")
+
+            with self.assertRaisesRegex(ValueError, "unlisted file"):
+                restore_backup(manager, extra, profile_id="extra")
 
     def test_search_handles_addresses_and_punctuation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

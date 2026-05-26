@@ -138,8 +138,11 @@ Export profiles include a target ID, display name, supported formats, recommende
 ## Backups
 
 - `POST /api/v1/backup`
+- `POST /api/v1/restore-backup`
 
 `POST /api/v1/backup` accepts `outputPath` and `includeSecrets`. It creates a portable active-profile ZIP backup and redacts secret-bearing settings unless `includeSecrets` is true.
+
+`POST /api/v1/restore-backup` accepts `path`, optional `name`, optional `profileId`, and optional `switch`. It validates the backup manifest hashes, restores into a new profile, and switches to that profile by default.
 
 ## Other Current Endpoints
 
