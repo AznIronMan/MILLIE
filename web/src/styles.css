@@ -697,6 +697,12 @@ label {
   font-size: 0.82rem;
 }
 
+.sync-state-retry-button {
+  justify-self: start;
+  min-height: 30px;
+  padding: 0 9px;
+}
+
 .job-detail {
   display: grid;
   gap: 10px;

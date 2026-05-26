@@ -72,6 +72,11 @@ type SyncState = {
   scope: string;
   state_json: string;
   updated_at: string;
+  latest_import_job_id: number | null;
+  latest_import_job_options_json: string | null;
+  source_config_id: string | null;
+  is_partial: boolean;
+  sync_action: string | null;
   state: Record<string, unknown>;
 };
 
@@ -1224,11 +1229,17 @@ function renderSyncState(sync: SyncState): string {
   const status = String(sync.state.last_status ?? "ok");
   const failures = firstStateList(sync.state.last_failed_uids, sync.state.last_failed_uidls, sync.state.last_failed_message_ids);
   const cursor = syncCursor(sync);
+  const folder = sync.scope.startsWith("folder:") ? sync.scope.slice("folder:".length) : "";
   return `
     <div class="job-row sync-state-row">
       <strong>${escapeHtml(sync.source_kind)} · ${escapeHtml(status)}</strong>
       <span>${escapeHtml(sync.source_name)} · ${escapeHtml(sync.scope)}</span>
       <small>${escapeHtml([cursor, failures ? `failed ${failures}` : "", formatDate(sync.updated_at)].filter(Boolean).join(" · "))}</small>
+      ${
+        sync.source_config_id
+          ? `<button class="sync-state-retry-button" data-sync-kind="${escapeHtml(sync.source_kind)}" data-source-config-id="${escapeHtml(sync.source_config_id)}" data-sync-folder="${escapeHtml(folder)}">${sync.is_partial ? "Continue" : "Retry"}</button>`
+          : ""
+      }
     </div>
   `;
 }
@@ -1426,6 +1437,11 @@ function bindEvents(): void {
   document.querySelectorAll<HTMLButtonElement>(".graph-sync-button").forEach((button) => {
     button.addEventListener("click", async () => {
       await syncGraphSource(button.dataset.graphSourceId ?? "");
+    });
+  });
+  document.querySelectorAll<HTMLButtonElement>(".sync-state-retry-button").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await retrySyncState(button.dataset.syncKind ?? "", button.dataset.sourceConfigId ?? "", button.dataset.syncFolder ?? "");
     });
   });
   document.querySelectorAll<HTMLButtonElement>(".graph-delete-button").forEach((button) => {
@@ -1844,6 +1860,28 @@ function selectedDiscoveredImapFolders(): string[] {
     .filter(Boolean);
 }
 
+async function retrySyncState(kind: string, sourceConfigId: string, folder: string): Promise<void> {
+  if (!sourceConfigId) {
+    state.status = "This sync state is missing a saved source id.";
+    render();
+    return;
+  }
+  if (kind === "imap") {
+    await syncImapSource(sourceConfigId, folder ? [folder] : undefined);
+    return;
+  }
+  if (kind === "pop3") {
+    await syncPopSource(sourceConfigId);
+    return;
+  }
+  if (kind === "graph") {
+    await syncGraphSource(sourceConfigId);
+    return;
+  }
+  state.status = `Unsupported sync state type: ${kind}`;
+  render();
+}
+
 async function deleteImapSource(sourceId: string): Promise<void> {
   const source = state.imapSources.find((item) => item.id === sourceId);
   if (!source) {
@@ -1893,7 +1931,7 @@ async function syncImapSource(sourceId: string, folders?: string[]): Promise<voi
     render();
   } catch (error) {
     await loadJobs();
-    state.status = error instanceof Error ? error.message : String(error);
+    state.status = connectorErrorMessage("IMAP", error);
     render();
   }
 }
@@ -2001,7 +2039,7 @@ async function syncPopSource(sourceId: string): Promise<void> {
     render();
   } catch (error) {
     await loadJobs();
-    state.status = error instanceof Error ? error.message : String(error);
+    state.status = connectorErrorMessage("POP", error);
     render();
   }
 }
@@ -2279,7 +2317,7 @@ async function syncGraphSource(sourceId: string): Promise<void> {
     render();
   } catch (error) {
     await loadJobs();
-    state.status = error instanceof Error ? error.message : String(error);
+    state.status = connectorErrorMessage("Graph", error);
     render();
   }
 }
@@ -2538,6 +2576,34 @@ function authLabel(): string {
   if (!state.auth) return "Unknown";
   if (state.auth.dev_bypass) return "Dev bypass";
   return state.auth.authenticated ? state.auth.username || "Session" : "Required";
+}
+
+function connectorErrorMessage(connector: "IMAP" | "POP" | "Graph", error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const lowered = message.toLowerCase();
+  let hint = "";
+  if (lowered.includes("password/app password is not configured")) {
+    hint = `Save a password or app password for this ${connector} source, then retry.`;
+  } else if (
+    lowered.includes("authentication") ||
+    lowered.includes("login failed") ||
+    lowered.includes("invalid credentials") ||
+    lowered.includes("invalid login")
+  ) {
+    hint = `Check the ${connector} username and app password, then save the source again.`;
+  } else if (
+    connector === "Graph" &&
+    (lowered.includes("refresh token") ||
+      lowered.includes("expired") ||
+      lowered.includes("unauthorized") ||
+      lowered.includes("401") ||
+      lowered.includes("403") ||
+      lowered.includes("consent") ||
+      lowered.includes("permission"))
+  ) {
+    hint = "Reconnect the Graph source and confirm the Microsoft Graph Mail.Read consent.";
+  }
+  return hint ? `${message} ${hint}` : message;
 }
 
 function compactJson(value: string | null): string {

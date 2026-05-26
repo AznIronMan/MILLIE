@@ -260,6 +260,19 @@ def redact_sync_state(state: dict[str, Any]) -> dict[str, Any]:
     return redacted
 
 
+def parse_json_object(value: Any) -> dict[str, Any]:
+    try:
+        parsed = json.loads(str(value or "{}"))
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def string_or_none(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
 @dataclass(slots=True)
 class InsertMessageResult:
     message_id: int
@@ -411,7 +424,21 @@ class MillieDatabase:
             rows = conn.execute(
                 """
                 SELECT sss.source_id, s.kind AS source_kind, s.display_name AS source_name,
-                       s.source_uri, sss.scope, sss.state_json, sss.updated_at
+                       s.source_uri, sss.scope, sss.state_json, sss.updated_at,
+                       (
+                           SELECT ij.id
+                           FROM import_jobs ij
+                           WHERE ij.source_id = sss.source_id
+                           ORDER BY ij.started_at DESC, ij.id DESC
+                           LIMIT 1
+                       ) AS latest_import_job_id,
+                       (
+                           SELECT ij.options_json
+                           FROM import_jobs ij
+                           WHERE ij.source_id = sss.source_id
+                           ORDER BY ij.started_at DESC, ij.id DESC
+                           LIMIT 1
+                       ) AS latest_import_job_options_json
                 FROM source_sync_states sss
                 JOIN sources s ON s.id = sss.source_id
                 ORDER BY s.display_name, sss.scope
@@ -429,6 +456,10 @@ class MillieDatabase:
             redacted_state = redact_sync_state(state) if isinstance(state, dict) else {}
             item["state"] = redacted_state
             item["state_json"] = json.dumps(redacted_state, sort_keys=True)
+            options = parse_json_object(item.get("latest_import_job_options_json"))
+            item["source_config_id"] = string_or_none(options.get("source_config_id"))
+            item["is_partial"] = redacted_state.get("last_status") == "partial"
+            item["sync_action"] = "retry" if item["source_config_id"] else None
             states.append(item)
         return states
 

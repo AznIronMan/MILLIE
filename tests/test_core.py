@@ -666,6 +666,9 @@ class CoreImportExportTests(unittest.TestCase):
             self.assertEqual(states[0]["source_name"], "Unit IMAP")
             self.assertEqual(states[0]["scope"], "folder:INBOX")
             self.assertEqual(states[0]["state"]["last_uid"], 2)
+            self.assertEqual(states[0]["source_config_id"], "unit-imap")
+            self.assertEqual(states[0]["sync_action"], "retry")
+            self.assertFalse(states[0]["is_partial"])
 
             messages["INBOX"]["3"] = build_message(
                 "imap-three@example.com",

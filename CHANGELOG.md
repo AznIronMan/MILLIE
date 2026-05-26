@@ -40,6 +40,7 @@ The project uses semantic versioning in `major.minor.patch` format.
 - Added common IMAP/POP provider presets for Outlook.com / Microsoft 365, Yahoo, AOL, Fastmail, and Zoho, plus iCloud IMAP.
 - Hardened IMAP, POP, and Graph sync state so failed message fetches remain retryable instead of silently advancing cursors.
 - Added a sync-state API endpoint and web operations summary for connector cursor/recovery visibility.
+- Added web Retry/Continue actions for sync-state rows and clearer connector credential recovery hints.
 
 ## [0.1.0] - 2026-05-23
 
