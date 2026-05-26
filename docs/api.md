@@ -135,6 +135,12 @@ Microsoft Graph source configs are stored per active profile. Source configs sto
 
 Export profiles include a target ID, display name, supported formats, recommended format, import instructions, and known limitations. `POST /api/v1/export` accepts `targetProfile` and `format`; use `format: "auto"` to select the profile recommendation.
 
+## Backups
+
+- `POST /api/v1/backup`
+
+`POST /api/v1/backup` accepts `outputPath` and `includeSecrets`. It creates a portable active-profile ZIP backup and redacts secret-bearing settings unless `includeSecrets` is true.
+
 ## Other Current Endpoints
 
 - `GET /api/v1/health`

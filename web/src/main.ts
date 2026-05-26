@@ -74,6 +74,14 @@ type ExportProfile = {
   limitations: string[];
 };
 
+type BackupResult = {
+  output_path: string;
+  profile_id: string;
+  include_secrets: boolean;
+  file_count: number;
+  warnings: string[];
+};
+
 type SourceCandidate = {
   id: string;
   source_type: string;
@@ -682,6 +690,15 @@ function render(): void {
             ${renderExportFormatOptions()}
           </select>
           <button id="export-button">Export</button>
+          <label>
+            Backup folder
+            <input id="backup-path" placeholder="${escapeHtml(defaultBackupPath())}" />
+          </label>
+          <label class="checkbox-label">
+            <input id="backup-include-secrets" type="checkbox" />
+            Include secrets
+          </label>
+          <button id="backup-button">Backup</button>
         </div>
         <div class="detail-content">
           ${state.selectedMessage ? renderDetail(state.selectedMessage) : `<div class="empty detail-empty">Select a message to inspect it.</div>`}
@@ -1352,6 +1369,7 @@ function bindEvents(): void {
     });
   });
   document.querySelector<HTMLButtonElement>("#export-button")?.addEventListener("click", exportMail);
+  document.querySelector<HTMLButtonElement>("#backup-button")?.addEventListener("click", backupActiveProfile);
   document.querySelector<HTMLSelectElement>("#export-profile")?.addEventListener("change", (event) => {
     state.selectedExportProfileId = (event.currentTarget as HTMLSelectElement).value;
     state.selectedExportFormat = "auto";
@@ -2380,8 +2398,34 @@ async function exportMail(): Promise<void> {
   }
 }
 
+async function backupActiveProfile(): Promise<void> {
+  const outputPath = document.querySelector<HTMLInputElement>("#backup-path")?.value.trim() || defaultBackupPath();
+  const includeSecrets = document.querySelector<HTMLInputElement>("#backup-include-secrets")?.checked ?? false;
+  state.status = "Creating backup...";
+  render();
+  try {
+    const payload = await api<{ backup: BackupResult }>("/api/v1/backup", {
+      method: "POST",
+      body: JSON.stringify({
+        outputPath,
+        includeSecrets,
+      }),
+    });
+    const warningText = payload.backup.warnings.length ? ` warnings=${payload.backup.warnings.length}` : "";
+    state.status = `Backup created: ${payload.backup.output_path} (${payload.backup.file_count} file(s), secrets=${payload.backup.include_secrets ? "included" : "redacted"}${warningText}).`;
+    render();
+  } catch (error) {
+    state.status = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}
+
 function defaultExportPath(): string {
   return `.private/local/exports/${state.activeProfileId ?? "default"}/${state.selectedExportProfileId}`;
+}
+
+function defaultBackupPath(): string {
+  return `.private/local/backups/${state.activeProfileId ?? "default"}`;
 }
 
 function selectedExportProfile(): ExportProfile | null {

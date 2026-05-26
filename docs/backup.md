@@ -8,6 +8,8 @@ MILLIE can package the active profile into a portable ZIP archive.
 PYTHONPATH=src python3 -m millie backup --output .private/local/backups
 ```
 
+The web app also has a backup control in the message detail toolbar.
+
 If `--output` is a directory or has no `.zip` suffix, MILLIE creates a file named `millie-backup-<profile-id>.zip` inside that directory.
 
 The archive contains:

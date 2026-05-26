@@ -9,6 +9,7 @@ Create a portable backup package for the active MILLIE profile.
 ## Completed
 
 - Added `millie backup --output <path>`.
+- Added `POST /api/v1/backup` and web backup controls.
 - Packages the active profile database, blob data directory, global settings snapshot, profile settings snapshot, and `manifest.json`.
 - Includes file sizes and SHA-256 hashes in the manifest.
 - Redacts known secret-bearing settings by default.

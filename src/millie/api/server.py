@@ -12,6 +12,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from millie import __version__
 from millie.auth import AuthManager, expired_session_cookie, session_cookie
+from millie.backup import create_backup
 from millie.config import AppConfig
 from millie.export_profiles import list_export_profiles
 from millie.exporters import export_messages
@@ -482,6 +483,16 @@ class MillieRequestHandler(BaseHTTPRequestHandler):
                     },
                     HTTPStatus.CREATED,
                 )
+            elif path == "/api/v1/backup":
+                output_path = Path(
+                    str(payload.get("outputPath") or payload.get("output_path") or ".private/local/backups")
+                )
+                result = create_backup(
+                    self.app.profile_manager,
+                    output_path,
+                    include_secrets=bool(payload.get("includeSecrets") or payload.get("include_secrets")),
+                )
+                self.write_json({"backup": result.to_api()}, HTTPStatus.CREATED)
             else:
                 self.write_error(HTTPStatus.NOT_FOUND, "Unknown API endpoint")
         except Exception as exc:  # noqa: BLE001
