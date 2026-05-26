@@ -24,7 +24,8 @@ Add initial live mail import/sync support.
 - Initial read-only POP3 support exists with safe probes, secret-backed source configs, UIDL incremental sync, CLI/API/web controls, and no server delete path.
 - Microsoft Graph / Exchange is selected as the modern Exchange path. Source configs, provider metadata, PKCE authorization URL generation, OAuth callback/token exchange, secret-backed token storage, token refresh, folder discovery, selected-folder management, delta-backed limited read-only sync, CLI/API endpoints, web controls, and design docs exist.
 - Common IMAP/POP provider presets now cover Gmail, Outlook.com / Microsoft 365, Yahoo, AOL, Fastmail, and Zoho, with iCloud covered for IMAP only because Apple does not support POP.
+- IMAP, POP, and Graph sync state now records latest-run recovery metadata and preserves retryability when an individual message fetch fails.
 
 ## Remaining
 
-- Harden Graph/IMAP/POP recovery paths for revoked credentials, expired consent, large backfills, and partial sync continuation.
+- Harden Graph/IMAP/POP recovery paths for revoked credentials, expired consent, very large backfills, and user-visible partial sync continuation.

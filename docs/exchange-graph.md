@@ -107,6 +107,8 @@ PYTHONPATH=src python3 -m millie graph-delete work-microsoft-365
 
 `POST /api/v1/graph-sources/{id}/sync` imports from the source's saved selected folders using the existing raw-MIME parser. It accepts optional `sync_limit`, caps each run conservatively, stores Graph `delta_link`/`next_link` values in `source_sync_states`, and returns `processed`, `imported`, `duplicates`, `removed`, `errors`, and `sync_limit` counts.
 
+Graph sync only advances the stored delta/next cursor when the current page was fully consumed and message MIME fetches completed without errors. If a MIME fetch fails, or a small limit splits a page, MILLIE preserves the previous cursor and records recovery metadata so the next sync can retry safely.
+
 ## How To Set Up Graph OAuth
 
 Before MILLIE can authenticate a real Microsoft account, the user needs a Microsoft Entra app registration.
@@ -189,6 +191,7 @@ Current sync:
 - Enumerates mail folders through Graph
 - Uses per-folder message delta queries for selected folders
 - Stores Graph `delta_link` and partial-page `next_link` values in `source_sync_states`
+- Preserves the previous cursor on per-message failures or mid-page limits so failed/unseen items remain retryable
 - Fetches each changed message as MIME with `/$value`
 - Imports MIME through the same parser used by file, IMAP, and POP sources
 - Tracks remote removed/moved-away Graph ids without deleting local archived messages

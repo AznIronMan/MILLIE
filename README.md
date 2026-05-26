@@ -96,6 +96,7 @@ MILLIE now has a first runnable foundation slice:
 - IMAP provider presets for Gmail, Outlook.com / Microsoft 365, Yahoo, iCloud, AOL, Fastmail, and Zoho, plus selected-folder one-off sync and IMAP flags/internal-date capture
 - Read-only POP3 source configs, safe no-retrieve probes, UIDL-based incremental sync, and a never-delete server policy
 - Microsoft Graph / Exchange source configs with PKCE OAuth callback/token storage, token refresh, folder discovery, and limited delta-backed read-only selected-folder sync
+- Connector sync recovery metadata that keeps failed IMAP UIDs, POP UIDLs, and Graph delta pages retryable
 - Connector credential secret references with macOS Keychain support and a local development fallback
 - HTTPS-ready server configuration while keeping HTTP as the default development path
 - Read-only local IMAP facade on port `22143` with metadata/body fetch support, optional exact login, and direct IMAPS configuration for external client compatibility testing

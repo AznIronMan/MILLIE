@@ -11,7 +11,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
-from .database import MillieDatabase
+from .database import MillieDatabase, utc_now
 from .mailparse import parse_raw_message
 from .profiles import ProfileManager
 from .secrets import SecretManager, backend_from_ref
@@ -949,14 +949,20 @@ def sync_graph_folder(
     removed = 0
     next_url: str | None = graph_delta_start_url(mailbox_path, folder.id, limit, state)
     scanned = 0
-    last_delta_link = string_or_none(state.get("delta_link"))
+    previous_delta_link = string_or_none(state.get("delta_link"))
+    previous_next_link = string_or_none(state.get("next_link"))
+    last_delta_link = previous_delta_link
     last_next_link: str | None = None
+    page_fully_consumed = True
+    failed_message_ids: list[str] = []
+    last_error: str | None = None
 
     while next_url and attempted < limit:
         payload = http_client.get_json(next_url, access_token)
         raw_messages = payload.get("value") if isinstance(payload.get("value"), list) else []
         for item in raw_messages:
             if attempted >= limit:
+                page_fully_consumed = False
                 break
             if not isinstance(item, dict):
                 continue
@@ -996,6 +1002,8 @@ def sync_graph_folder(
                     duplicates += 1
             except Exception as exc:  # noqa: BLE001
                 errors += 1
+                failed_message_ids.append(message_id)
+                last_error = str(exc)
                 db.record_import_error(
                     job_id,
                     f"{folder.path}:{message_id}",
@@ -1007,18 +1015,31 @@ def sync_graph_folder(
         last_delta_link = string_or_none(payload.get("@odata.deltaLink")) or last_delta_link
         next_url = last_next_link if attempted < limit else None
 
+    cursor_safe = errors == 0 and page_fully_consumed
     db.set_source_sync_state(
         db_source_id,
         scope,
         {
-            "delta_link": last_delta_link,
-            "next_link": last_next_link if attempted >= limit else None,
+            "delta_link": last_delta_link if cursor_safe else previous_delta_link,
+            "next_link": (last_next_link if attempted >= limit else None) if cursor_safe else previous_next_link,
             "last_scan_count": scanned,
             "last_removed_count": removed,
             "removed_message_ids": sorted(removed_message_ids)[-1000:],
             "folder_id": folder.id,
             "folder_path": folder.path,
             "sync_mode": "delta",
+            "last_attempted_count": attempted,
+            "last_processed_count": processed,
+            "last_imported_count": imported,
+            "last_duplicate_count": duplicates,
+            "last_error_count": errors,
+            "last_failed_message_ids": failed_message_ids[-20:],
+            "last_error": last_error,
+            "last_status": "ok" if cursor_safe else "partial",
+            "last_status_reason": None if cursor_safe else ("errors" if errors else "limit_mid_page"),
+            "last_job_id": job_id,
+            "last_sync_limit": limit,
+            "last_synced_at": utc_now(),
         },
     )
     return {

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
 from typing import Any, Protocol
 
-from .database import MillieDatabase
+from .database import MillieDatabase, utc_now
 from .mailparse import parse_raw_message
 from .profiles import ProfileManager
 from .secrets import SecretManager, backend_from_ref
@@ -588,6 +588,9 @@ def sync_imap_folder(
     duplicates = 0
     errors = 0
     highest_uid = last_uid
+    last_successful_uid = last_uid
+    failed_uids: list[str] = []
+    last_error: str | None = None
 
     for uid in uids:
         if attempted >= limit:
@@ -618,8 +621,12 @@ def sync_imap_folder(
                 imported += 1
             else:
                 duplicates += 1
+            if not failed_uids:
+                last_successful_uid = max(last_successful_uid, uid_int)
         except Exception as exc:  # noqa: BLE001
             errors += 1
+            failed_uids.append(uid)
+            last_error = str(exc)
             db.record_import_error(
                 job_id,
                 f"{folder}:{uid}",
@@ -629,12 +636,25 @@ def sync_imap_folder(
             )
         highest_uid = max(highest_uid, uid_int)
 
+    cursor_uid = highest_uid if errors == 0 else last_successful_uid
     db.set_source_sync_state(
         source_id,
         scope,
         {
             "uidvalidity": uidvalidity,
-            "last_uid": highest_uid,
+            "last_uid": cursor_uid,
+            "last_attempted_uid": highest_uid,
+            "last_successful_uid": last_successful_uid,
+            "last_failed_uids": failed_uids[-20:],
+            "last_error": last_error,
+            "last_status": "partial" if errors else "ok",
+            "last_job_id": job_id,
+            "last_processed_count": processed,
+            "last_imported_count": imported,
+            "last_duplicate_count": duplicates,
+            "last_error_count": errors,
+            "last_sync_limit": limit,
+            "last_synced_at": utc_now(),
         },
     )
     return {

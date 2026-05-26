@@ -38,6 +38,7 @@ The project uses semantic versioning in `major.minor.patch` format.
 - Added local API and web controls for creating active-profile backup ZIPs.
 - Added backup restore into new profiles with manifest hash validation, CLI/API support, and web restore controls.
 - Added common IMAP/POP provider presets for Outlook.com / Microsoft 365, Yahoo, AOL, Fastmail, and Zoho, plus iCloud IMAP.
+- Hardened IMAP, POP, and Graph sync state so failed message fetches remain retryable instead of silently advancing cursors.
 
 ## [0.1.0] - 2026-05-23
 

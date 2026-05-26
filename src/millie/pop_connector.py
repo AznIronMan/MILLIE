@@ -7,7 +7,7 @@ import ssl
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from .database import MillieDatabase
+from .database import MillieDatabase, utc_now
 from .mailparse import parse_raw_message
 from .profiles import ProfileManager
 from .secrets import SecretManager, backend_from_ref
@@ -459,12 +459,16 @@ def sync_pop_source(
         seen_uidls = set(str(item) for item in state.get("seen_uidls", []) if str(item))
         mailbox_id = db.get_or_create_mailbox(source_id, "POP", role="inbox")
         synced_uidls: list[str] = []
+        attempted_uidls: list[str] = []
+        failed_uidls: list[str] = []
+        last_error: str | None = None
 
         for message_number, uidl in uidls:
-            if len(synced_uidls) >= effective_limit:
+            if len(attempted_uidls) >= effective_limit:
                 break
             if uidl in seen_uidls:
                 continue
+            attempted_uidls.append(uidl)
             try:
                 _, lines, _ = client.retr(message_number)
                 raw = pop_lines_to_message_bytes(lines)
@@ -488,6 +492,8 @@ def sync_pop_source(
                 synced_uidls.append(uidl)
             except Exception as exc:  # noqa: BLE001
                 errors += 1
+                failed_uidls.append(uidl)
+                last_error = str(exc)
                 db.record_import_error(
                     job_id,
                     f"POP:{uidl}",
@@ -504,6 +510,18 @@ def sync_pop_source(
                 "seen_uidls": sorted(seen_uidls),
                 "last_uidl_count": len(uidls),
                 "delete_policy": "never",
+                "last_attempted_uidls": attempted_uidls[-20:],
+                "last_synced_uidls": synced_uidls[-20:],
+                "last_failed_uidls": failed_uidls[-20:],
+                "last_error": last_error,
+                "last_status": "partial" if errors else "ok",
+                "last_job_id": job_id,
+                "last_processed_count": processed,
+                "last_imported_count": imported,
+                "last_duplicate_count": duplicates,
+                "last_error_count": errors,
+                "last_sync_limit": effective_limit,
+                "last_synced_at": utc_now(),
             },
         )
     except Exception as exc:

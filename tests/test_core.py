@@ -676,6 +676,50 @@ class CoreImportExportTests(unittest.TestCase):
             self.assertEqual(len(db.list_messages()), 3)
             self.assertEqual(db.get_source_sync_state(first.source_id, "folder:INBOX")["last_uid"], 3)
 
+    def test_imap_sync_keeps_failed_uid_recoverable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = MillieDatabase(root / "millie.sqlite", root / "data")
+            db.init()
+            messages = {
+                "INBOX": {
+                    "1": build_message("imap-one@example.com", "IMAP One", "First IMAP body").as_bytes(),
+                    "2": build_message("imap-two@example.com", "IMAP Two", "Second IMAP body").as_bytes(),
+                    "3": build_message("imap-three@example.com", "IMAP Three", "Third IMAP body").as_bytes(),
+                }
+            }
+            config = ImapSourceConfig(
+                id="unit-imap",
+                name="Unit IMAP",
+                host="imap.example.test",
+                port=993,
+                username="user@example.test",
+                password="secret",
+                use_tls=True,
+                folders=["INBOX"],
+                sync_limit=50,
+            )
+
+            first = sync_imap_source(db, config, lambda _: FakeImapClient(messages, {"2"}))
+
+            self.assertEqual(first.processed, 2)
+            self.assertEqual(first.imported, 2)
+            self.assertEqual(first.errors, 1)
+            state = db.get_source_sync_state(first.source_id, "folder:INBOX")
+            self.assertEqual(state["last_uid"], 1)
+            self.assertEqual(state["last_attempted_uid"], 3)
+            self.assertEqual(state["last_failed_uids"], ["2"])
+            self.assertEqual(state["last_status"], "partial")
+
+            second = sync_imap_source(db, config, lambda _: FakeImapClient(messages))
+
+            self.assertEqual(second.processed, 2)
+            self.assertEqual(second.imported, 1)
+            self.assertEqual(second.duplicates, 1)
+            self.assertEqual(second.errors, 0)
+            self.assertEqual(db.get_source_sync_state(first.source_id, "folder:INBOX")["last_uid"], 3)
+            self.assertEqual(len(db.list_messages()), 3)
+
     def test_imap_sync_can_override_folders_for_one_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1005,6 +1049,36 @@ class CoreImportExportTests(unittest.TestCase):
             self.assertEqual(second.errors, 0)
             self.assertNotIn("DELE", second_client.commands)
             self.assertEqual(len(db.list_messages()), 3)
+
+    def test_pop_sync_keeps_failed_uidl_recoverable_and_respects_attempt_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = MillieDatabase(root / "millie.sqlite", root / "data")
+            db.init()
+            messages = {
+                "uid-1": build_message("pop-one@example.com", "POP One", "First POP body").as_bytes(),
+                "uid-2": build_message("pop-two@example.com", "POP Two", "Second POP body").as_bytes(),
+                "uid-3": build_message("pop-three@example.com", "POP Three", "Third POP body").as_bytes(),
+            }
+            source = pop_fixture_source(sync_limit=2)
+
+            first = sync_pop_source(db, source, lambda _: FakePopClient(messages, {"uid-1"}))
+
+            self.assertEqual(first.processed, 1)
+            self.assertEqual(first.imported, 1)
+            self.assertEqual(first.errors, 1)
+            state = db.get_source_sync_state(first.source_id, "maildrop")
+            self.assertEqual(state["seen_uidls"], ["uid-2"])
+            self.assertEqual(state["last_attempted_uidls"], ["uid-1", "uid-2"])
+            self.assertEqual(state["last_failed_uidls"], ["uid-1"])
+            self.assertEqual(state["last_status"], "partial")
+
+            second = sync_pop_source(db, source, lambda _: FakePopClient(messages))
+
+            self.assertEqual(second.processed, 2)
+            self.assertEqual(second.imported, 2)
+            self.assertEqual(second.errors, 0)
+            self.assertEqual(db.get_source_sync_state(first.source_id, "maildrop")["seen_uidls"], ["uid-1", "uid-2", "uid-3"])
 
     def test_graph_source_saves_config_without_token_secret(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1354,6 +1428,133 @@ class CoreImportExportTests(unittest.TestCase):
             self.assertNotIn("Graph body", raw_sources)
             self.assertNotIn("access-token-value", raw_sources)
 
+    def test_graph_sync_preserves_delta_when_mime_fetch_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = ProfileManager(
+                root / "millie.settings",
+                root / "profiles",
+                root / "default.sqlite",
+                root / "default-data",
+            )
+            db = MillieDatabase(root / "millie.sqlite", root / "data")
+            db.init()
+            secrets = SecretManager(manager, "local")
+            source = save_graph_source(
+                manager,
+                {
+                    "name": "Graph Mail",
+                    "client_id": "client-id-123",
+                    "tenant_id": "tenant-123",
+                    "redirect_uri": "http://localhost",
+                    "folders": [{"id": "inbox-id", "display_name": "Inbox", "path": "Inbox"}],
+                },
+            )
+            token_ref = secrets.store_graph_token_payload(
+                source.id,
+                json.dumps({"access_token": "access-token-value", "expires_at": "2999-01-01T00:00:00+00:00"}),
+            )
+            save_graph_source(manager, {**source.to_api(), "token_ref": token_ref})
+            first = sync_graph_source(
+                db,
+                manager,
+                source.id,
+                secrets,
+                FakeGraphHttpClient(
+                    token_response={},
+                    get_responses=[
+                        {
+                            "@odata.deltaLink": "https://graph.example/delta-1",
+                            "value": [{"id": "message-id-1", "isRead": True}],
+                        }
+                    ],
+                    byte_responses=[build_message("graph@example.com", "Graph One", "Graph body").as_bytes()],
+                ),
+                sync_limit=10,
+            )
+
+            second = sync_graph_source(
+                db,
+                manager,
+                source.id,
+                secrets,
+                FailingGraphHttpClient(
+                    token_response={},
+                    get_responses=[
+                        {
+                            "@odata.deltaLink": "https://graph.example/delta-2",
+                            "value": [{"id": "message-id-2", "isRead": False}],
+                        }
+                    ],
+                ),
+                sync_limit=10,
+            )
+
+            self.assertEqual(first.errors, 0)
+            self.assertEqual(second.processed, 0)
+            self.assertEqual(second.errors, 1)
+            state = db.get_source_sync_state(first.source_id, "folder:inbox-id")
+            self.assertEqual(state["delta_link"], "https://graph.example/delta-1")
+            self.assertEqual(state["last_failed_message_ids"], ["message-id-2"])
+            self.assertEqual(state["last_status"], "partial")
+            self.assertEqual(state["last_status_reason"], "errors")
+
+    def test_graph_sync_does_not_store_next_link_when_limit_splits_page(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = ProfileManager(
+                root / "millie.settings",
+                root / "profiles",
+                root / "default.sqlite",
+                root / "default-data",
+            )
+            db = MillieDatabase(root / "millie.sqlite", root / "data")
+            db.init()
+            secrets = SecretManager(manager, "local")
+            source = save_graph_source(
+                manager,
+                {
+                    "name": "Graph Mail",
+                    "client_id": "client-id-123",
+                    "tenant_id": "tenant-123",
+                    "redirect_uri": "http://localhost",
+                    "folders": [{"id": "inbox-id", "display_name": "Inbox", "path": "Inbox"}],
+                },
+            )
+            token_ref = secrets.store_graph_token_payload(
+                source.id,
+                json.dumps({"access_token": "access-token-value", "expires_at": "2999-01-01T00:00:00+00:00"}),
+            )
+            save_graph_source(manager, {**source.to_api(), "token_ref": token_ref})
+
+            result = sync_graph_source(
+                db,
+                manager,
+                source.id,
+                secrets,
+                FakeGraphHttpClient(
+                    token_response={},
+                    get_responses=[
+                        {
+                            "@odata.nextLink": "https://graph.example/next-page",
+                            "value": [
+                                {"id": "message-id-1", "isRead": True},
+                                {"id": "message-id-2", "isRead": False},
+                            ],
+                        }
+                    ],
+                    byte_responses=[build_message("graph@example.com", "Graph One", "Graph body").as_bytes()],
+                ),
+                sync_limit=1,
+            )
+
+            self.assertEqual(result.processed, 1)
+            self.assertEqual(result.errors, 0)
+            state = db.get_source_sync_state(result.source_id, "folder:inbox-id")
+            self.assertIsNone(state["next_link"])
+            self.assertEqual(state["last_status"], "partial")
+            self.assertEqual(state["last_status_reason"], "limit_mid_page")
+
     def test_graph_provider_presets_include_read_only_scopes(self) -> None:
         presets = {provider.id: provider for provider in list_graph_provider_presets()}
 
@@ -1422,6 +1623,12 @@ class FakeGraphHttpClient:
         return self.byte_responses.pop(0)
 
 
+class FailingGraphHttpClient(FakeGraphHttpClient):
+    def get_bytes(self, url: str, access_token: str) -> bytes:
+        self.get_bytes_requests.append((url, access_token))
+        raise RuntimeError("planned Graph MIME fetch failure")
+
+
 def build_message(sender: str, subject: str, body: str) -> EmailMessage:
     message = EmailMessage()
     message["From"] = f"Fixture Sender <{sender}>"
@@ -1481,8 +1688,9 @@ def pop_fixture_source(sync_limit: int = 100) -> PopSourceConfig:
 
 
 class FakeImapClient:
-    def __init__(self, messages: dict[str, dict[str, bytes]]):
+    def __init__(self, messages: dict[str, dict[str, bytes]], fetch_errors: set[str] | None = None):
         self.messages = messages
+        self.fetch_errors = fetch_errors or set()
         self.selected = "INBOX"
         self.list_calls: list[tuple[str, str]] = []
 
@@ -1525,6 +1733,8 @@ class FakeImapClient:
             return "OK", [b" ".join(uids)]
         if command.upper() == "FETCH":
             uid = str(args[0])
+            if uid in self.fetch_errors:
+                raise RuntimeError(f"planned fetch failure for UID {uid}")
             raw = self.messages[self.selected][uid]
             return "OK", [
                 (
@@ -1545,8 +1755,9 @@ class FakeImapClient:
 
 
 class FakePopClient:
-    def __init__(self, messages: dict[str, bytes]):
+    def __init__(self, messages: dict[str, bytes], retr_errors: set[str] | None = None):
         self.messages = messages
+        self.retr_errors = retr_errors or set()
         self.commands: list[str] = []
 
     def user(self, user: str) -> bytes:
@@ -1576,6 +1787,8 @@ class FakePopClient:
     def retr(self, which: int) -> tuple[bytes, list[bytes], int]:
         self.commands.append("RETR")
         uidl = list(self.messages)[which - 1]
+        if uidl in self.retr_errors:
+            raise RuntimeError(f"planned retrieve failure for UIDL {uidl}")
         raw = self.messages[uidl]
         lines = raw.splitlines()
         return b"+OK", lines, len(raw)

@@ -192,7 +192,9 @@ Fields to consider:
 - `state_json`
 - `updated_at`
 
-For the first IMAP connector, scope is `folder:{folder_path}` and state stores `uidvalidity` plus `last_uid`.
+IMAP scopes use `folder:{folder_path}` and store `uidvalidity`, `last_uid`, and latest-run recovery metadata such as failed UIDs.
+POP uses `maildrop` and stores seen UIDLs plus latest failed UIDLs.
+Graph scopes use `folder:{graph_folder_id}` and store delta/next links plus latest partial-run metadata.
 
 ### export_jobs
 

@@ -45,7 +45,9 @@ PYTHONPATH=src python3 -m millie --secret-backend local imap-add "Test Mail" \
   --username user@example.com
 ```
 
-Incremental sync state lives in the profile mail database in `source_sync_states`, keyed by source and folder scope. The state currently stores `uidvalidity` and `last_uid`.
+Incremental sync state lives in the profile mail database in `source_sync_states`, keyed by source and folder scope. The state stores `uidvalidity`, `last_uid`, and recovery metadata from the latest run.
+
+If a message fetch or import fails, MILLIE does not advance `last_uid` past the failed UID. Later UIDs may be imported in the same run, but the next sync starts at the failed UID again. Exact raw-MIME dedupe makes the re-read safe while keeping the failed message retryable.
 
 ## CLI
 

@@ -24,7 +24,9 @@ Saved POP source configs live in the active profile SQLite settings file under t
 
 The source config stores an `auth_ref`, not the password/app password. It uses the same secret backend as IMAP: macOS Keychain by default on macOS when available, with a local profile-settings fallback for development.
 
-Incremental sync state lives in the profile mail database in `source_sync_states`, keyed by source and the `maildrop` scope. The state stores seen `UIDL` values and a `delete_policy` of `never`.
+Incremental sync state lives in the profile mail database in `source_sync_states`, keyed by source and the `maildrop` scope. The state stores seen `UIDL` values, a `delete_policy` of `never`, and recovery metadata from the latest run.
+
+Failed `RETR` attempts are not marked as seen, so the same UIDL remains retryable on the next sync. The sync limit applies to attempted new UIDLs, which keeps a run bounded even when a server returns repeated retrieval failures.
 
 ## CLI
 
