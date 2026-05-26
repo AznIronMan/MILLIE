@@ -67,7 +67,7 @@ Export with the `apple-mail` profile. MILLIE recommends MBOX output. Use Apple M
 
 ### Outlook Workflow
 
-Export with the `outlook-workflow` profile. MILLIE currently recommends EML bundles for near-term migration workflows. Direct PST/OLM writing remains advanced until a reliable writer/toolchain is approved.
+Export with the `outlook-workflow` profile. MILLIE currently recommends EML bundles for near-term migration workflows. For Outlook workflows that can copy from an IMAP account, the local read-only IMAP facade is the next preferred bridge before direct PST/OLM writing. Direct PST/OLM writing remains advanced until a reliable writer/toolchain is approved.
 
 ## Outlook Notes
 
@@ -76,7 +76,7 @@ Outlook-native PST export is desirable but should be treated as an advanced feat
 Near-term Outlook-compatible paths may include:
 
 - EML bundle export where supported by the user's Outlook workflow
-- Local read-only IMAP facade so Outlook can copy mail into a mailbox
+- Local read-only IMAP facade so Outlook can browse or copy archived mail into a mailbox
 - PST generation through a vetted external library or tool
 
 ## Export Manifest

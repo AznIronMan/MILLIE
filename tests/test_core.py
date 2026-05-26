@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import imaplib
 import mailbox
 import json
 import re
+import threading
 from email.message import EmailMessage
 from pathlib import Path
 
 from millie.auth import AuthManager, SESSION_COOKIE
+from millie.config import AppConfig
 from millie.database import MillieDatabase
 from millie.exporters import export_messages
 from millie.graph_connector import (
@@ -50,6 +53,7 @@ from millie.pop_connector import (
     save_pop_source,
     sync_pop_source,
 )
+from millie.imap_facade import MillieIMAPServer
 from millie.profiles import ProfileManager
 from millie.secrets import SecretManager
 from millie.source_scanners import scan_source
@@ -69,6 +73,28 @@ This message is a tiny archive seed.\r
 
 
 class CoreImportExportTests(unittest.TestCase):
+    def test_app_config_defaults_to_http_with_optional_tls_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = AppConfig(
+                db_path=root / "millie.sqlite",
+                data_dir=root / "data",
+                settings_path=root / "millie.settings",
+                profiles_dir=root / "profiles",
+                web_dir=root / "web",
+                host="0.0.0.0",
+                port=22013,
+                tls_cert=root / "dev.crt",
+                tls_key=root / "dev.key",
+            )
+
+            resolved = config.resolved()
+
+            self.assertEqual(resolved.host, "0.0.0.0")
+            self.assertEqual(resolved.port, 22013)
+            self.assertEqual(resolved.tls_cert, (root / "dev.crt").resolve())
+            self.assertEqual(resolved.tls_key, (root / "dev.key").resolve())
+
     def test_detects_pst_format(self) -> None:
         self.assertEqual(detect_format(Path("archive.pst")), "pst")
 
@@ -111,6 +137,44 @@ class CoreImportExportTests(unittest.TestCase):
             self.assertEqual(manifest["items"][0]["source_id"], result.source_id)
             self.assertEqual(db.list_migrations()[0]["version"], 1)
             self.assertEqual(db.list_migrations()[-1]["version"], 3)
+
+    def test_read_only_imap_facade_lists_selects_and_fetches_message(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = MillieDatabase(root / "millie.sqlite", root / "data")
+            db.init()
+            source = root / "sample.eml"
+            source.write_bytes(SAMPLE_EML)
+            import_path(db, source, "eml", "IMAP Facade Fixture")
+
+            server = MillieIMAPServer(("127.0.0.1", 0), db)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            client = imaplib.IMAP4("127.0.0.1", server.server_address[1])
+            try:
+                status, _ = client.login("dev", "dev")
+                self.assertEqual(status, "OK")
+                status, listed = client.list()
+                self.assertEqual(status, "OK")
+                self.assertIn(b"Imported", b"\n".join(listed or []))
+                status, selected = client.select("Imported", readonly=True)
+                self.assertEqual(status, "OK")
+                self.assertEqual(selected[0], b"1")
+                status, searched = client.search(None, "ALL")
+                self.assertEqual(status, "OK")
+                self.assertEqual(searched[0], b"1")
+                status, fetched = client.uid("fetch", "1:*", "(UID RFC822.SIZE BODY.PEEK[])")
+                self.assertEqual(status, "OK")
+                self.assertIn(b"Hello from MILLIE", b"".join(item[1] for item in fetched if isinstance(item, tuple)))
+                status, _ = client.store("1", "+FLAGS", "\\Seen")
+                self.assertEqual(status, "NO")
+            finally:
+                try:
+                    client.logout()
+                finally:
+                    server.shutdown()
+                    server.server_close()
+                    thread.join(timeout=2)
 
     def test_repeat_import_deduplicates_by_raw_content_hash(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1028,6 +1092,7 @@ class CoreImportExportTests(unittest.TestCase):
                 token_response={},
                 get_responses=[
                     {
+                        "@odata.deltaLink": "https://graph.example/delta-1",
                         "value": [
                             {
                                 "id": "message-id-1",
@@ -1047,18 +1112,33 @@ class CoreImportExportTests(unittest.TestCase):
                 manager,
                 source.id,
                 secrets,
-                FakeGraphHttpClient(token_response={}, get_responses=[{"value": [{"id": "message-id-1"}]}]),
+                FakeGraphHttpClient(
+                    token_response={},
+                    get_responses=[
+                        {
+                            "@odata.deltaLink": "https://graph.example/delta-2",
+                            "value": [{"id": "message-id-1", "@removed": {"reason": "deleted"}}],
+                        }
+                    ],
+                ),
                 sync_limit=10,
             )
 
             self.assertEqual(result.processed, 1)
             self.assertEqual(result.imported, 1)
             self.assertEqual(result.errors, 0)
+            self.assertEqual(result.sync_limit, 10)
             self.assertEqual(second.processed, 0)
+            self.assertEqual(second.removed, 1)
             self.assertEqual(len(db.list_messages()), 1)
             state = db.get_source_sync_state(result.source_id, "folder:inbox-id")
-            self.assertEqual(state["seen_message_ids"], ["message-id-1"])
+            self.assertEqual(state["delta_link"], "https://graph.example/delta-2")
+            self.assertEqual(state["removed_message_ids"], ["message-id-1"])
+            self.assertEqual(state["sync_mode"], "delta")
             self.assertEqual(client.get_bytes_requests[0][1], "access-token-value")
+            export_result = export_messages(db, root / "exports", "eml")
+            self.assertEqual(export_result.exported, 1)
+            self.assertEqual(len(list((root / "exports").rglob("*.eml"))), 1)
             raw_sources = manager.get_profile_setting(GRAPH_SOURCES_SETTING) or ""
             self.assertNotIn("Graph body", raw_sources)
             self.assertNotIn("access-token-value", raw_sources)

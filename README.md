@@ -14,7 +14,7 @@ MILLIE should be able to take email from desktop exports, mailbox files, and liv
 - A local API for other apps
 - High-fidelity export back into formats that common mail clients can import
 - Future database connectors beyond SQLite
-- Future local IMAP service support so external mail clients can browse imported mail
+- Local read-only IMAP service support so external mail clients can browse imported mail
 
 ## Initial Sources
 
@@ -60,11 +60,11 @@ The internal model should be relational rather than a single giant row. A messag
 - Export layer: Rebuild importable mailbox outputs while preserving raw MIME, headers, attachments, folder paths, flags, labels, and provenance where possible.
 - API: Versioned local HTTP API for the web app and third-party integrations.
 - Web app: Outlook/webmail-style navigation over folders, conversations, messages, attachments, and search.
-- Local IMAP facade: Future read-only-first mail server interface for Mail, Outlook, Evolution, Thunderbird, and similar clients.
+- Local IMAP facade: Read-only-first mail server interface for Mail, Outlook, Evolution, Thunderbird, and similar clients.
 
 ## Networking Direction
 
-Development can use non-secure HTTP. The app should be built so HTTPS/TLS/SSL can be enabled by configuration for production or sensitive environments.
+Development can use non-secure HTTP. HTTPS/TLS/SSL can be enabled by configuration for production or sensitive environments.
 
 Web/API services should listen on `0.0.0.0` by default, with a config override. Because this can expose local mail data to the network, authentication and clear dev/prod profiles are part of the core design.
 
@@ -94,8 +94,10 @@ MILLIE now has a first runnable foundation slice:
 - Gmail-compatible IMAP folder discovery, including common Gmail special-folder roles and `imap.google.com` host normalization
 - IMAP provider presets, selected-folder one-off sync, and IMAP flags/internal-date capture
 - Read-only POP3 source configs, safe no-retrieve probes, UIDL-based incremental sync, and a never-delete server policy
-- Microsoft Graph / Exchange source configs with PKCE OAuth callback/token storage, token refresh, folder discovery, and limited read-only selected-folder sync
+- Microsoft Graph / Exchange source configs with PKCE OAuth callback/token storage, token refresh, folder discovery, and limited delta-backed read-only selected-folder sync
 - Connector credential secret references with macOS Keychain support and a local development fallback
+- HTTPS-ready server configuration while keeping HTTP as the default development path
+- Read-only local IMAP facade MVP on port `22143` for external client compatibility testing
 - `.eml`, `mbox`, and `maildir` export paths with manifests
 - Exact raw-MIME deduplication so repeat imports do not duplicate canonical messages
 - SQLite FTS search over subject, participants, and body text
@@ -107,4 +109,4 @@ MILLIE now has a first runnable foundation slice:
 - TypeScript/Vite web client for mailbox navigation, message viewing, import, and export
 - Basic import/export test coverage
 
-See [docs/development.md](docs/development.md) for setup and run commands, [docs/api.md](docs/api.md) for API notes, [docs/source-scanning.md](docs/source-scanning.md) for source scan helpers, [docs/imap.md](docs/imap.md) for IMAP sync, [docs/pop.md](docs/pop.md) for POP sync, [docs/exchange-graph.md](docs/exchange-graph.md) for Microsoft Graph / Exchange planning, [docs/profiles.md](docs/profiles.md) for profile switching, and [docs/outlook.md](docs/outlook.md) for Outlook PST/OLM/OST notes.
+See [docs/development.md](docs/development.md) for setup and run commands, [docs/api.md](docs/api.md) for API notes, [docs/source-scanning.md](docs/source-scanning.md) for source scan helpers, [docs/imap.md](docs/imap.md) for IMAP sync, [docs/imap-facade.md](docs/imap-facade.md) for the local IMAP facade, [docs/pop.md](docs/pop.md) for POP sync, [docs/exchange-graph.md](docs/exchange-graph.md) for Microsoft Graph / Exchange planning, [docs/profiles.md](docs/profiles.md) for profile switching, and [docs/outlook.md](docs/outlook.md) for Outlook PST/OLM/OST notes.

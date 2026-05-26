@@ -140,7 +140,7 @@ The web client should behave like a practical mail reader:
 
 ### Local IMAP Facade
 
-The local IMAP facade should come after the storage/API/web MVP. It should start read-only so external clients can browse imported mail without creating complex sync conflicts.
+The local IMAP facade starts read-only so external clients can browse imported mail without creating complex sync conflicts. The first implementation maps MILLIE mailbox paths to IMAP folders and local message ids to stable UIDs.
 
 Later write support can be considered for:
 

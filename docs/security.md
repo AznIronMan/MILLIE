@@ -5,6 +5,8 @@ MILLIE handles personal and organizational email. Treat every imported mailbox, 
 ## Development
 
 - Non-secure HTTP is acceptable for local development.
+- The default backend server path remains HTTP for current testing.
+- Direct HTTPS is enabled only when both `MILLIE_TLS_CERT`/`MILLIE_TLS_KEY` or `serve --tls-cert`/`--tls-key` are provided.
 - Dev mode should be explicit in configuration.
 - `auth.dev_bypass` currently defaults to `true` while the app is being built.
 - Sample data should be synthetic unless the user knowingly imports real mail.
@@ -18,6 +20,12 @@ MILLIE handles personal and organizational email. Treat every imported mailbox, 
 - Authentication should be required before exposing real mail.
 - Disable `auth.dev_bypass` before exposing real mail beyond trusted local development.
 - Binding to `0.0.0.0` must be paired with clear warnings and access controls.
+
+## Local IMAP Facade
+
+The local IMAP facade is read-only and intended for local client testing. It binds to `127.0.0.1:22143` by default, accepts development logins, and refuses mutating IMAP commands such as `APPEND`, `COPY`, `STORE`, `DELETE`, and `EXPUNGE`.
+
+Do not bind the IMAP facade to a network interface with real mail until a stronger authentication model is added.
 
 ## Local Authentication
 

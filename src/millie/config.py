@@ -14,9 +14,13 @@ class AppConfig:
     web_dir: Path
     host: str
     port: int
+    tls_cert: Path | None = None
+    tls_key: Path | None = None
 
     @classmethod
     def from_env(cls) -> "AppConfig":
+        tls_cert = os.getenv("MILLIE_TLS_CERT", "").strip()
+        tls_key = os.getenv("MILLIE_TLS_KEY", "").strip()
         return cls(
             db_path=Path(os.getenv("MILLIE_DB", ".private/local/millie.sqlite")),
             data_dir=Path(os.getenv("MILLIE_DATA_DIR", ".private/local/data")),
@@ -25,6 +29,8 @@ class AppConfig:
             web_dir=Path(os.getenv("MILLIE_WEB_DIR", "web/dist")),
             host=os.getenv("MILLIE_HOST", "0.0.0.0"),
             port=int(os.getenv("MILLIE_PORT", "22001")),
+            tls_cert=Path(tls_cert) if tls_cert else None,
+            tls_key=Path(tls_key) if tls_key else None,
         )
 
     def resolved(self) -> "AppConfig":
@@ -36,4 +42,6 @@ class AppConfig:
             web_dir=self.web_dir.expanduser().resolve(),
             host=self.host,
             port=self.port,
+            tls_cert=self.tls_cert.expanduser().resolve() if self.tls_cert else None,
+            tls_key=self.tls_key.expanduser().resolve() if self.tls_key else None,
         )

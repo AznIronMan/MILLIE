@@ -244,8 +244,10 @@ type GraphSyncResult = {
   imported: number;
   duplicates: number;
   errors: number;
+  removed: number;
   folders: string[];
   token_refreshed: boolean;
+  sync_limit: number;
   format: string;
   read_only: boolean;
 };
@@ -2187,7 +2189,7 @@ async function syncGraphSource(sourceId: string): Promise<void> {
     await loadJobs();
     await loadMessages();
     await loadGraphSources();
-    state.status = `Graph sync processed ${payload.sync.processed} message(s); new=${payload.sync.imported}, duplicates=${payload.sync.duplicates}, errors=${payload.sync.errors}.`;
+    state.status = `Graph sync processed ${payload.sync.processed}/${payload.sync.sync_limit} message(s); new=${payload.sync.imported}, duplicates=${payload.sync.duplicates}, removed=${payload.sync.removed}, errors=${payload.sync.errors}.`;
     render();
   } catch (error) {
     await loadJobs();

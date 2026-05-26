@@ -2,7 +2,7 @@
 
 MILLIE's planned Exchange path is Microsoft Graph, not legacy Exchange Web Services.
 
-This connector can save Microsoft Graph source configs, generate a PKCE authorization URL, receive the local OAuth callback, exchange authorization codes, store token payloads in the configured secret backend, refresh expired access tokens, discover folders, and run limited read-only sync from selected folders.
+This connector can save Microsoft Graph source configs, generate a PKCE authorization URL, receive the local OAuth callback, exchange authorization codes, store token payloads in the configured secret backend, refresh expired access tokens, discover folders, and run limited delta-backed read-only sync from selected folders.
 
 ## Direction
 
@@ -72,7 +72,7 @@ PYTHONPATH=src python3 -m millie graph-delete work-microsoft-365
 
 `graph-probe` calls `/me` and `/me/mailFolders` using the stored token payload. It refreshes expired access tokens when a refresh token is available and does not fetch messages.
 
-`graph-folders` discovers the Graph folder tree. `graph-set-folders` saves selected folders by path or id. `graph-sync` imports raw MIME for newly seen messages from the selected folders and never sends, moves, marks, or deletes mail.
+`graph-folders` discovers the Graph folder tree. `graph-set-folders` saves selected folders by path or id. `graph-sync` imports raw MIME for changed messages from the selected folders using per-folder delta links and never sends, moves, marks, or deletes mail. Remote deleted or moved-away messages are tracked as removed Graph ids in sync state; MILLIE does not delete local archived copies.
 
 ## Current API
 
@@ -105,7 +105,7 @@ PYTHONPATH=src python3 -m millie graph-delete work-microsoft-365
 
 `POST /api/v1/graph-sources/{id}/folders` returns the discovered folder tree, including folder id, path, role hint, total count, unread count, and child count.
 
-`POST /api/v1/graph-sources/{id}/sync` imports from the source's saved selected folders using the existing raw-MIME parser. It accepts optional `sync_limit` and uses a conservative seen-message-id state until Graph delta sync is implemented.
+`POST /api/v1/graph-sources/{id}/sync` imports from the source's saved selected folders using the existing raw-MIME parser. It accepts optional `sync_limit`, caps each run conservatively, stores Graph `delta_link`/`next_link` values in `source_sync_states`, and returns `processed`, `imported`, `duplicates`, `removed`, `errors`, and `sync_limit` counts.
 
 ## How To Set Up Graph OAuth
 
@@ -176,7 +176,7 @@ The working Graph connector now has:
 - Token refresh before Graph calls when the access token is expired or near expiry.
 - A read-only probe endpoint/CLI command that calls `/me` and `/me/mailFolders`.
 - Folder discovery and selected-folder management through CLI, API, and web controls.
-- A first read-only sync path that imports selected folders/messages into MILLIE's canonical raw-MIME pipeline.
+- A delta-backed read-only sync path that imports selected folders/messages into MILLIE's canonical raw-MIME pipeline.
 
 To turn the MVP sync into a production-shaped sync, MILLIE still needs:
 
@@ -187,21 +187,21 @@ To turn the MVP sync into a production-shaped sync, MILLIE still needs:
 Current sync:
 
 - Enumerates mail folders through Graph
-- Lists selected folder messages
-- Fetches each selected message as MIME with `/$value`
+- Uses per-folder message delta queries for selected folders
+- Stores Graph `delta_link` and partial-page `next_link` values in `source_sync_states`
+- Fetches each changed message as MIME with `/$value`
 - Imports MIME through the same parser used by file, IMAP, and POP sources
-- Tracks seen Graph message ids per folder in `source_sync_states`
+- Tracks remote removed/moved-away Graph ids without deleting local archived messages
 - Preserves read-only behavior: no send, update, move, mark-read, or delete operations
 
 Future sync should:
 
-- Use per-folder message delta queries for incremental sync
-- Store Graph delta links in `source_sync_states`
-- Replace seen-id backfill with durable delta links
-- Add richer handling for deleted/moved messages without mutating the remote mailbox
+- Add clearer UI surfacing for partial runs, continuation links, and remote removals
+- Add richer handling for expired consent, revoked refresh tokens, conditional access, MFA, and permission mismatch
+- Add larger backfill controls that remain cancellable and observable
 
 Message delta is per-folder, so MILLIE should track each selected folder independently.
 
 ## Follow-Up
 
-- Add Graph delta sync into the canonical raw-message pipeline or a Graph-native normalization path.
+- Harden Graph sync diagnostics and recovery paths for production-scale mailboxes.

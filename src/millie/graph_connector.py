@@ -24,6 +24,7 @@ GRAPH_API_BASE = "https://graph.microsoft.com/v1.0"
 DEFAULT_GRAPH_SCOPES = ("openid", "offline_access", "User.Read", "Mail.Read")
 DEFAULT_GRAPH_REDIRECT_URI = "http://localhost:22013/api/v1/graph/oauth/callback"
 TOKEN_REFRESH_SKEW = timedelta(minutes=5)
+GRAPH_SYNC_MAX_LIMIT = 500
 
 
 class GraphHttpClient(Protocol):
@@ -217,8 +218,10 @@ class GraphSyncResult:
     imported: int
     duplicates: int
     errors: int
+    removed: int
     folders: list[str]
     token_refreshed: bool
+    sync_limit: int
 
     def to_api(self) -> dict[str, Any]:
         return {
@@ -228,8 +231,10 @@ class GraphSyncResult:
             "imported": self.imported,
             "duplicates": self.duplicates,
             "errors": self.errors,
+            "removed": self.removed,
             "folders": self.folders,
             "token_refreshed": self.token_refreshed,
+            "sync_limit": self.sync_limit,
             "format": "graph",
             "read_only": True,
         }
@@ -563,7 +568,7 @@ def sync_graph_source(
     sync_folders = folders or source.folders
     if not sync_folders:
         raise ValueError("Select at least one Microsoft Graph folder before syncing")
-    effective_limit = max(1, int(sync_limit or source.sync_limit))
+    effective_limit = min(max(1, int(sync_limit or source.sync_limit)), GRAPH_SYNC_MAX_LIMIT)
     access_token, token_refreshed = graph_access_token(profile_manager, source, secret_manager, http_client)
     db_source_id = db.get_or_create_source("graph", source.name, graph_source_uri(source))
     job_id = db.start_import_job(
@@ -575,7 +580,7 @@ def sync_graph_source(
             "mailbox": source.mailbox,
             "folders": [folder.to_api() for folder in sync_folders],
             "sync_limit": effective_limit,
-            "sync_mode": "seen-message-id-mvp",
+            "sync_mode": "delta",
             "read_only": True,
         },
     )
@@ -583,6 +588,7 @@ def sync_graph_source(
     imported = 0
     duplicates = 0
     errors = 0
+    removed = 0
     attempted = 0
     synced_folders: list[str] = []
 
@@ -606,6 +612,7 @@ def sync_graph_source(
                 imported += synced["imported"]
                 duplicates += synced["duplicates"]
                 errors += synced["errors"]
+                removed += synced["removed"]
                 synced_folders.append(folder.path)
             except Exception as exc:  # noqa: BLE001
                 errors += 1
@@ -652,8 +659,10 @@ def sync_graph_source(
         imported=imported,
         duplicates=duplicates,
         errors=errors,
+        removed=removed,
         folders=synced_folders,
         token_refreshed=token_refreshed,
+        sync_limit=effective_limit,
     )
 
 
@@ -898,6 +907,24 @@ def graph_collection_items(
     return items
 
 
+def graph_delta_start_url(
+    mailbox_path: str,
+    folder_id: str,
+    limit: int,
+    state: dict[str, Any],
+) -> str:
+    next_link = string_or_none(state.get("next_link"))
+    if next_link:
+        return next_link
+    delta_link = string_or_none(state.get("delta_link"))
+    if delta_link:
+        return delta_link
+    return (
+        f"{GRAPH_API_BASE}/{mailbox_path}/mailFolders/{quote(folder_id, safe='')}/messages/delta?"
+        f"{urlencode({'$top': str(min(max(1, limit), 50)), '$select': 'id,internetMessageId,isRead,categories,receivedDateTime,sentDateTime'})}"
+    )
+
+
 def sync_graph_folder(
     db: MillieDatabase,
     http_client: GraphHttpClient,
@@ -910,35 +937,36 @@ def sync_graph_folder(
 ) -> dict[str, int]:
     mailbox_path = graph_mailbox_path(source.mailbox)
     folder_id = quote(folder.id, safe="")
-    messages_url = (
-        f"{GRAPH_API_BASE}/{mailbox_path}/mailFolders/{folder_id}/messages?"
-        f"{urlencode({'$top': str(min(limit, 50)), '$select': 'id,internetMessageId,isRead,categories,receivedDateTime,sentDateTime', '$orderby': 'receivedDateTime desc'})}"
-    )
     mailbox_id = db.get_or_create_mailbox(db_source_id, folder.path, role=graph_folder_role(folder.path))
     scope = f"folder:{folder.id}"
     state = db.get_source_sync_state(db_source_id, scope)
-    seen_message_ids = {str(item) for item in state.get("seen_message_ids", []) if str(item)}
-    synced_message_ids: list[str] = []
+    removed_message_ids = {str(item) for item in state.get("removed_message_ids", []) if str(item)}
     attempted = 0
     processed = 0
     imported = 0
     duplicates = 0
     errors = 0
-    next_url: str | None = messages_url
+    removed = 0
+    next_url: str | None = graph_delta_start_url(mailbox_path, folder.id, limit, state)
     scanned = 0
-    scan_limit = max(limit * 5, 100)
+    last_delta_link = string_or_none(state.get("delta_link"))
+    last_next_link: str | None = None
 
-    while next_url and attempted < limit and scanned < scan_limit:
+    while next_url and attempted < limit:
         payload = http_client.get_json(next_url, access_token)
         raw_messages = payload.get("value") if isinstance(payload.get("value"), list) else []
         for item in raw_messages:
-            if attempted >= limit or scanned >= scan_limit:
+            if attempted >= limit:
                 break
             if not isinstance(item, dict):
                 continue
             scanned += 1
             message_id = str(item.get("id") or "")
-            if not message_id or message_id in seen_message_ids:
+            if not message_id:
+                continue
+            if isinstance(item.get("@removed"), dict):
+                removed += 1
+                removed_message_ids.add(message_id)
                 continue
             attempted += 1
             try:
@@ -966,7 +994,6 @@ def sync_graph_folder(
                     imported += 1
                 else:
                     duplicates += 1
-                synced_message_ids.append(message_id)
             except Exception as exc:  # noqa: BLE001
                 errors += 1
                 db.record_import_error(
@@ -976,19 +1003,22 @@ def sync_graph_folder(
                     str(exc),
                     {"folder_id": folder.id, "message_id": message_id},
                 )
-        next_url = string_or_none(payload.get("@odata.nextLink"))
+        last_next_link = string_or_none(payload.get("@odata.nextLink"))
+        last_delta_link = string_or_none(payload.get("@odata.deltaLink")) or last_delta_link
+        next_url = last_next_link if attempted < limit else None
 
-    seen_message_ids.update(synced_message_ids)
     db.set_source_sync_state(
         db_source_id,
         scope,
         {
-            "seen_message_ids": sorted(seen_message_ids),
-            "last_seen_count": len(seen_message_ids),
+            "delta_link": last_delta_link,
+            "next_link": last_next_link if attempted >= limit else None,
             "last_scan_count": scanned,
+            "last_removed_count": removed,
+            "removed_message_ids": sorted(removed_message_ids)[-1000:],
             "folder_id": folder.id,
             "folder_path": folder.path,
-            "sync_mode": "seen-message-id-mvp",
+            "sync_mode": "delta",
         },
     )
     return {
@@ -997,6 +1027,7 @@ def sync_graph_folder(
         "imported": imported,
         "duplicates": duplicates,
         "errors": errors,
+        "removed": removed,
     }
 
 

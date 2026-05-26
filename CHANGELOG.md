@@ -30,6 +30,9 @@ The project uses semantic versioning in `major.minor.patch` format.
 - Added a Microsoft Graph / Exchange connector skeleton with source configs, provider metadata, PKCE authorization URL generation, secret-backed pending auth state, CLI/API endpoints, and design docs.
 - Added Microsoft Graph OAuth callback/token exchange, secret-backed token storage, token refresh, read-only account/folder probe, and web controls for saved Graph sources.
 - Added Microsoft Graph folder discovery, selected-folder management, and limited read-only sync through raw MIME fetches.
+- Added Microsoft Graph per-folder delta sync state, removed-message tracking, effective sync-limit reporting, and export-fidelity coverage for Graph imports.
+- Added HTTP-by-default/HTTPS-ready server configuration through TLS cert/key options.
+- Added an initial read-only local IMAP facade on port `22143` for listing, selecting, searching, and fetching imported mail from external clients.
 
 ## [0.1.0] - 2026-05-23
 

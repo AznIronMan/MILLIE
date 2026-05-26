@@ -59,6 +59,12 @@ PYTHONPATH=src python3 -m millie serve
 
 The server binds to `0.0.0.0:22001` by default.
 
+HTTP is the default test path. To enable direct HTTPS later, provide both a certificate and key:
+
+```sh
+PYTHONPATH=src python3 -m millie serve --tls-cert .private/local/tls/dev.crt --tls-key .private/local/tls/dev.key
+```
+
 When `auth.dev_bypass` is `false`, the web app shows first-run setup or login before loading protected API data.
 
 ## Profiles
@@ -133,6 +139,14 @@ If a profile has legacy IMAP source configs with raw passwords from an older dev
 ```sh
 PYTHONPATH=src python3 -m millie imap-migrate-secrets
 ```
+
+## Serve Imported Mail Over Local IMAP
+
+```sh
+PYTHONPATH=src python3 -m millie imap-facade
+```
+
+The read-only IMAP facade binds to `127.0.0.1:22143` by default. It maps the active MILLIE profile's mailboxes into IMAP folders, uses local message ids as stable UIDs, supports list/select/status/search/fetch, and refuses mutating commands. This is for local client compatibility testing before a hardened authentication model exists.
 
 ## Sync POP
 

@@ -19,7 +19,9 @@ Current IMAP support is intentionally narrow:
 - Raw RFC822 message preservation through the normal import pipeline
 - Existing dedupe, search, HTML sanitization, attachment capture, and export support after import
 
-This is not yet an OAuth flow, Exchange/Microsoft Graph connector, POP3 connector, or two-way sync path.
+This is not an OAuth flow, Exchange/Microsoft Graph connector, POP3 connector, local IMAP facade, or two-way sync path.
+
+For the local IMAP server that exposes already-imported mail to external clients, see [imap-facade.md](imap-facade.md).
 
 ## Settings
 

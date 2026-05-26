@@ -49,4 +49,10 @@ Strategy:
 
 ## Export
 
-MILLIE currently supports Outlook workflow export bundles, not direct PST/OLM writing. Direct native Outlook writers remain under investigation.
+MILLIE currently supports Outlook workflow export bundles and an early local read-only IMAP facade, not direct PST/OLM writing.
+
+Current recommended paths:
+
+- Use `outlook-workflow` EML exports when the target workflow accepts EML files.
+- Use the local IMAP facade to expose imported mail to Outlook for browse/copy testing where Outlook account setup allows it.
+- Keep direct native PST/OLM writing under investigation until a reliable writer/toolchain is selected.

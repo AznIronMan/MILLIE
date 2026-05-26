@@ -52,16 +52,16 @@
 
 ## Phase 5: Live Connectors
 
-- Add IMAP sync. Initial read-only password/app-password sync is in place with secret references and folder discovery; OAuth, provider presets, and flag capture remain.
-- Add POP3 import.
-- Add Microsoft Graph / Exchange support.
+- Add IMAP sync. Initial read-only password/app-password sync is in place with secret references, provider presets, folder discovery, selected-folder sync, and flag/internal-date capture.
+- Add POP3 import. Initial safe probe and never-delete UIDL sync are in place.
+- Add Microsoft Graph / Exchange support. Initial PKCE OAuth, folder discovery, selected-folder sync, and per-folder delta links are in place.
 - Add OAuth and app-password connection flows.
 - Track incremental sync cursors and source UIDs.
 
 ## Phase 6: Local Mail Server Facade
 
-- Add read-only local IMAP service.
-- Map canonical mailboxes/messages into IMAP folders and UIDs.
+- Add read-only local IMAP service. Initial list/select/status/search/fetch support is in place.
+- Map canonical mailboxes/messages into IMAP folders and UIDs. Initial mapping uses mailbox paths and local message ids.
 - Test with Apple Mail, Outlook, Thunderbird, and Evolution.
 - Consider write support only after read-only browsing is stable.
 

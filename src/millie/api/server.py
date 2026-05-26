@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import re
+import ssl
 from html import escape
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -688,7 +689,15 @@ def run_server(config: AppConfig, secret_backend: str | None = None) -> None:
         resolved.data_dir,
     )
     server = MillieHTTPServer((resolved.host, resolved.port), resolved, profile_manager, secret_backend)
-    print(f"MILLIE listening on http://{resolved.host}:{resolved.port}")
+    scheme = "http"
+    if resolved.tls_cert or resolved.tls_key:
+        if not resolved.tls_cert or not resolved.tls_key:
+            raise ValueError("Both tls_cert and tls_key are required to enable HTTPS")
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(str(resolved.tls_cert), str(resolved.tls_key))
+        server.socket = context.wrap_socket(server.socket, server_side=True)
+        scheme = "https"
+    print(f"MILLIE listening on {scheme}://{resolved.host}:{resolved.port}")
     print(f"Settings: {server.profile_manager.settings_path}")
     print(f"Profile: {server.profile_manager.active_profile().name}")
     print(f"Database: {server.db.db_path}")

@@ -124,7 +124,7 @@ Microsoft Graph source configs are stored per active profile. Source configs sto
 
 `POST /api/v1/graph-sources/{id}/folders` returns the discovered Graph folder tree with stable folder ids, display names, folder paths, count metadata, and role hints.
 
-`POST /api/v1/graph-sources/{id}/sync` performs a limited read-only sync from the saved selected folders. It fetches message MIME with Microsoft Graph `/$value`, imports through the same raw-MIME pipeline as file/IMAP/POP imports, tracks seen Graph message ids per folder, and never sends, moves, marks, or deletes remote mail.
+`POST /api/v1/graph-sources/{id}/sync` performs a limited read-only sync from the saved selected folders. It uses per-folder Microsoft Graph delta links, fetches changed message MIME with `/$value`, imports through the same raw-MIME pipeline as file/IMAP/POP imports, tracks `delta_link`/`next_link` state per folder, and never sends, moves, marks, or deletes remote mail. The sync response includes `processed`, `imported`, `duplicates`, `removed`, `errors`, and `sync_limit`.
 
 ## Export Jobs
 

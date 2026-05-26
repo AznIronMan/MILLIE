@@ -76,6 +76,12 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--host", default=None, help="Host to bind, default 0.0.0.0")
     serve.add_argument("--port", type=int, default=None, help="Port to bind, default 22001")
     serve.add_argument("--web-dir", default=None, help="Built web app directory")
+    serve.add_argument("--tls-cert", default=None, help="TLS certificate path for HTTPS")
+    serve.add_argument("--tls-key", default=None, help="TLS private key path for HTTPS")
+
+    imap_facade = subparsers.add_parser("imap-facade", help="Run the read-only local IMAP facade")
+    imap_facade.add_argument("--host", default="127.0.0.1", help="Host to bind, default 127.0.0.1")
+    imap_facade.add_argument("--port", type=int, default=22143, help="Port to bind, default 22143")
 
     import_cmd = subparsers.add_parser("import", help="Import email from a file or folder")
     import_cmd.add_argument("path", help="Path to .eml, .mbox, maildir, or folder of .eml files")
@@ -220,6 +226,10 @@ def config_from_args(args: argparse.Namespace) -> AppConfig:
         config.port = args.port
     if getattr(args, "web_dir", None):
         config.web_dir = Path(args.web_dir)
+    if getattr(args, "tls_cert", None):
+        config.tls_cert = Path(args.tls_cert)
+    if getattr(args, "tls_key", None):
+        config.tls_key = Path(args.tls_key)
     return config.resolved()
 
 
@@ -259,6 +269,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "serve":
         run_server(config, args.secret_backend)
+        return 0
+    if args.command == "imap-facade":
+        from .imap_facade import run_imap_facade
+
+        run_imap_facade(db, args.host, args.port)
         return 0
     if args.command == "import":
         try:
@@ -575,7 +590,8 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"Import job {result.import_job_id}: processed={result.processed} "
             f"imported={result.imported} duplicates={result.duplicates} "
-            f"errors={result.errors} folders={','.join(result.folders)}"
+            f"errors={result.errors} removed={result.removed} limit={result.sync_limit} "
+            f"folders={','.join(result.folders)}"
         )
         return 0 if result.errors == 0 else 1
     if args.command == "graph-delete":
