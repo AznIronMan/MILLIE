@@ -23,9 +23,9 @@ MILLIE handles personal and organizational email. Treat every imported mailbox, 
 
 ## Local IMAP Facade
 
-The local IMAP facade is read-only and intended for local client testing. It binds to `127.0.0.1:22143` by default, accepts development logins, and refuses mutating IMAP commands such as `APPEND`, `COPY`, `STORE`, `DELETE`, and `EXPUNGE`.
+The local IMAP facade is read-only and intended for local client testing. It binds to `127.0.0.1:22143` by default, accepts development logins only for loopback/default testing, can require exact username/password credentials, can run direct IMAPS with cert/key paths, and refuses mutating IMAP commands such as `APPEND`, `COPY`, `STORE`, `DELETE`, and `EXPUNGE`.
 
-Do not bind the IMAP facade to a network interface with real mail until a stronger authentication model is added.
+Do not bind the IMAP facade to a network interface with real mail unless exact credentials are configured and the network is trusted.
 
 ## Local Authentication
 

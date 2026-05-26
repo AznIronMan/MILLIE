@@ -60,7 +60,7 @@
 
 ## Phase 6: Local Mail Server Facade
 
-- Add read-only local IMAP service. Initial list/select/status/search/fetch support is in place.
+- Add read-only local IMAP service. Initial list/select/status/search/fetch support, metadata fetches, optional exact login, and direct IMAPS configuration are in place.
 - Map canonical mailboxes/messages into IMAP folders and UIDs. Initial mapping uses mailbox paths and local message ids.
 - Test with Apple Mail, Outlook, Thunderbird, and Evolution.
 - Consider write support only after read-only browsing is stable.

@@ -53,7 +53,7 @@ from millie.pop_connector import (
     save_pop_source,
     sync_pop_source,
 )
-from millie.imap_facade import MillieIMAPServer
+from millie.imap_facade import ImapFacadeAuth, MillieIMAPServer, is_loopback_host, run_imap_facade
 from millie.profiles import ProfileManager
 from millie.secrets import SecretManager
 from millie.source_scanners import scan_source
@@ -163,11 +163,65 @@ class CoreImportExportTests(unittest.TestCase):
                 status, searched = client.search(None, "ALL")
                 self.assertEqual(status, "OK")
                 self.assertEqual(searched[0], b"1")
+                status, fetched = client.uid(
+                    "fetch",
+                    "1:*",
+                    "(UID ENVELOPE BODYSTRUCTURE RFC822.SIZE BODY.PEEK[HEADER.FIELDS (Subject From)])",
+                )
+                self.assertEqual(status, "OK")
+                metadata_payload = b"".join(
+                    item[0] + item[1] if isinstance(item, tuple) else item
+                    for item in fetched
+                )
+                self.assertIn(b"ENVELOPE", metadata_payload)
+                self.assertIn(b"BODYSTRUCTURE", metadata_payload)
+                self.assertIn(b"Subject: Hello from MILLIE", metadata_payload)
                 status, fetched = client.uid("fetch", "1:*", "(UID RFC822.SIZE BODY.PEEK[])")
                 self.assertEqual(status, "OK")
                 self.assertIn(b"Hello from MILLIE", b"".join(item[1] for item in fetched if isinstance(item, tuple)))
+                status, fetched = client.uid("fetch", "1", "(BODY.PEEK[TEXT]<0.20>)")
+                self.assertEqual(status, "OK")
+                self.assertIn(b"Hello Bob", b"".join(item[1] for item in fetched if isinstance(item, tuple)))
                 status, _ = client.store("1", "+FLAGS", "\\Seen")
                 self.assertEqual(status, "NO")
+            finally:
+                try:
+                    client.logout()
+                finally:
+                    server.shutdown()
+                    server.server_close()
+                    thread.join(timeout=2)
+
+    def test_imap_facade_exact_auth_and_non_loopback_guard(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = MillieDatabase(root / "millie.sqlite", root / "data")
+            db.init()
+            source = root / "sample.eml"
+            source.write_bytes(SAMPLE_EML)
+            import_path(db, source, "eml", "IMAP Auth Fixture")
+
+            self.assertTrue(is_loopback_host("127.0.0.1"))
+            self.assertFalse(is_loopback_host("0.0.0.0"))
+            with self.assertRaisesRegex(ValueError, "requires both username and password"):
+                run_imap_facade(db, "0.0.0.0", 0, allow_dev_login=False)
+
+            server = MillieIMAPServer(
+                ("127.0.0.1", 0),
+                db,
+                ImapFacadeAuth(username="archive", password="secret", allow_dev_login=False),
+            )
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            client = imaplib.IMAP4("127.0.0.1", server.server_address[1])
+            try:
+                with self.assertRaises(imaplib.IMAP4.error):
+                    client.login("archive", "wrong")
+                status, _ = client.login("archive", "secret")
+                self.assertEqual(status, "OK")
+                status, selected = client.select("Imported", readonly=True)
+                self.assertEqual(status, "OK")
+                self.assertEqual(selected[0], b"1")
             finally:
                 try:
                     client.logout()

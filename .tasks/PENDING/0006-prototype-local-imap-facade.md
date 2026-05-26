@@ -17,13 +17,13 @@ Expose imported mail to external mail clients through a local read-only IMAP ser
 ## Progress
 
 - Initial read-only server command exists as `millie imap-facade`.
-- The facade lists folders, selects/examines mailboxes, returns status/search responses, and fetches raw MIME.
+- The facade lists folders, selects/examines mailboxes, returns status/search responses, fetches raw MIME, serves common metadata requests, and supports partial/header/text body fetches.
 - Local message ids are exposed as stable UIDs.
 - Mutating commands are rejected.
+- Optional exact username/password auth, a non-loopback safety guard, and direct IMAPS cert/key configuration exist.
 - First compatibility notes live in `docs/imap-facade.md`.
 
 ## Remaining
 
 - Test real Thunderbird, Apple Mail, Evolution, and Outlook client setup flows.
-- Add stronger auth before any non-local bind.
-- Decide whether the facade needs direct TLS or should stay behind local-only/plaintext for this phase.
+- Add client-specific compatibility fixes discovered from real setup flows.

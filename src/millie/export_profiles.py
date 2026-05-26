@@ -107,7 +107,7 @@ EXPORT_PROFILES = {
         description="Near-term Outlook workflow export using EML bundles until a reliable PST writer is selected.",
         import_instructions=(
             "Use the generated EML files with the Outlook or migration workflow available in your environment.",
-            "For highest fidelity Outlook-native export, prefer the future local IMAP facade or vetted PST writer path.",
+            "For highest fidelity Outlook-native export, test the local IMAP facade or a future vetted PST writer path.",
         ),
         limitations=("Direct PST/OLM writing is intentionally not promised by this profile yet.",),
     ),

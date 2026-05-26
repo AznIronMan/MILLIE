@@ -33,6 +33,7 @@ The project uses semantic versioning in `major.minor.patch` format.
 - Added Microsoft Graph per-folder delta sync state, removed-message tracking, effective sync-limit reporting, and export-fidelity coverage for Graph imports.
 - Added HTTP-by-default/HTTPS-ready server configuration through TLS cert/key options.
 - Added an initial read-only local IMAP facade on port `22143` for listing, selecting, searching, and fetching imported mail from external clients.
+- Hardened the local IMAP facade with optional exact login, non-loopback safety checks, direct IMAPS config, `AUTHENTICATE PLAIN`, metadata fetches, header/text fetches, and partial body literals.
 
 ## [0.1.0] - 2026-05-23
 

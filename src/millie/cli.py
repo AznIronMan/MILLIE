@@ -82,6 +82,16 @@ def build_parser() -> argparse.ArgumentParser:
     imap_facade = subparsers.add_parser("imap-facade", help="Run the read-only local IMAP facade")
     imap_facade.add_argument("--host", default="127.0.0.1", help="Host to bind, default 127.0.0.1")
     imap_facade.add_argument("--port", type=int, default=22143, help="Port to bind, default 22143")
+    imap_facade.add_argument("--username", default=None, help="Require this IMAP username")
+    imap_facade.add_argument("--password", default=None, help="Require this IMAP password")
+    imap_facade.add_argument(
+        "--allow-dev-login",
+        action="store_true",
+        default=None,
+        help="Accept any LOGIN credentials for controlled development testing",
+    )
+    imap_facade.add_argument("--tls-cert", default=None, help="TLS certificate path for direct IMAPS")
+    imap_facade.add_argument("--tls-key", default=None, help="TLS private key path for direct IMAPS")
 
     import_cmd = subparsers.add_parser("import", help="Import email from a file or folder")
     import_cmd.add_argument("path", help="Path to .eml, .mbox, maildir, or folder of .eml files")
@@ -273,7 +283,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "imap-facade":
         from .imap_facade import run_imap_facade
 
-        run_imap_facade(db, args.host, args.port)
+        password = args.password
+        if args.username and password is None:
+            password = getpass("IMAP facade password: ")
+        run_imap_facade(
+            db,
+            args.host,
+            args.port,
+            username=args.username,
+            password=password,
+            allow_dev_login=args.allow_dev_login,
+            tls_cert=args.tls_cert,
+            tls_key=args.tls_key,
+        )
         return 0
     if args.command == "import":
         try:

@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import base64
 import json
 import re
 import shlex
 import socketserver
+import ssl
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from email import policy
+from email.message import Message
+from email.parser import BytesParser
+from email.utils import getaddresses
 from typing import Any
 
 from .database import MillieDatabase
@@ -31,6 +37,18 @@ class ImapMessage:
     size: int
     flags: tuple[str, ...]
     internal_date: str
+
+
+@dataclass(frozen=True, slots=True)
+class ImapFacadeAuth:
+    username: str | None = None
+    password: str | None = None
+    allow_dev_login: bool = True
+
+    def authenticate(self, username: str, password: str) -> bool:
+        if self.allow_dev_login and self.username is None and self.password is None:
+            return True
+        return bool(self.username) and self.username == username and self.password == password
 
 
 class ReadOnlyImapStore:
@@ -95,13 +113,20 @@ class MillieIMAPServer(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
 
-    def __init__(self, server_address: tuple[str, int], db: MillieDatabase):
+    def __init__(
+        self,
+        server_address: tuple[str, int],
+        db: MillieDatabase,
+        auth: ImapFacadeAuth | None = None,
+    ):
         super().__init__(server_address, MillieIMAPHandler)
         self.store = ReadOnlyImapStore(db)
+        self.auth = auth or ImapFacadeAuth()
 
 
 class MillieIMAPHandler(socketserver.StreamRequestHandler):
     selected_mailbox: ImapMailbox | None = None
+    authenticated = False
 
     @property
     def imap_server(self) -> MillieIMAPServer:
@@ -128,7 +153,7 @@ class MillieIMAPHandler(socketserver.StreamRequestHandler):
         command = command.upper()
         try:
             if command == "CAPABILITY":
-                self.write_line("* CAPABILITY IMAP4rev1 NAMESPACE UIDPLUS")
+                self.write_line("* CAPABILITY IMAP4rev1 NAMESPACE UIDPLUS LITERAL+ AUTH=PLAIN")
                 self.write_ok(tag, "CAPABILITY completed")
             elif command == "NOOP":
                 self.write_ok(tag, "NOOP completed")
@@ -137,7 +162,11 @@ class MillieIMAPHandler(socketserver.StreamRequestHandler):
                 self.write_ok(tag, "LOGOUT completed")
                 return False
             elif command == "LOGIN":
-                self.write_ok(tag, "LOGIN completed")
+                self.handle_login(tag, args)
+            elif command == "AUTHENTICATE":
+                self.handle_authenticate(tag, args)
+            elif not self.authenticated:
+                self.write_line(f"{tag} NO Authentication required")
             elif command == "NAMESPACE":
                 self.write_line('* NAMESPACE (("" "/")) NIL NIL')
                 self.write_ok(tag, "NAMESPACE completed")
@@ -163,6 +192,45 @@ class MillieIMAPHandler(socketserver.StreamRequestHandler):
         except Exception as exc:  # noqa: BLE001
             self.write_line(f"{tag} NO {sanitize_response_text(str(exc))}")
         return True
+
+    def handle_login(self, tag: str, args: list[str]) -> None:
+        if len(args) < 2:
+            self.write_line(f"{tag} BAD LOGIN requires username and password")
+            return
+        username = args[0]
+        password = args[1]
+        if not self.imap_server.auth.authenticate(username, password):
+            self.write_line(f"{tag} NO Invalid username or password")
+            return
+        self.authenticated = True
+        self.write_ok(tag, "LOGIN completed")
+
+    def handle_authenticate(self, tag: str, args: list[str]) -> None:
+        if not args or args[0].upper() != "PLAIN":
+            self.write_line(f"{tag} NO Unsupported authentication mechanism")
+            return
+        if len(args) >= 2:
+            encoded = args[1]
+        else:
+            self.write_line("+")
+            raw_line = self.rfile.readline(65536)
+            if not raw_line:
+                self.write_line(f"{tag} NO Authentication cancelled")
+                return
+            encoded = raw_line.decode("utf-8", errors="replace").strip()
+        try:
+            decoded = base64.b64decode(encoded).decode("utf-8", errors="replace")
+        except ValueError:
+            self.write_line(f"{tag} NO Invalid authentication payload")
+            return
+        parts = decoded.split("\x00")
+        username = parts[-2] if len(parts) >= 2 else ""
+        password = parts[-1] if parts else ""
+        if not self.imap_server.auth.authenticate(username, password):
+            self.write_line(f"{tag} NO Invalid username or password")
+            return
+        self.authenticated = True
+        self.write_ok(tag, "AUTHENTICATE completed")
 
     def handle_list(self, tag: str) -> None:
         for mailbox in self.imap_server.store.mailboxes():
@@ -249,12 +317,6 @@ class MillieIMAPHandler(socketserver.StreamRequestHandler):
 
     def write_fetch(self, message: ImapMessage, fetch_items: str, include_uid: bool) -> None:
         requested = fetch_items.upper()
-        include_literal = (
-            "BODY[]" in requested
-            or "BODY.PEEK[]" in requested
-            or "BODY.PEEK[" in requested
-            or re.search(r"\bRFC822\b", requested) is not None
-        )
         parts: list[str] = []
         if include_uid:
             parts.append(f"UID {message.uid}")
@@ -262,18 +324,33 @@ class MillieIMAPHandler(socketserver.StreamRequestHandler):
             parts.append(f"FLAGS ({' '.join(message.flags)})")
         if "INTERNALDATE" in requested:
             parts.append(f'INTERNALDATE "{message.internal_date}"')
-        if "RFC822.SIZE" in requested or include_literal:
+        if "RFC822.SIZE" in requested:
             parts.append(f"RFC822.SIZE {message.size}")
+        raw: bytes | None = None
+        parsed: Message | None = None
+        needs_parsed = "ENVELOPE" in requested or "BODYSTRUCTURE" in requested
+        literal_request = fetch_literal_request(fetch_items)
+        if needs_parsed or literal_request is not None:
+            raw = self.imap_server.store.raw_message(message.message_id)
+        if needs_parsed and raw is not None:
+            parsed = BytesParser(policy=policy.default).parsebytes(raw)
+        if "ENVELOPE" in requested and parsed is not None:
+            parts.append(f"ENVELOPE {imap_envelope(parsed)}")
+        if "BODYSTRUCTURE" in requested and parsed is not None and raw is not None:
+            parts.append(f"BODYSTRUCTURE {imap_body_structure(parsed, raw)}")
+        if "RFC822.SIZE" not in requested and literal_request is not None and raw is not None:
+            parts.append(f"RFC822.SIZE {len(raw)}")
 
-        if not include_literal:
+        if literal_request is None or raw is None:
             self.write_line(f"* {message.seq} FETCH ({' '.join(parts)})")
             return
 
-        raw = self.imap_server.store.raw_message(message.message_id)
-        literal_name = "RFC822" if re.search(r"\bRFC822\b", requested) and "BODY" not in requested else "BODY[]"
-        prefix = f"* {message.seq} FETCH ({' '.join(parts)} {literal_name} {{{len(raw)}}}\r\n"
+        literal_name, literal_value = resolve_fetch_literal(raw, literal_request)
+        prefix_parts = " ".join(parts)
+        prefix_space = " " if prefix_parts else ""
+        prefix = f"* {message.seq} FETCH ({prefix_parts}{prefix_space}{literal_name} {{{len(literal_value)}}}\r\n"
         self.wfile.write(prefix.encode("utf-8"))
-        self.wfile.write(raw)
+        self.wfile.write(literal_value)
         self.wfile.write(b")\r\n")
         self.wfile.flush()
 
@@ -285,11 +362,40 @@ class MillieIMAPHandler(socketserver.StreamRequestHandler):
         self.wfile.flush()
 
 
-def run_imap_facade(db: MillieDatabase, host: str, port: int) -> None:
+def run_imap_facade(
+    db: MillieDatabase,
+    host: str,
+    port: int,
+    *,
+    username: str | None = None,
+    password: str | None = None,
+    allow_dev_login: bool | None = None,
+    tls_cert: str | None = None,
+    tls_key: str | None = None,
+) -> None:
     db.init()
-    server = MillieIMAPServer((host, port), db)
-    print(f"MILLIE read-only IMAP facade listening on imap://{host}:{port}")
-    print("Login is accepted for local development; all mailbox operations are read-only.")
+    if allow_dev_login is None:
+        allow_dev_login = username is None and password is None and is_loopback_host(host)
+    if not allow_dev_login and (not username or password is None):
+        raise ValueError("Non-development IMAP facade mode requires both username and password")
+    server = MillieIMAPServer(
+        (host, port),
+        db,
+        ImapFacadeAuth(username=username, password=password, allow_dev_login=allow_dev_login),
+    )
+    scheme = "imap"
+    if tls_cert or tls_key:
+        if not tls_cert or not tls_key:
+            raise ValueError("Both tls_cert and tls_key are required to enable IMAPS")
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(str(tls_cert), str(tls_key))
+        server.socket = context.wrap_socket(server.socket, server_side=True)
+        scheme = "imaps"
+    print(f"MILLIE read-only IMAP facade listening on {scheme}://{host}:{port}")
+    if allow_dev_login:
+        print("Development login is accepted; all mailbox operations are read-only.")
+    else:
+        print(f"Login requires username {username!r}; all mailbox operations are read-only.")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -315,6 +421,188 @@ def normalize_mailbox_name(name: str) -> str:
 def quote_imap_string(value: str) -> str:
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
+
+
+def imap_nstring(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "NIL"
+    return quote_imap_string(text)
+
+
+def imap_astring(value: Any) -> str:
+    text = str(value or "")
+    return quote_imap_string(text)
+
+
+def imap_address_list(values: list[str]) -> str:
+    addresses = getaddresses(values)
+    if not addresses:
+        return "NIL"
+    rendered = [imap_address(display_name, email) for display_name, email in addresses if display_name or email]
+    return f"({' '.join(rendered)})" if rendered else "NIL"
+
+
+def imap_address(display_name: str, email: str) -> str:
+    if "@" in email:
+        mailbox, host = email.rsplit("@", 1)
+    else:
+        mailbox = email or display_name or "unknown"
+        host = "millie.local"
+    return f"({imap_nstring(display_name)} NIL {imap_nstring(mailbox)} {imap_nstring(host)})"
+
+
+def imap_envelope(message: Message) -> str:
+    from_values = message.get_all("from", [])
+    sender_values = message.get_all("sender", []) or from_values
+    reply_to_values = message.get_all("reply-to", []) or from_values
+    return (
+        f"({imap_nstring(message.get('date'))} "
+        f"{imap_nstring(message.get('subject'))} "
+        f"{imap_address_list(from_values)} "
+        f"{imap_address_list(sender_values)} "
+        f"{imap_address_list(reply_to_values)} "
+        f"{imap_address_list(message.get_all('to', []))} "
+        f"{imap_address_list(message.get_all('cc', []))} "
+        f"{imap_address_list(message.get_all('bcc', []))} "
+        f"{imap_nstring(message.get('in-reply-to'))} "
+        f"{imap_nstring(message.get('message-id'))})"
+    )
+
+
+def imap_body_structure(message: Message, raw: bytes) -> str:
+    if message.is_multipart():
+        children = []
+        for part in message.iter_parts() if hasattr(message, "iter_parts") else []:
+            part_bytes = part.as_bytes(policy=policy.SMTP)
+            children.append(imap_body_structure(part, part_bytes))
+        if not children:
+            children.append(f'("TEXT" "PLAIN" NIL NIL NIL "7BIT" 0 0 NIL NIL NIL NIL)')
+        subtype = message.get_content_subtype().upper() or "MIXED"
+        return f"({' '.join(children)} {imap_astring(subtype)} NIL NIL NIL)"
+
+    content_type = message.get_content_type()
+    if "/" in content_type:
+        maintype, subtype = content_type.split("/", 1)
+    else:
+        maintype, subtype = "text", "plain"
+    encoding = str(message.get("content-transfer-encoding") or "7bit").upper()
+    params = imap_body_params(message)
+    lines = raw.count(b"\n") if maintype.lower() == "text" else None
+    base = (
+        f"({imap_astring(maintype.upper())} {imap_astring(subtype.upper())} {params} "
+        f"{imap_nstring(message.get('content-id'))} {imap_nstring(message.get('content-description'))} "
+        f"{imap_astring(encoding)} {len(raw)}"
+    )
+    if lines is not None:
+        base += f" {lines}"
+    return base + " NIL NIL NIL NIL)"
+
+
+def imap_body_params(message: Message) -> str:
+    params = []
+    raw_params = message.get_params() or []
+    for key, value in raw_params[1:]:
+        params.append(imap_astring(str(key).upper()))
+        params.append(imap_astring(value))
+    return f"({' '.join(params)})" if params else "NIL"
+
+
+@dataclass(frozen=True, slots=True)
+class FetchLiteralRequest:
+    item_name: str
+    section: str
+    partial_start: int | None = None
+    partial_length: int | None = None
+
+
+def fetch_literal_request(fetch_items: str) -> FetchLiteralRequest | None:
+    raw = fetch_items.strip().strip("()")
+    upper = raw.upper()
+    if "RFC822.HEADER" in upper:
+        return FetchLiteralRequest("RFC822.HEADER", "RFC822.HEADER")
+    if "RFC822.TEXT" in upper:
+        return FetchLiteralRequest("RFC822.TEXT", "RFC822.TEXT")
+    if re.search(r"\bRFC822\b", upper) and "RFC822.SIZE" not in upper:
+        return FetchLiteralRequest("RFC822", "RFC822")
+
+    match = re.search(r"BODY(?:\.PEEK)?\[(?P<section>[^\]]*)\](?:<(?P<start>\d+)\.(?P<length>\d+)>)?", raw, re.IGNORECASE)
+    if not match:
+        return None
+    section = match.group("section").strip()
+    item_name = f"BODY[{section}]"
+    start = int(match.group("start")) if match.group("start") else None
+    length = int(match.group("length")) if match.group("length") else None
+    if start is not None:
+        item_name = f"{item_name}<{start}>"
+    return FetchLiteralRequest(item_name, section or "RFC822", start, length)
+
+
+def resolve_fetch_literal(raw: bytes, request: FetchLiteralRequest) -> tuple[str, bytes]:
+    section = request.section.upper()
+    if section in {"RFC822", ""}:
+        body = raw
+    elif section in {"RFC822.HEADER", "HEADER"}:
+        body = raw_header_bytes(raw)
+    elif section in {"RFC822.TEXT", "TEXT"}:
+        body = raw_body_bytes(raw)
+    elif section.startswith("HEADER.FIELDS.NOT"):
+        body = header_fields_bytes(raw, parse_header_field_names(section), invert=True)
+    elif section.startswith("HEADER.FIELDS"):
+        body = header_fields_bytes(raw, parse_header_field_names(section), invert=False)
+    else:
+        body = raw
+    if request.partial_start is not None:
+        end = request.partial_start + (request.partial_length or len(body))
+        body = body[request.partial_start:end]
+    return request.item_name, body
+
+
+def raw_header_bytes(raw: bytes) -> bytes:
+    header, _, _ = split_raw_message(raw)
+    return ensure_crlf_suffix(header)
+
+
+def raw_body_bytes(raw: bytes) -> bytes:
+    _, _, body = split_raw_message(raw)
+    return body
+
+
+def split_raw_message(raw: bytes) -> tuple[bytes, bytes, bytes]:
+    for separator in (b"\r\n\r\n", b"\n\n"):
+        if separator in raw:
+            header, body = raw.split(separator, 1)
+            return header + separator, separator, body
+    return raw, b"\r\n\r\n", b""
+
+
+def parse_header_field_names(section: str) -> list[str]:
+    match = re.search(r"\((?P<fields>[^)]*)\)", section)
+    if not match:
+        return []
+    return [item.strip().lower() for item in match.group("fields").split() if item.strip()]
+
+
+def header_fields_bytes(raw: bytes, field_names: list[str], invert: bool) -> bytes:
+    parsed = BytesParser(policy=policy.default).parsebytes(raw)
+    wanted = set(field_names)
+    lines: list[str] = []
+    for name, value in parsed.items():
+        include = name.lower() in wanted
+        if invert:
+            include = not include
+        if include:
+            lines.append(f"{name}: {value}\r\n")
+    lines.append("\r\n")
+    return "".join(lines).encode("utf-8")
+
+
+def ensure_crlf_suffix(value: bytes) -> bytes:
+    if value.endswith(b"\r\n\r\n") or value.endswith(b"\n\n"):
+        return value
+    if value.endswith(b"\r\n") or value.endswith(b"\n"):
+        return value + b"\r\n"
+    return value + b"\r\n\r\n"
 
 
 def parse_flags(value: Any) -> tuple[str, ...]:
@@ -384,3 +672,8 @@ def parse_bound(value: str, max_value: int) -> int:
 
 def sanitize_response_text(value: str) -> str:
     return re.sub(r"[\r\n]+", " ", value)[:240]
+
+
+def is_loopback_host(host: str) -> bool:
+    normalized = host.strip().lower()
+    return normalized in {"", "localhost", "::1"} or normalized.startswith("127.")
