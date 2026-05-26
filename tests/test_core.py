@@ -662,6 +662,10 @@ class CoreImportExportTests(unittest.TestCase):
             state = db.get_source_sync_state(first.source_id, "folder:INBOX")
             self.assertEqual(state["uidvalidity"], "999")
             self.assertEqual(state["last_uid"], 2)
+            states = db.list_source_sync_states()
+            self.assertEqual(states[0]["source_name"], "Unit IMAP")
+            self.assertEqual(states[0]["scope"], "folder:INBOX")
+            self.assertEqual(states[0]["state"]["last_uid"], 2)
 
             messages["INBOX"]["3"] = build_message(
                 "imap-three@example.com",

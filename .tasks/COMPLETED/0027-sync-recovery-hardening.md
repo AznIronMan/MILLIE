@@ -12,6 +12,7 @@ Make connector sync state safer for interrupted or partially failed live-mail sy
 - POP failed `RETR` attempts remain retryable and run limits apply to attempted new UIDLs.
 - Graph preserves the previous delta/next cursor when a MIME fetch fails or a sync limit splits a page.
 - IMAP, POP, and Graph state now records latest-run recovery metadata for troubleshooting.
+- Added `GET /api/v1/sync-states` and a web Operations summary so cursor/recovery state is visible during testing.
 - Added unit coverage for retryable IMAP UID failures, POP UIDL failures, Graph MIME fetch failures, and Graph mid-page limits.
 
 ## Verification

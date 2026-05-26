@@ -64,6 +64,17 @@ type ExportJob = {
   manifest_ref: string | null;
 };
 
+type SyncState = {
+  source_id: number;
+  source_kind: string;
+  source_name: string;
+  source_uri: string | null;
+  scope: string;
+  state_json: string;
+  updated_at: string;
+  state: Record<string, unknown>;
+};
+
 type ExportProfile = {
   id: string;
   display_name: string;
@@ -350,6 +361,7 @@ type State = {
   migrations: Migration[];
   importJobs: ImportJob[];
   exportJobs: ExportJob[];
+  syncStates: SyncState[];
   exportProfiles: ExportProfile[];
   selectedExportProfileId: string;
   selectedExportFormat: string;
@@ -387,6 +399,7 @@ const state: State = {
   migrations: [],
   importJobs: [],
   exportJobs: [],
+  syncStates: [],
   exportProfiles: [],
   selectedExportProfileId: "generic-eml",
   selectedExportFormat: "auto",
@@ -1165,6 +1178,10 @@ function renderOperations(): string {
           <h4>Exports</h4>
           ${state.exportJobs.slice(0, 5).map(renderExportJob).join("") || `<p class="muted">No export jobs yet.</p>`}
         </div>
+        <div>
+          <h4>Sync State</h4>
+          ${state.syncStates.slice(0, 5).map(renderSyncState).join("") || `<p class="muted">No sync state yet.</p>`}
+        </div>
       </div>
       ${renderSelectedJob()}
     </section>
@@ -1201,6 +1218,36 @@ function renderExportJob(job: ExportJob): string {
       <small>${escapeHtml(job.manifest_ref || job.output_root)}</small>
     </button>
   `;
+}
+
+function renderSyncState(sync: SyncState): string {
+  const status = String(sync.state.last_status ?? "ok");
+  const failures = firstStateList(sync.state.last_failed_uids, sync.state.last_failed_uidls, sync.state.last_failed_message_ids);
+  const cursor = syncCursor(sync);
+  return `
+    <div class="job-row sync-state-row">
+      <strong>${escapeHtml(sync.source_kind)} · ${escapeHtml(status)}</strong>
+      <span>${escapeHtml(sync.source_name)} · ${escapeHtml(sync.scope)}</span>
+      <small>${escapeHtml([cursor, failures ? `failed ${failures}` : "", formatDate(sync.updated_at)].filter(Boolean).join(" · "))}</small>
+    </div>
+  `;
+}
+
+function syncCursor(sync: SyncState): string {
+  if (sync.state.last_uid !== undefined) return `uid ${String(sync.state.last_uid)}`;
+  if (sync.state.next_link) return "next link saved";
+  if (sync.state.delta_link) return "delta link saved";
+  if (Array.isArray(sync.state.seen_uidls)) return `${sync.state.seen_uidls.length} UIDLs seen`;
+  return "";
+}
+
+function firstStateList(...values: unknown[]): string {
+  for (const value of values) {
+    if (Array.isArray(value) && value.length) {
+      return value.slice(0, 3).map(String).join(", ");
+    }
+  }
+  return "";
 }
 
 function renderSelectedJob(): string {
@@ -1472,12 +1519,14 @@ async function loadMigrations(): Promise<void> {
 }
 
 async function loadJobs(): Promise<void> {
-  const [importPayload, exportPayload] = await Promise.all([
+  const [importPayload, exportPayload, syncPayload] = await Promise.all([
     api<{ import_jobs: ImportJob[] }>("/api/v1/import-jobs"),
     api<{ export_jobs: ExportJob[] }>("/api/v1/export-jobs"),
+    api<{ sync_states: SyncState[] }>("/api/v1/sync-states"),
   ]);
   state.importJobs = importPayload.import_jobs;
   state.exportJobs = exportPayload.export_jobs;
+  state.syncStates = syncPayload.sync_states;
 }
 
 async function loadExportProfiles(): Promise<void> {

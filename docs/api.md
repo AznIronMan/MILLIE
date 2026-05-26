@@ -50,6 +50,12 @@ Import responses and job rows distinguish:
 - `duplicates` / `duplicate_count`: source items that matched existing raw MIME content
 - `errors` / `error_count`: failed source items
 
+## Sync State
+
+- `GET /api/v1/sync-states`
+
+`GET /api/v1/sync-states` returns parsed connector cursor/recovery state for IMAP, POP, and Graph scopes. Each row includes source identity, scope, `updated_at`, raw `state_json`, and parsed `state`.
+
 ## IMAP Sources
 
 - `GET /api/v1/imap-sources`
@@ -151,5 +157,6 @@ Export profiles include a target ID, display name, supported formats, recommende
 - `POST /api/v1/profiles`
 - `POST /api/v1/profiles/active`
 - `GET /api/v1/sources`
+- `GET /api/v1/sync-states`
 - `GET /api/v1/mailboxes`
 - `GET /api/v1/migrations`

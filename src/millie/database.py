@@ -392,6 +392,30 @@ class MillieDatabase:
             return {}
         return value if isinstance(value, dict) else {}
 
+    def list_source_sync_states(self) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT sss.source_id, s.kind AS source_kind, s.display_name AS source_name,
+                       s.source_uri, sss.scope, sss.state_json, sss.updated_at
+                FROM source_sync_states sss
+                JOIN sources s ON s.id = sss.source_id
+                ORDER BY s.display_name, sss.scope
+                """
+            ).fetchall()
+        states: list[dict[str, Any]] = []
+        for row in rows:
+            item = row_to_dict(row)
+            if item is None:
+                continue
+            try:
+                state = json.loads(str(item.get("state_json") or "{}"))
+            except json.JSONDecodeError:
+                state = {}
+            item["state"] = state if isinstance(state, dict) else {}
+            states.append(item)
+        return states
+
     def set_source_sync_state(self, source_id: int, scope: str, state: dict[str, Any]) -> None:
         with self.connect() as conn:
             conn.execute(

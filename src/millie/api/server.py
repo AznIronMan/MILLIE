@@ -118,6 +118,8 @@ class MillieRequestHandler(BaseHTTPRequestHandler):
                 )
             elif path == "/api/v1/sources":
                 self.write_json({"sources": self.app.db.list_sources()})
+            elif path == "/api/v1/sync-states":
+                self.write_json({"sync_states": self.app.db.list_source_sync_states()})
             elif path == "/api/v1/imap-sources":
                 self.write_json(
                     {"sources": [source.to_api() for source in load_imap_sources(self.app.profile_manager)]}
