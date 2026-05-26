@@ -93,7 +93,7 @@ MILLIE now has a first runnable foundation slice:
 - Thunderbird, Evolution, and Apple Mail source scanning to find importable mailbox candidates before import
 - Read-only IMAP source configs, folder discovery, source management, and incremental folder sync using UID cursors
 - Gmail-compatible IMAP folder discovery, including common Gmail special-folder roles and `imap.google.com` host normalization
-- IMAP provider presets, selected-folder one-off sync, and IMAP flags/internal-date capture
+- IMAP provider presets for Gmail, Outlook.com / Microsoft 365, Yahoo, iCloud, AOL, Fastmail, and Zoho, plus selected-folder one-off sync and IMAP flags/internal-date capture
 - Read-only POP3 source configs, safe no-retrieve probes, UIDL-based incremental sync, and a never-delete server policy
 - Microsoft Graph / Exchange source configs with PKCE OAuth callback/token storage, token refresh, folder discovery, and limited delta-backed read-only selected-folder sync
 - Connector credential secret references with macOS Keychain support and a local development fallback
@@ -107,7 +107,7 @@ MILLIE now has a first runnable foundation slice:
 - Local admin/session authentication path with development bypass currently enabled by default
 - Import/export job drill-downs for errors and generated export items
 - Export profiles for generic EML/MBOX/Maildir, Thunderbird, Evolution, Apple Mail, and Outlook workflow bundles
-- Portable active-profile backup ZIPs with manifests and default redaction for local secret settings
+- Portable active-profile backup ZIPs with manifests, default redaction for local secret settings, and restore into new profiles
 - TypeScript/Vite web client for mailbox navigation, message viewing, import, and export
 - Basic import/export test coverage
 

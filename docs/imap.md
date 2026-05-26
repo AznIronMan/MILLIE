@@ -10,7 +10,7 @@ Current IMAP support is intentionally narrow:
 - Secret references for stored credentials
 - TLS by default, with plain IMAP available for local/dev testing
 - One or more configured folders, defaulting to `INBOX`
-- Provider presets for generic IMAP and Gmail / Google Workspace
+- Provider presets for generic IMAP, Gmail / Google Workspace, Outlook.com / Microsoft 365, Yahoo Mail, iCloud Mail, AOL Mail, Fastmail, and Zoho Mail
 - Folder discovery through IMAP `LIST`
 - Gmail-compatible folder discovery; `imap.google.com` is normalized to `imap.gmail.com`, and common `[Gmail]/...` folders map to roles
 - One-off selected-folder sync overrides from the API/web UI
@@ -65,7 +65,17 @@ PYTHONPATH=src python3 -m millie imap-sync work-mail
 
 Use `--no-tls` only for trusted local/dev servers.
 
-For Gmail or Google Workspace accounts, use `imap.gmail.com` on port `993` with TLS. If `imap.google.com` is entered, MILLIE normalizes it to `imap.gmail.com`.
+Common preset defaults:
+
+| Provider | IMAP host | Port | Notes |
+| --- | --- | ---: | --- |
+| Gmail / Google Workspace | `imap.gmail.com` | 993 | Gmail also accepts OAuth2 for IMAP. If `imap.google.com` is entered, MILLIE normalizes it to `imap.gmail.com`. |
+| Outlook.com / Microsoft 365 | `outlook.office365.com` | 993 | Microsoft requires Modern Auth/OAuth2 for Outlook.com; use Graph for the main Exchange Online path. |
+| Yahoo Mail | `imap.mail.yahoo.com` | 993 | Yahoo requires SSL and usually an app password for third-party clients. |
+| iCloud Mail | `imap.mail.me.com` | 993 | iCloud requires an app-specific password and does not support POP. |
+| AOL Mail | `imap.aol.com` | 993 | AOL requires SSL and the full email address as the username. |
+| Fastmail | `imap.fastmail.com` | 993 | Fastmail requires an app password and SSL/TLS. |
+| Zoho Mail | `imap.zoho.com` | 993 | Enable IMAP in Zoho first; some paid/data-center accounts may need account-specific server details. |
 
 `imap-migrate-secrets` moves any legacy raw IMAP passwords from `imap.sources.v1` into the configured secret backend.
 
@@ -105,5 +115,14 @@ For Gmail or Google Workspace accounts, use `imap.gmail.com` on port `993` with 
 ## Follow-Up
 
 - Add OAuth/app-password setup flows.
-- Add more provider presets for common IMAP hosts.
-- Add POP3 and Microsoft Graph/Exchange connectors.
+- Harden recovery paths for revoked credentials, expired consent, large backfills, and partial sync continuation.
+
+## References
+
+- [Gmail IMAP, POP, and SMTP](https://developers.google.com/gmail/imap/imap-smtp)
+- [Outlook.com POP, IMAP, and SMTP settings](https://support.microsoft.com/en-gb/office/pop-imap-and-smtp-settings-for-outlook-com-d088b986-291d-42b8-9564-9c414e2aa040)
+- [Yahoo IMAP settings](https://help.yahoo.com/kb/new-yahoo-mail/imap-smtp-settings-article-sln4075.html)
+- [iCloud Mail server settings](https://support.apple.com/en-la/HT202304)
+- [AOL POP and IMAP settings](https://help.aol.com/articles/how-do-i-use-other-email-applications-to-send-and-receive-my-aol-mail)
+- [Fastmail server names and ports](https://www.fastmail.help/hc/en-us/articles/1500000278342-Server-names-and-ports)
+- [Zoho Mail IMAP access](https://www.zoho.com/mail/help/imap-access.html)

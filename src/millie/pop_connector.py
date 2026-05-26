@@ -51,6 +51,41 @@ POP_PROVIDER_PRESETS = {
         port=995,
         use_ssl=True,
     ),
+    "outlook": PopProviderPreset(
+        id="outlook",
+        display_name="Outlook.com / Microsoft 365",
+        host="outlook.office365.com",
+        port=995,
+        use_ssl=True,
+    ),
+    "yahoo": PopProviderPreset(
+        id="yahoo",
+        display_name="Yahoo Mail",
+        host="pop.mail.yahoo.com",
+        port=995,
+        use_ssl=True,
+    ),
+    "aol": PopProviderPreset(
+        id="aol",
+        display_name="AOL Mail",
+        host="pop.aol.com",
+        port=995,
+        use_ssl=True,
+    ),
+    "fastmail": PopProviderPreset(
+        id="fastmail",
+        display_name="Fastmail",
+        host="pop.fastmail.com",
+        port=995,
+        use_ssl=True,
+    ),
+    "zoho": PopProviderPreset(
+        id="zoho",
+        display_name="Zoho Mail",
+        host="pop.zoho.com",
+        port=995,
+        use_ssl=True,
+    ),
 }
 
 

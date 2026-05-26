@@ -46,6 +46,7 @@ from millie.imap_connector import (
 from millie.pop_connector import (
     POP_SOURCES_SETTING,
     PopSourceConfig,
+    config_from_dict as pop_config_from_dict,
     delete_pop_source,
     get_pop_source,
     list_pop_provider_presets,
@@ -752,6 +753,34 @@ class CoreImportExportTests(unittest.TestCase):
         self.assertIn("gmail", presets)
         self.assertEqual(presets["gmail"].host, "imap.gmail.com")
         self.assertEqual(presets["gmail"].default_folders, ("INBOX",))
+        self.assertEqual(presets["outlook"].host, "outlook.office365.com")
+        self.assertEqual(presets["yahoo"].host, "imap.mail.yahoo.com")
+        self.assertEqual(presets["icloud"].host, "imap.mail.me.com")
+        self.assertEqual(presets["aol"].host, "imap.aol.com")
+        self.assertEqual(presets["fastmail"].host, "imap.fastmail.com")
+        self.assertEqual(presets["zoho"].host, "imap.zoho.com")
+
+    def test_imap_config_detects_common_provider_hosts(self) -> None:
+        cases = {
+            "outlook.office365.com": "outlook",
+            "imap.mail.yahoo.com": "yahoo",
+            "imap.mail.me.com": "icloud",
+            "imap.aol.com": "aol",
+            "imap.fastmail.com": "fastmail",
+            "imap.zoho.com": "zoho",
+        }
+
+        for host, provider in cases.items():
+            with self.subTest(host=host):
+                config = config_from_dict(
+                    {
+                        "name": provider,
+                        "host": host,
+                        "username": "user@example.test",
+                        "password": "secret",
+                    }
+                )
+                self.assertEqual(config.provider, provider)
 
     def test_gmail_special_folders_map_to_roles(self) -> None:
         self.assertEqual(folder_role("[Gmail]/All Mail"), "archive")
@@ -870,6 +899,33 @@ class CoreImportExportTests(unittest.TestCase):
         self.assertIn("gmail", presets)
         self.assertEqual(presets["gmail"].host, "pop.gmail.com")
         self.assertEqual(presets["gmail"].port, 995)
+        self.assertEqual(presets["outlook"].host, "outlook.office365.com")
+        self.assertEqual(presets["yahoo"].host, "pop.mail.yahoo.com")
+        self.assertNotIn("icloud", presets)
+        self.assertEqual(presets["aol"].host, "pop.aol.com")
+        self.assertEqual(presets["fastmail"].host, "pop.fastmail.com")
+        self.assertEqual(presets["zoho"].host, "pop.zoho.com")
+
+    def test_pop_config_detects_common_provider_hosts(self) -> None:
+        cases = {
+            "outlook.office365.com": "outlook",
+            "pop.mail.yahoo.com": "yahoo",
+            "pop.aol.com": "aol",
+            "pop.fastmail.com": "fastmail",
+            "pop.zoho.com": "zoho",
+        }
+
+        for host, provider in cases.items():
+            with self.subTest(host=host):
+                config = pop_config_from_dict(
+                    {
+                        "name": provider,
+                        "host": host,
+                        "username": "user@example.test",
+                        "password": "secret",
+                    }
+                )
+                self.assertEqual(config.provider, provider)
 
     def test_legacy_pop_password_migrates_to_secret_reference(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

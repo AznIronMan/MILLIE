@@ -9,7 +9,7 @@ Current POP support is intentionally narrow:
 - Password or app-password login through Python `poplib`
 - Secret references for stored credentials
 - SSL by default, with plain POP3 available only for local/dev testing
-- Provider presets for generic POP3 and Gmail / Google Workspace
+- Provider presets for generic POP3, Gmail / Google Workspace, Outlook.com / Microsoft 365, Yahoo Mail, AOL Mail, Fastmail, and Zoho Mail
 - Safe account probe using `USER`, `PASS`, `CAPA`, `STAT`, and `UIDL`
 - Incremental sync using POP `UIDL`
 - Raw message retrieval through `RETR` only during explicit sync
@@ -42,7 +42,18 @@ PYTHONPATH=src python3 -m millie pop-migrate-secrets
 
 Use `--no-ssl` only for trusted local/dev servers.
 
-For Gmail or Google Workspace accounts, use `pop.gmail.com` on port `995` with SSL. Gmail POP must be enabled in Gmail settings before MILLIE can probe or sync it.
+Common preset defaults:
+
+| Provider | POP host | Port | Notes |
+| --- | --- | ---: | --- |
+| Gmail / Google Workspace | `pop.gmail.com` | 995 | Gmail POP must be enabled in Gmail settings before MILLIE can probe or sync it. |
+| Outlook.com / Microsoft 365 | `outlook.office365.com` | 995 | Microsoft requires Modern Auth/OAuth2 for Outlook.com; use Graph for the main Exchange Online path. |
+| Yahoo Mail | `pop.mail.yahoo.com` | 995 | Yahoo requires SSL and usually an app password for third-party clients. |
+| AOL Mail | `pop.aol.com` | 995 | AOL requires SSL and the full email address as the username. |
+| Fastmail | `pop.fastmail.com` | 995 | Fastmail requires an app password and SSL/TLS. |
+| Zoho Mail | `pop.zoho.com` | 995 | Enable POP in Zoho first; some paid/data-center accounts may need account-specific server details. |
+
+iCloud Mail does not support POP, so MILLIE only provides an iCloud IMAP preset.
 
 `pop-probe` does not retrieve message contents and does not delete anything. It checks POP login, capabilities, maildrop size, and `UIDL` support.
 
@@ -83,6 +94,14 @@ For Gmail or Google Workspace accounts, use `pop.gmail.com` on port `995` with S
 
 ## Follow-Up
 
-- Add provider presets beyond Gmail.
 - Add OAuth/provider credential flows where POP providers support them.
-- Add UI affordances for POP server delete-policy notes and provider setup help.
+- Harden recovery paths for revoked credentials, large maildrops, and partial sync continuation.
+
+## References
+
+- [Gmail IMAP, POP, and SMTP](https://developers.google.com/gmail/imap/imap-smtp)
+- [Outlook.com POP, IMAP, and SMTP settings](https://support.microsoft.com/en-gb/office/pop-imap-and-smtp-settings-for-outlook-com-d088b986-291d-42b8-9564-9c414e2aa040)
+- [Yahoo POP settings](https://help.yahoo.com/kb/mail/review-adjust-settings-sln7754.html)
+- [AOL POP and IMAP settings](https://help.aol.com/articles/how-do-i-use-other-email-applications-to-send-and-receive-my-aol-mail)
+- [Fastmail server names and ports](https://www.fastmail.help/hc/en-us/articles/1500000278342-Server-names-and-ports)
+- [Zoho Mail POP access](https://www.zoho.com/mail/help/pop-access.html)
