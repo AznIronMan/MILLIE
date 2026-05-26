@@ -22,6 +22,7 @@ Expose imported mail to external mail clients through a local read-only IMAP ser
 - Mutating commands are rejected.
 - Optional exact username/password auth, a non-loopback safety guard, and direct IMAPS cert/key configuration exist.
 - First compatibility notes live in `docs/imap-facade.md`.
+- Compatibility helpers now include `ID`, `ENABLE`, `XLIST`, `CHECK`, `UNSELECT`, `IDLE`, and special-use folder hints.
 
 ## Remaining
 

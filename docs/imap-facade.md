@@ -47,11 +47,14 @@ Binding to a non-loopback host requires exact credentials unless `--allow-dev-lo
 Supported enough for first compatibility testing:
 
 - `CAPABILITY`
+- `ID`
+- `ENABLE UTF8=ACCEPT`
 - `AUTHENTICATE PLAIN`
 - `LOGIN`
 - `NAMESPACE`
 - `LIST`
 - `LSUB`
+- `XLIST`
 - `SELECT`
 - `EXAMINE`
 - `STATUS`
@@ -65,8 +68,12 @@ Supported enough for first compatibility testing:
 - `BODY[]`, `BODY.PEEK[]`, `BODY[HEADER]`, `BODY[TEXT]`, and `BODY[HEADER.FIELDS (...)]`
 - Partial body literals such as `BODY.PEEK[TEXT]<0.1024>`
 - `NOOP`
+- `CHECK`
 - `CLOSE`
+- `UNSELECT`
+- `IDLE`
 - `LOGOUT`
+- Special-use folder hints for common Inbox, Sent, Drafts, Trash, Junk, Archive, and Flagged folders
 
 Mutating commands such as `APPEND`, `COPY`, `STORE`, `DELETE`, `EXPUNGE`, `MOVE`, and `RENAME` return `NO`.
 
@@ -89,5 +96,13 @@ Expected near-term tests:
 - Apple Mail can add a manual IMAP account pointed at localhost and browse imported folders.
 - Evolution can connect to the local account and browse/fetch messages.
 - Outlook compatibility needs extra attention because account setup may expect specific TLS/certificate and capability combinations.
+
+Manual client setup checklist:
+
+- Use IMAP, not POP, for the local MILLIE account.
+- Server host is `127.0.0.1` or `localhost`; default port is `22143`.
+- Use no transport security for the default facade, or direct SSL/TLS only when started with `--tls-cert` and `--tls-key`.
+- Use the exact username/password when the facade is started with `--username`; loopback development mode accepts `dev` / `dev`.
+- Disable sending/SMTP or point SMTP at an unrelated existing account because the facade is read-only.
 
 Do not bind this service to `0.0.0.0` with real mail unless exact credentials are configured and the network is trusted. Prefer loopback-only testing until the facade has broader client compatibility coverage.

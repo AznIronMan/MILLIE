@@ -167,6 +167,7 @@ class PopSyncResult:
     imported: int
     duplicates: int
     errors: int
+    sync_limit: int
 
     def to_api(self) -> dict[str, Any]:
         return {
@@ -176,6 +177,7 @@ class PopSyncResult:
             "imported": self.imported,
             "duplicates": self.duplicates,
             "errors": self.errors,
+            "sync_limit": self.sync_limit,
             "format": "pop3",
         }
 
@@ -555,7 +557,7 @@ def sync_pop_source(
         new_message_count=imported,
         duplicate_count=duplicates,
     )
-    return PopSyncResult(job_id, source_id, processed, imported, duplicates, errors)
+    return PopSyncResult(job_id, source_id, processed, imported, duplicates, errors, effective_limit)
 
 
 def open_pop_client(config: PopSourceConfig) -> PopClient:

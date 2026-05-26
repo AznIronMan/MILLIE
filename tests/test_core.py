@@ -6,6 +6,7 @@ import imaplib
 import mailbox
 import json
 import re
+import socket
 import threading
 import zipfile
 from email.message import EmailMessage
@@ -137,7 +138,12 @@ class CoreImportExportTests(unittest.TestCase):
             self.assertEqual(manifest["folder_count"], 1)
             self.assertEqual(manifest["attachment_count"], 0)
             self.assertEqual(manifest["source_ids"], [result.source_id])
+            self.assertEqual(manifest["fidelity"]["strategy"], "raw_mime_first")
+            self.assertEqual(manifest["fidelity"]["raw_mime_preserved_count"], 1)
+            self.assertEqual(manifest["fidelity"]["output_hash_verified_count"], 1)
             self.assertEqual(manifest["items"][0]["source_id"], result.source_id)
+            self.assertTrue(manifest["items"][0]["raw_mime_preserved"])
+            self.assertTrue(manifest["items"][0]["output_matches_raw"])
             self.assertEqual(db.list_migrations()[0]["version"], 1)
             self.assertEqual(db.list_migrations()[-1]["version"], 3)
 
@@ -157,6 +163,11 @@ class CoreImportExportTests(unittest.TestCase):
             try:
                 status, _ = client.login("dev", "dev")
                 self.assertEqual(status, "OK")
+                status, capability = client.capability()
+                self.assertEqual(status, "OK")
+                capability_payload = b" ".join(capability or [])
+                self.assertIn(b"IDLE", capability_payload)
+                self.assertIn(b"SPECIAL-USE", capability_payload)
                 status, listed = client.list()
                 self.assertEqual(status, "OK")
                 self.assertIn(b"Imported", b"\n".join(listed or []))
@@ -187,6 +198,7 @@ class CoreImportExportTests(unittest.TestCase):
                 self.assertIn(b"Hello Bob", b"".join(item[1] for item in fetched if isinstance(item, tuple)))
                 status, _ = client.store("1", "+FLAGS", "\\Seen")
                 self.assertEqual(status, "NO")
+                self.assert_imap_facade_compat_commands(server.server_address[1])
             finally:
                 try:
                     client.logout()
@@ -194,6 +206,40 @@ class CoreImportExportTests(unittest.TestCase):
                     server.shutdown()
                     server.server_close()
                     thread.join(timeout=2)
+
+    def assert_imap_facade_compat_commands(self, port: int) -> None:
+        def recv_until(sock: socket.socket, marker: bytes) -> bytes:
+            data = b""
+            while marker not in data:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+            return data
+
+        with socket.create_connection(("127.0.0.1", port), timeout=2) as sock:
+            sock.settimeout(2)
+            self.assertIn(b"OK MILLIE", recv_until(sock, b"\r\n"))
+            sock.sendall(b'a1 LOGIN "dev" "dev"\r\n')
+            self.assertIn(b"a1 OK", recv_until(sock, b"a1 OK"))
+            sock.sendall(b'a2 ID ("name" "unit-test")\r\n')
+            self.assertIn(b'* ID ("name" "MILLIE"', recv_until(sock, b"a2 OK"))
+            sock.sendall(b"a3 ENABLE UTF8=ACCEPT\r\n")
+            self.assertIn(b"* ENABLED UTF8=ACCEPT", recv_until(sock, b"a3 OK"))
+            sock.sendall(b'a4 XLIST "" "*"\r\n')
+            self.assertIn(b"* XLIST", recv_until(sock, b"a4 OK"))
+            sock.sendall(b'a5 SELECT "Imported"\r\n')
+            self.assertIn(b"a5 OK", recv_until(sock, b"a5 OK"))
+            sock.sendall(b"a6 CHECK\r\n")
+            self.assertIn(b"a6 OK", recv_until(sock, b"a6 OK"))
+            sock.sendall(b"a7 UNSELECT\r\n")
+            self.assertIn(b"a7 OK", recv_until(sock, b"a7 OK"))
+            sock.sendall(b"a8 IDLE\r\n")
+            self.assertIn(b"+ idling", recv_until(sock, b"+ idling"))
+            sock.sendall(b"DONE\r\n")
+            self.assertIn(b"a8 OK", recv_until(sock, b"a8 OK"))
+            sock.sendall(b"a9 LOGOUT\r\n")
+            self.assertIn(b"a9 OK", recv_until(sock, b"a9 OK"))
 
     def test_imap_facade_exact_auth_and_non_loopback_guard(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -426,6 +472,11 @@ class CoreImportExportTests(unittest.TestCase):
             export_result = export_messages(db, export_dir, "mbox")
             self.assertEqual(export_result.exported, 2)
             self.assertTrue((export_dir / "fixture.mbox").exists())
+            manifest = json.loads(export_result.manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["fidelity"]["strategy"], "raw_mime_first")
+            self.assertEqual(manifest["fidelity"]["raw_mime_preserved_count"], 2)
+            self.assertEqual(manifest["fidelity"]["containerized_count"], 2)
+            self.assertTrue(all(item["containerized"] for item in manifest["items"]))
 
     def test_export_profile_auto_selects_recommended_format(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -652,6 +703,7 @@ class CoreImportExportTests(unittest.TestCase):
             self.assertEqual(first.imported, 2)
             self.assertEqual(first.duplicates, 0)
             self.assertEqual(first.errors, 0)
+            self.assertEqual(first.sync_limit, 50)
             self.assertEqual(len(db.list_messages()), 2)
             self.assertEqual(db.list_migrations()[-1]["version"], 3)
             detail = db.get_message(int(db.list_messages(query="IMAP One")[0]["id"]))
@@ -752,9 +804,10 @@ class CoreImportExportTests(unittest.TestCase):
                 sync_limit=50,
             )
 
-            result = sync_imap_source(db, config, lambda _: FakeImapClient(messages), folders=["Archive"])
+            result = sync_imap_source(db, config, lambda _: FakeImapClient(messages), folders=["Archive"], sync_limit=1)
 
             self.assertEqual(result.folders, ["Archive"])
+            self.assertEqual(result.sync_limit, 1)
             self.assertEqual(result.processed, 1)
             self.assertEqual(db.list_messages()[0]["mailbox_path"], "Archive")
 
@@ -1042,6 +1095,7 @@ class CoreImportExportTests(unittest.TestCase):
             self.assertEqual(first.imported, 2)
             self.assertEqual(first.duplicates, 0)
             self.assertEqual(first.errors, 0)
+            self.assertEqual(first.sync_limit, 10)
             self.assertNotIn("DELE", client.commands)
             self.assertEqual(len(db.list_messages()), 2)
             state = db.get_source_sync_state(first.source_id, "maildrop")
@@ -1074,6 +1128,7 @@ class CoreImportExportTests(unittest.TestCase):
             self.assertEqual(first.processed, 1)
             self.assertEqual(first.imported, 1)
             self.assertEqual(first.errors, 1)
+            self.assertEqual(first.sync_limit, 2)
             state = db.get_source_sync_state(first.source_id, "maildrop")
             self.assertEqual(state["seen_uidls"], ["uid-2"])
             self.assertEqual(state["last_attempted_uidls"], ["uid-1", "uid-2"])

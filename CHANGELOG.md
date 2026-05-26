@@ -41,6 +41,7 @@ The project uses semantic versioning in `major.minor.patch` format.
 - Hardened IMAP, POP, and Graph sync state so failed message fetches remain retryable instead of silently advancing cursors.
 - Added a sync-state API endpoint and web operations summary for connector cursor/recovery visibility.
 - Added web Retry/Continue actions for sync-state rows and clearer connector credential recovery hints.
+- Added per-run IMAP/POP/Graph sync-limit controls in the web UI, richer export fidelity manifests, and extra local IMAP facade compatibility commands.
 
 ## [0.1.0] - 2026-05-23
 

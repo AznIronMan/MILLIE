@@ -76,7 +76,7 @@ IMAP source configs are stored per active profile. Saved configs store `auth_ref
 
 `POST /api/v1/imap-sources/{id}/folders` returns selectable and non-selectable folders discovered from the remote account using IMAP `LIST`.
 
-`POST /api/v1/imap-sources/{id}/sync` performs a read-only sync. It accepts optional `folders` and `sync_limit` overrides for a one-off run. It imports newly discovered UIDs through the same raw-MIME pipeline as file imports, captures IMAP flags/internal dates when the server provides them, creates an import job, and returns processed/new/duplicate/error counts.
+`POST /api/v1/imap-sources/{id}/sync` performs a read-only sync. It accepts optional `folders` and `sync_limit` overrides for a one-off run. It imports newly discovered UIDs through the same raw-MIME pipeline as file imports, captures IMAP flags/internal dates when the server provides them, creates an import job, and returns processed/new/duplicate/error counts plus the effective `sync_limit`.
 
 `POST /api/v1/imap-sources/{id}/delete` removes the saved source and deletes its secret reference.
 
@@ -100,7 +100,7 @@ POP source configs are stored per active profile. Saved configs store `auth_ref`
 
 `POST /api/v1/pop-sources/{id}/probe` logs in and checks capabilities, message count, maildrop size, and `UIDL` availability without using `RETR` or `DELE`.
 
-`POST /api/v1/pop-sources/{id}/sync` performs a read-only sync with optional `sync_limit` override. It imports new `UIDL` values through the raw-MIME pipeline and never issues `DELE`.
+`POST /api/v1/pop-sources/{id}/sync` performs a read-only sync with optional `sync_limit` override. It imports new `UIDL` values through the raw-MIME pipeline, returns the effective `sync_limit`, and never issues `DELE`.
 
 `POST /api/v1/pop-sources/{id}/delete` removes the saved source and deletes its secret reference.
 

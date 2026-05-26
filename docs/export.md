@@ -111,8 +111,11 @@ The current manifest includes:
 - Source filters
 - Message, unique message, folder, attachment, error, and warning counts
 - Source IDs
+- Fidelity summary with raw-MIME-first strategy, preserved-message counts, hash-verification counts, and containerized counts
 - Per-output item paths and hashes
-- Per-message source IDs, mailbox IDs, mailbox paths, subjects, hashes, and warnings
+- Per-message source IDs, mailbox IDs, mailbox paths, subjects, raw message hashes, output hashes, raw-MIME preservation flags, containerization flags, and warnings
+
+For `.eml` and `maildir`, `output_matches_raw: true` means the exported file bytes match the stored raw MIME hash. For `mbox`, each raw message is preserved inside a mailbox container, so per-message fidelity is tracked by `raw_message_hash` while `output_hash` identifies the complete MBOX file.
 
 ## Non-Goals For The First Export MVP
 

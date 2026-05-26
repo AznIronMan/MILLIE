@@ -27,6 +27,7 @@ class ImapMailbox:
     path: str
     display_name: str
     message_count: int
+    role: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +63,7 @@ class ReadOnlyImapStore:
                 path=str(row["path"]),
                 display_name=str(row["display_name"] or row["path"]),
                 message_count=int(row["message_count"] or 0),
+                role=str(row["role"] or "") or None,
             )
             for row in self.db.list_mailboxes()
         ]
@@ -153,10 +155,19 @@ class MillieIMAPHandler(socketserver.StreamRequestHandler):
         command = command.upper()
         try:
             if command == "CAPABILITY":
-                self.write_line("* CAPABILITY IMAP4rev1 NAMESPACE UIDPLUS LITERAL+ AUTH=PLAIN")
+                self.write_line("* CAPABILITY IMAP4rev1 NAMESPACE UIDPLUS LITERAL+ AUTH=PLAIN ID ENABLE IDLE SPECIAL-USE")
                 self.write_ok(tag, "CAPABILITY completed")
             elif command == "NOOP":
                 self.write_ok(tag, "NOOP completed")
+            elif command == "ID":
+                self.write_line('* ID ("name" "MILLIE" "vendor" "MILLIE" "support-url" "https://github.com/AznIronMan/MILLIE")')
+                self.write_ok(tag, "ID completed")
+            elif command == "ENABLE":
+                requested = [item.upper() for item in args]
+                enabled = [item for item in requested if item in {"UTF8=ACCEPT"}]
+                if enabled:
+                    self.write_line(f"* ENABLED {' '.join(enabled)}")
+                self.write_ok(tag, "ENABLE completed")
             elif command == "LOGOUT":
                 self.write_line("* BYE MILLIE closing connection")
                 self.write_ok(tag, "LOGOUT completed")
@@ -170,8 +181,8 @@ class MillieIMAPHandler(socketserver.StreamRequestHandler):
             elif command == "NAMESPACE":
                 self.write_line('* NAMESPACE (("" "/")) NIL NIL')
                 self.write_ok(tag, "NAMESPACE completed")
-            elif command in {"LIST", "LSUB"}:
-                self.handle_list(tag)
+            elif command in {"LIST", "LSUB", "XLIST"}:
+                self.handle_list(tag, command)
             elif command in {"SELECT", "EXAMINE"}:
                 self.handle_select(tag, args, read_only=True)
             elif command == "STATUS":
@@ -182,9 +193,13 @@ class MillieIMAPHandler(socketserver.StreamRequestHandler):
                 self.handle_uid(tag, args)
             elif command == "FETCH":
                 self.handle_fetch(tag, args, uid_mode=False)
-            elif command == "CLOSE":
+            elif command in {"CLOSE", "UNSELECT"}:
                 self.selected_mailbox = None
-                self.write_ok(tag, "CLOSE completed")
+                self.write_ok(tag, f"{command} completed")
+            elif command == "CHECK":
+                self.write_ok(tag, "CHECK completed")
+            elif command == "IDLE":
+                self.handle_idle(tag)
             elif command in MUTATING_COMMANDS:
                 self.write_line(f"{tag} NO MILLIE IMAP facade is read-only")
             else:
@@ -232,10 +247,19 @@ class MillieIMAPHandler(socketserver.StreamRequestHandler):
         self.authenticated = True
         self.write_ok(tag, "AUTHENTICATE completed")
 
-    def handle_list(self, tag: str) -> None:
+    def handle_list(self, tag: str, command: str) -> None:
         for mailbox in self.imap_server.store.mailboxes():
-            self.write_line(f'* LIST (\\HasNoChildren) "/" {quote_imap_string(mailbox.path)}')
-        self.write_ok(tag, "LIST completed")
+            flags = ["\\HasNoChildren", *mailbox_special_use_flags(mailbox)]
+            self.write_line(f"* {command} ({' '.join(flags)}) \"/\" {quote_imap_string(mailbox.path)}")
+        self.write_ok(tag, f"{command} completed")
+
+    def handle_idle(self, tag: str) -> None:
+        self.write_line("+ idling")
+        raw_line = self.rfile.readline(65536)
+        if raw_line and raw_line.decode("utf-8", errors="replace").strip().upper() == "DONE":
+            self.write_ok(tag, "IDLE completed")
+            return
+        self.write_line(f"{tag} BAD IDLE terminated unexpectedly")
 
     def handle_select(self, tag: str, args: list[str], read_only: bool) -> None:
         if not args:
@@ -614,6 +638,28 @@ def parse_flags(value: Any) -> tuple[str, ...]:
         raw = []
     flags = [str(item) for item in raw if str(item).startswith("\\")]
     return tuple(flag for flag in SYSTEM_FLAGS if flag in flags)
+
+
+def mailbox_special_use_flags(mailbox: ImapMailbox) -> list[str]:
+    role = (mailbox.role or "").lower()
+    normalized = mailbox.path.strip().lower().replace("\\", "/")
+    if normalized.startswith("[gmail]/"):
+        normalized = normalized.split("/", 1)[1]
+    if role == "inbox" or normalized == "inbox":
+        return ["\\Inbox"]
+    if role == "sent" or normalized in {"sent", "sent mail", "sent items"}:
+        return ["\\Sent"]
+    if role == "drafts" or normalized == "drafts":
+        return ["\\Drafts"]
+    if role == "trash" or normalized in {"trash", "deleted", "deleted items"}:
+        return ["\\Trash"]
+    if role == "junk" or normalized in {"junk", "spam"}:
+        return ["\\Junk"]
+    if role == "archive" or normalized in {"archive", "all mail"}:
+        return ["\\Archive"]
+    if role == "flagged" or normalized in {"flagged", "starred"}:
+        return ["\\Flagged"]
+    return []
 
 
 def format_internal_date(value: Any) -> str:

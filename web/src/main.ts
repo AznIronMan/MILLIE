@@ -161,6 +161,7 @@ type ImapSyncResult = {
   processed: number;
   duplicates: number;
   errors: number;
+  sync_limit: number;
   folders: string[];
   format: string;
 };
@@ -204,6 +205,7 @@ type PopSyncResult = {
   processed: number;
   duplicates: number;
   errors: number;
+  sync_limit: number;
   format: string;
 };
 
@@ -383,6 +385,7 @@ type State = {
   graphSources: GraphSource[];
   graphDiscoveredSourceId: string | null;
   graphDiscoveredFolders: GraphFolder[];
+  syncLimitOverrides: Record<string, number>;
   mailboxes: Mailbox[];
   messages: MessageSummary[];
   selectedMailboxId: number | null;
@@ -421,6 +424,7 @@ const state: State = {
   graphSources: [],
   graphDiscoveredSourceId: null,
   graphDiscoveredFolders: [],
+  syncLimitOverrides: {},
   mailboxes: [],
   messages: [],
   selectedMailboxId: null,
@@ -432,6 +436,7 @@ const state: State = {
 };
 
 const API_BASE = import.meta.env.VITE_MILLIE_API_BASE ?? "";
+type SyncSourceKind = "imap" | "pop3" | "graph";
 
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) {
@@ -454,6 +459,42 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
 
 function apiUrl(path: string): string {
   return `${API_BASE}${path}`;
+}
+
+function syncLimitKey(kind: SyncSourceKind, sourceId: string): string {
+  return `${kind}:${sourceId}`;
+}
+
+function normalizeSyncLimit(value: number, fallback: number, max: number): number {
+  if (!Number.isFinite(value) || value < 1) return fallback;
+  return Math.min(Math.floor(value), max);
+}
+
+function displayedSyncLimit(kind: SyncSourceKind, sourceId: string, fallback: number, max: number): number {
+  const override = state.syncLimitOverrides[syncLimitKey(kind, sourceId)];
+  return normalizeSyncLimit(override ?? fallback, fallback, max);
+}
+
+function rememberSyncLimitOverride(input: HTMLInputElement): void {
+  const kind = input.dataset.syncSourceKind as SyncSourceKind | undefined;
+  const sourceId = input.dataset.syncSourceId ?? "";
+  if (!kind || !sourceId) return;
+  const key = syncLimitKey(kind, sourceId);
+  const parsed = Number(input.value);
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    delete state.syncLimitOverrides[key];
+    return;
+  }
+  const max = Number(input.max || "5000");
+  state.syncLimitOverrides[key] = normalizeSyncLimit(parsed, Math.max(1, Number(input.min || "1")), max);
+}
+
+function syncLimitFor(kind: SyncSourceKind, sourceId: string, fallback: number, max: number): number {
+  const input = Array.from(document.querySelectorAll<HTMLInputElement>(".sync-limit-override")).find(
+    (item) => item.dataset.syncSourceKind === kind && item.dataset.syncSourceId === sourceId,
+  );
+  if (input) rememberSyncLimitOverride(input);
+  return displayedSyncLimit(kind, sourceId, fallback, max);
 }
 
 function formatDate(value: string | null): string {
@@ -841,15 +882,18 @@ function renderImapSource(source: ImapSource): string {
   const folders = source.folders.join(", ");
   const secret = source.secret_backend ?? "no secret";
   const provider = imapProviderLabel(source.provider);
+  const syncLimit = displayedSyncLimit("imap", source.id, source.sync_limit, 5000);
+  const limitLabel = syncLimit === source.sync_limit ? `limit ${source.sync_limit}` : `limit ${source.sync_limit} · next ${syncLimit}`;
   return `
     <div class="imap-source-row">
       <div>
         <strong>${escapeHtml(source.name)}</strong>
         <span>${escapeHtml(source.username)}@${escapeHtml(source.host)}:${source.port} · ${escapeHtml(security)} · ${escapeHtml(provider)}</span>
-        <small>${escapeHtml(folders)} · limit ${source.sync_limit} · ${escapeHtml(secret)}</small>
+        <small>${escapeHtml(folders)} · ${escapeHtml(limitLabel)} · ${escapeHtml(secret)}</small>
       </div>
       <div class="imap-source-actions">
         <button class="imap-discover-button" data-imap-source-id="${escapeHtml(source.id)}">Folders</button>
+        <input class="sync-limit-override" data-sync-source-kind="imap" data-sync-source-id="${escapeHtml(source.id)}" type="number" min="1" max="5000" inputmode="numeric" value="${syncLimit}" aria-label="IMAP sync limit" />
         <button class="imap-sync-button" data-imap-source-id="${escapeHtml(source.id)}">Sync</button>
         <button class="imap-delete-button" data-imap-source-id="${escapeHtml(source.id)}">Delete</button>
       </div>
@@ -938,15 +982,18 @@ function renderPopSource(source: PopSource): string {
   const security = source.use_ssl ? "SSL" : "plain";
   const secret = source.secret_backend ?? "no secret";
   const provider = popProviderLabel(source.provider);
+  const syncLimit = displayedSyncLimit("pop3", source.id, source.sync_limit, 5000);
+  const limitLabel = syncLimit === source.sync_limit ? `limit ${source.sync_limit}` : `limit ${source.sync_limit} · next ${syncLimit}`;
   return `
     <div class="imap-source-row">
       <div>
         <strong>${escapeHtml(source.name)}</strong>
         <span>${escapeHtml(source.username)}@${escapeHtml(source.host)}:${source.port} · ${escapeHtml(security)} · ${escapeHtml(provider)}</span>
-        <small>limit ${source.sync_limit} · ${escapeHtml(secret)} · delete never</small>
+        <small>${escapeHtml(limitLabel)} · ${escapeHtml(secret)} · delete never</small>
       </div>
       <div class="imap-source-actions">
         <button class="pop-probe-button" data-pop-source-id="${escapeHtml(source.id)}">Probe</button>
+        <input class="sync-limit-override" data-sync-source-kind="pop3" data-sync-source-id="${escapeHtml(source.id)}" type="number" min="1" max="5000" inputmode="numeric" value="${syncLimit}" aria-label="POP sync limit" />
         <button class="pop-sync-button" data-pop-source-id="${escapeHtml(source.id)}">Sync</button>
         <button class="pop-delete-button" data-pop-source-id="${escapeHtml(source.id)}">Delete</button>
       </div>
@@ -995,17 +1042,20 @@ function renderGraphSource(source: GraphSource): string {
   const secret = source.secret_backend ?? "no token";
   const token = source.token_configured ? "connected" : source.pending_auth_configured ? "pending" : "not connected";
   const folders = source.folders.length ? `${source.folders.length} folder(s)` : "no folders selected";
+  const syncLimit = displayedSyncLimit("graph", source.id, source.sync_limit, 500);
+  const limitLabel = syncLimit === source.sync_limit ? `limit ${source.sync_limit}` : `limit ${source.sync_limit} · next ${syncLimit}`;
   return `
     <div class="imap-source-row">
       <div>
         <strong>${escapeHtml(source.name)}</strong>
         <span>${escapeHtml(provider)} · ${escapeHtml(source.mailbox)} · ${escapeHtml(token)}</span>
-        <small>${escapeHtml(folders)} · ${escapeHtml(secret)} · limit ${source.sync_limit}</small>
+        <small>${escapeHtml(folders)} · ${escapeHtml(secret)} · ${escapeHtml(limitLabel)}</small>
       </div>
       <div class="imap-source-actions">
         <button class="graph-connect-button" data-graph-source-id="${escapeHtml(source.id)}">Connect</button>
         <button class="graph-discover-button" data-graph-source-id="${escapeHtml(source.id)}" ${source.token_configured ? "" : "disabled"}>Folders</button>
         <button class="graph-probe-button" data-graph-source-id="${escapeHtml(source.id)}" ${source.token_configured ? "" : "disabled"}>Probe</button>
+        <input class="sync-limit-override" data-sync-source-kind="graph" data-sync-source-id="${escapeHtml(source.id)}" type="number" min="1" max="500" inputmode="numeric" value="${syncLimit}" aria-label="Graph sync limit" />
         <button class="graph-sync-button" data-graph-source-id="${escapeHtml(source.id)}" ${source.token_configured && source.folders.length ? "" : "disabled"}>Sync</button>
         <button class="graph-delete-button" data-graph-source-id="${escapeHtml(source.id)}">Delete</button>
       </div>
@@ -1437,6 +1487,11 @@ function bindEvents(): void {
   document.querySelectorAll<HTMLButtonElement>(".graph-sync-button").forEach((button) => {
     button.addEventListener("click", async () => {
       await syncGraphSource(button.dataset.graphSourceId ?? "");
+    });
+  });
+  document.querySelectorAll<HTMLInputElement>(".sync-limit-override").forEach((input) => {
+    input.addEventListener("input", () => {
+      rememberSyncLimitOverride(input);
     });
   });
   document.querySelectorAll<HTMLButtonElement>(".sync-state-retry-button").forEach((button) => {
@@ -1917,17 +1972,18 @@ async function syncImapSource(sourceId: string, folders?: string[]): Promise<voi
     return;
   }
   const folderList = folders && folders.length ? folders : source.folders;
-  state.status = `Syncing ${source.name} (${folderList.join(", ")})...`;
+  const syncLimit = syncLimitFor("imap", source.id, source.sync_limit, 5000);
+  state.status = `Syncing ${source.name} (${folderList.join(", ")}) with attempt limit ${syncLimit}...`;
   render();
   try {
     const payload = await api<{ sync: ImapSyncResult }>(`/api/v1/imap-sources/${encodeURIComponent(sourceId)}/sync`, {
       method: "POST",
-      body: JSON.stringify({ folders }),
+      body: JSON.stringify({ folders, sync_limit: syncLimit }),
     });
     await loadMailboxes();
     await loadJobs();
     await loadMessages();
-    state.status = `IMAP sync processed ${payload.sync.processed} message(s); new=${payload.sync.imported}, duplicates=${payload.sync.duplicates}, errors=${payload.sync.errors}.`;
+    state.status = `IMAP sync processed ${payload.sync.processed}/${payload.sync.sync_limit ?? syncLimit} message(s); new=${payload.sync.imported}, duplicates=${payload.sync.duplicates}, errors=${payload.sync.errors}.`;
     render();
   } catch (error) {
     await loadJobs();
@@ -2025,17 +2081,18 @@ async function syncPopSource(sourceId: string): Promise<void> {
     render();
     return;
   }
-  state.status = `Syncing ${source.name} by POP without delete...`;
+  const syncLimit = syncLimitFor("pop3", source.id, source.sync_limit, 5000);
+  state.status = `Syncing ${source.name} by POP with attempt limit ${syncLimit}; delete never...`;
   render();
   try {
     const payload = await api<{ sync: PopSyncResult }>(`/api/v1/pop-sources/${encodeURIComponent(sourceId)}/sync`, {
       method: "POST",
-      body: JSON.stringify({}),
+      body: JSON.stringify({ sync_limit: syncLimit }),
     });
     await loadMailboxes();
     await loadJobs();
     await loadMessages();
-    state.status = `POP sync processed ${payload.sync.processed} message(s); new=${payload.sync.imported}, duplicates=${payload.sync.duplicates}, errors=${payload.sync.errors}; delete never.`;
+    state.status = `POP sync processed ${payload.sync.processed}/${payload.sync.sync_limit ?? syncLimit} message(s); new=${payload.sync.imported}, duplicates=${payload.sync.duplicates}, errors=${payload.sync.errors}; delete never.`;
     render();
   } catch (error) {
     await loadJobs();
@@ -2302,12 +2359,13 @@ async function syncGraphSource(sourceId: string): Promise<void> {
     render();
     return;
   }
-  state.status = `Syncing ${source.name} by Microsoft Graph...`;
+  const syncLimit = syncLimitFor("graph", source.id, source.sync_limit, 500);
+  state.status = `Syncing ${source.name} by Microsoft Graph with attempt limit ${syncLimit}...`;
   render();
   try {
     const payload = await api<{ sync: GraphSyncResult }>(`/api/v1/graph-sources/${encodeURIComponent(sourceId)}/sync`, {
       method: "POST",
-      body: JSON.stringify({}),
+      body: JSON.stringify({ sync_limit: syncLimit }),
     });
     await loadMailboxes();
     await loadJobs();
@@ -2368,6 +2426,7 @@ async function switchProfile(event: Event): Promise<void> {
     state.imapDiscoveredFolders = [];
     state.graphDiscoveredSourceId = null;
     state.graphDiscoveredFolders = [];
+    state.syncLimitOverrides = {};
     state.query = "";
     await refreshActiveProfileData();
     state.status = `Profile switched to ${state.health?.profile.name ?? profileId}.`;
@@ -2403,6 +2462,7 @@ async function createProfile(): Promise<void> {
     state.imapDiscoveredFolders = [];
     state.graphDiscoveredSourceId = null;
     state.graphDiscoveredFolders = [];
+    state.syncLimitOverrides = {};
     state.query = "";
     await refreshActiveProfileData();
     state.status = `Profile created: ${state.health?.profile.name ?? name}.`;
@@ -2551,6 +2611,7 @@ async function restoreBackup(): Promise<void> {
     });
     state.profiles = payload.profiles;
     state.activeProfileId = payload.active_profile_id;
+    state.syncLimitOverrides = {};
     state.status = `Restored ${payload.restore.profile_name} (${payload.restore.file_count} file(s)) and switched profiles.`;
     await refreshActiveProfileData();
     render();

@@ -146,7 +146,7 @@ PYTHONPATH=src python3 -m millie imap-migrate-secrets
 PYTHONPATH=src python3 -m millie imap-facade
 ```
 
-The read-only IMAP facade binds to `127.0.0.1:22143` by default. It maps the active MILLIE profile's mailboxes into IMAP folders, uses local message ids as stable UIDs, supports list/select/status/search/fetch, and refuses mutating commands. This is for local client compatibility testing before a hardened authentication model exists.
+The read-only IMAP facade binds to `127.0.0.1:22143` by default. It maps the active MILLIE profile's mailboxes into IMAP folders, uses local message ids as stable UIDs, supports list/select/status/search/fetch plus client-compatibility commands such as `ID`, `ENABLE`, `XLIST`, `UNSELECT`, `CHECK`, and `IDLE`, and refuses mutating commands. This is for local client compatibility testing before a hardened authentication model exists.
 
 For stricter client tests, require a username and prompted password:
 

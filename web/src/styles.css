@@ -299,9 +299,21 @@ label {
 }
 
 .imap-source-actions button,
+.imap-source-actions input,
 .imap-sync-button {
   min-height: 32px;
   padding: 0 9px;
+}
+
+.sync-limit-override {
+  min-width: 0;
+  width: 100%;
+  border: 1px solid #bac6cc;
+  border-radius: 5px;
+  background: #ffffff;
+  color: #263239;
+  font: inherit;
+  text-align: center;
 }
 
 .imap-delete-button,

@@ -185,6 +185,7 @@ class ImapSyncResult:
     imported: int
     duplicates: int
     errors: int
+    sync_limit: int
     folders: list[str]
 
     def to_api(self) -> dict[str, Any]:
@@ -195,6 +196,7 @@ class ImapSyncResult:
             "imported": self.imported,
             "duplicates": self.duplicates,
             "errors": self.errors,
+            "sync_limit": self.sync_limit,
             "folders": self.folders,
             "format": "imap",
         }
@@ -537,7 +539,7 @@ def sync_imap_source(
         new_message_count=imported,
         duplicate_count=duplicates,
     )
-    return ImapSyncResult(job_id, source_id, processed, imported, duplicates, errors, synced_folders)
+    return ImapSyncResult(job_id, source_id, processed, imported, duplicates, errors, effective_limit, synced_folders)
 
 
 def discover_imap_folders(

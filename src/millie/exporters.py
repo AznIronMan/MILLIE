@@ -95,7 +95,7 @@ def export_messages(
                     "exported",
                     item_warnings,
                 )
-                manifest_items.append(manifest_item(item, output_path, output_hash, item_warnings))
+                manifest_items.append(manifest_item(item, output_path, output_hash, item_warnings, export_format))
         elif export_format == "mbox":
             grouped = group_by_mailbox(messages)
             for mailbox_path, items in grouped.items():
@@ -118,7 +118,7 @@ def export_messages(
                             "exported",
                             item_warnings,
                         )
-                        manifest_items.append(manifest_item(item, output_path, None, item_warnings))
+                        manifest_items.append(manifest_item(item, output_path, None, item_warnings, export_format))
                 output_hash = sha256_file(output_path)
                 for manifest in manifest_items:
                     if manifest["output_path"] == str(output_path):
@@ -148,7 +148,7 @@ def export_messages(
                         "exported",
                         item_warnings,
                     )
-                    manifest_items.append(manifest_item(item, output_path, output_hash, item_warnings))
+                    manifest_items.append(manifest_item(item, output_path, output_hash, item_warnings, export_format))
         else:
             raise ValueError(f"Unsupported export format: {export_format}")
 
@@ -172,6 +172,7 @@ def export_messages(
             "source_ids": source_ids,
             "error_count": errors,
             "warning_count": warnings,
+            "fidelity": export_fidelity_summary(manifest_items, export_format),
             "import_instructions": list(profile.import_instructions),
             "known_limitations": list(profile.limitations),
             "items": manifest_items,
@@ -218,7 +219,10 @@ def manifest_item(
     output_path: Path,
     output_hash: str | None,
     warnings: list[str],
+    export_format: str,
 ) -> dict[str, object]:
+    content_hash = item.get("content_hash")
+    output_matches_raw = output_hash == content_hash if output_hash else None
     return {
         "message_id": item["id"],
         "source_id": item.get("source_id"),
@@ -226,7 +230,32 @@ def manifest_item(
         "mailbox_path": item.get("mailbox_path"),
         "subject": item.get("subject"),
         "content_hash": item.get("content_hash"),
+        "raw_message_hash": content_hash,
+        "raw_mime_preserved": True,
+        "output_matches_raw": output_matches_raw,
+        "containerized": export_format == "mbox",
         "output_path": str(output_path),
         "output_hash": output_hash,
         "warnings": warnings,
     }
+
+
+def export_fidelity_summary(items: list[dict[str, object]], export_format: str) -> dict[str, object]:
+    return {
+        "strategy": "raw_mime_first",
+        "format": export_format,
+        "raw_mime_preserved_count": sum(1 for item in items if item.get("raw_mime_preserved")),
+        "reconstructed_count": sum(1 for item in items if not item.get("raw_mime_preserved")),
+        "output_hash_verified_count": sum(1 for item in items if item.get("output_matches_raw") is True),
+        "containerized_count": sum(1 for item in items if item.get("containerized")),
+        "validation_notes": fidelity_notes(export_format),
+    }
+
+
+def fidelity_notes(export_format: str) -> list[str]:
+    if export_format == "mbox":
+        return [
+            "Raw MIME is written into an MBOX container, so per-message hashes are preserved as raw_message_hash.",
+            "MBOX output_hash values identify the full mailbox container file.",
+        ]
+    return ["output_matches_raw verifies the exported file bytes match the stored raw MIME hash."]
