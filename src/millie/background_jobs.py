@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -15,6 +16,10 @@ from .secrets import SecretManager
 
 
 SyncRunner = Callable[["BackgroundJob"], dict[str, Any]]
+BACKGROUND_JOBS_SETTING = "background_jobs.v1"
+ACTIVE_JOB_STATUSES = {"queued", "running"}
+TERMINAL_JOB_STATUSES = {"completed", "failed", "cancelled"}
+VALID_JOB_STATUSES = ACTIVE_JOB_STATUSES | TERMINAL_JOB_STATUSES
 
 
 @dataclass(slots=True)
@@ -58,6 +63,34 @@ class BackgroundJob:
             "events": list(self.events),
         }
 
+    def to_record(self) -> dict[str, Any]:
+        return self.to_api()
+
+    @classmethod
+    def from_record(cls, record: dict[str, Any], *, default_profile_id: str) -> "BackgroundJob":
+        status = string_value(record.get("status")) or "queued"
+        if status not in VALID_JOB_STATUSES:
+            status = "queued"
+        return cls(
+            id=string_value(record.get("id")) or uuid4().hex[:12],
+            task_type=string_value(record.get("task_type")) or "sync",
+            connector=normalize_connector(string_value(record.get("connector")) or "imap"),
+            source_id=string_value(record.get("source_id")) or string_value(record.get("sourceId")) or "",
+            profile_id=string_value(record.get("profile_id")) or default_profile_id,
+            status=status,
+            queued_at=string_value(record.get("queued_at")) or utc_now(),
+            started_at=string_value(record.get("started_at")),
+            finished_at=string_value(record.get("finished_at")),
+            sync_limit=positive_int_or_none(record.get("sync_limit")),
+            folders=string_list(record.get("folders")),
+            message=string_value(record.get("message")) or "",
+            result=dict_or_none(record.get("result")),
+            error=string_value(record.get("error")),
+            failure=dict_or_none(record.get("failure")),
+            cancel_requested=bool(record.get("cancel_requested")),
+            events=event_list(record.get("events")),
+        )
+
 
 class BackgroundJobManager:
     def __init__(
@@ -72,7 +105,12 @@ class BackgroundJobManager:
         self.lock = threading.RLock()
         self.jobs: dict[str, BackgroundJob] = {}
         self.order: list[str] = []
+        self.loaded_profiles: set[str] = set()
         self.worker: threading.Thread | None = None
+        with self.lock:
+            self.load_jobs_locked()
+            self.recover_interrupted_jobs_locked()
+            self.start_worker_locked()
 
     def enqueue_sync(
         self,
@@ -99,12 +137,18 @@ class BackgroundJobManager:
         with self.lock:
             self.jobs[job.id] = job
             self.order.append(job.id)
+            self.persist_profile_jobs_locked(job.profile_id)
             self.start_worker_locked()
         return job
 
-    def list_jobs(self) -> list[dict[str, Any]]:
+    def list_jobs(self, profile_id: str | None = None) -> list[dict[str, Any]]:
+        target_profile_id = profile_id or self.profile_manager.active_profile_id
         with self.lock:
-            return [self.jobs[job_id].to_api() for job_id in reversed(self.order)]
+            return [
+                self.jobs[job_id].to_api()
+                for job_id in reversed(self.order)
+                if self.jobs[job_id].profile_id == target_profile_id
+            ]
 
     def get_job(self, job_id: str) -> BackgroundJob | None:
         with self.lock:
@@ -121,13 +165,23 @@ class BackgroundJobManager:
                 job.finished_at = utc_now()
                 job.message = "Cancelled before start"
                 self.add_event(job, "cancelled")
+                self.persist_profile_jobs_locked(job.profile_id)
             elif job.status == "running":
                 job.message = "Cancel requested; current connector call will finish first"
                 self.add_event(job, "cancel_requested")
+                self.persist_profile_jobs_locked(job.profile_id)
             return job
+
+    def on_profile_changed(self) -> None:
+        with self.lock:
+            if self.profile_manager.active_profile_id not in self.loaded_profiles:
+                self.load_profile_jobs_locked(self.profile_manager.active_profile_id)
+            self.start_worker_locked()
 
     def start_worker_locked(self) -> None:
         if self.worker and self.worker.is_alive():
+            return
+        if not self.has_runnable_job_locked():
             return
         self.worker = threading.Thread(target=self.worker_loop, name="millie-background-sync", daemon=True)
         self.worker.start()
@@ -135,7 +189,7 @@ class BackgroundJobManager:
     def worker_loop(self) -> None:
         while True:
             with self.lock:
-                job = next((self.jobs[job_id] for job_id in self.order if self.jobs[job_id].status == "queued"), None)
+                job = self.next_runnable_job_locked()
                 if job is None:
                     self.worker = None
                     return
@@ -148,18 +202,20 @@ class BackgroundJobManager:
                 job.finished_at = utc_now()
                 job.message = "Cancelled before start"
                 self.add_event(job, "cancelled")
+                self.persist_profile_jobs_locked(job.profile_id)
                 return
             if job.profile_id != self.profile_manager.active_profile_id:
-                job.status = "failed"
-                job.finished_at = utc_now()
-                job.error = "Active profile changed before the job started"
-                job.message = job.error
-                self.add_event(job, "failed")
+                job.status = "queued"
+                job.message = "Waiting for its profile to become active"
+                self.add_event(job, "queued")
+                self.persist_profile_jobs_locked(job.profile_id)
                 return
             job.status = "running"
             job.started_at = utc_now()
+            job.finished_at = None
             job.message = "Running"
             self.add_event(job, "running")
+            self.persist_profile_jobs_locked(job.profile_id)
         try:
             result = self.sync_runner(job)
         except Exception as exc:  # noqa: BLE001
@@ -171,6 +227,7 @@ class BackgroundJobManager:
                 job.failure = failure.to_api()
                 job.message = failure.user_action
                 self.add_event(job, "failed")
+                self.persist_profile_jobs_locked(job.profile_id)
             return
         with self.lock:
             job.status = "completed"
@@ -178,6 +235,7 @@ class BackgroundJobManager:
             job.result = result
             job.message = "Completed"
             self.add_event(job, "completed")
+            self.persist_profile_jobs_locked(job.profile_id)
 
     def run_sync_job(self, job: BackgroundJob) -> dict[str, Any]:
         db = self.profile_manager.active_database()
@@ -200,6 +258,89 @@ class BackgroundJobManager:
     def add_event(self, job: BackgroundJob, status: str) -> None:
         job.events.append({"at": utc_now(), "status": status, "message": job.message})
 
+    def next_runnable_job_locked(self) -> BackgroundJob | None:
+        active_profile_id = self.profile_manager.active_profile_id
+        return next(
+            (
+                self.jobs[job_id]
+                for job_id in self.order
+                if self.jobs[job_id].status == "queued" and self.jobs[job_id].profile_id == active_profile_id
+            ),
+            None,
+        )
+
+    def has_runnable_job_locked(self) -> bool:
+        return self.next_runnable_job_locked() is not None
+
+    def load_jobs_locked(self) -> None:
+        self.jobs.clear()
+        self.order.clear()
+        self.loaded_profiles.clear()
+        for profile_id in self.profile_manager.profiles:
+            self.load_profile_jobs_locked(profile_id)
+        self.order.sort(key=lambda job_id: self.jobs[job_id].queued_at)
+
+    def load_profile_jobs_locked(self, profile_id: str) -> None:
+        self.loaded_profiles.add(profile_id)
+        raw = self.profile_manager.get_profile_setting(BACKGROUND_JOBS_SETTING, profile_id)
+        if not raw:
+            return
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return
+        records = payload.get("jobs") if isinstance(payload, dict) else payload
+        if not isinstance(records, list):
+            return
+        existing_ids = {job_id for job_id in self.order if self.jobs[job_id].profile_id == profile_id}
+        for job_id in existing_ids:
+            self.jobs.pop(job_id, None)
+            self.order.remove(job_id)
+        for item in records:
+            if not isinstance(item, dict):
+                continue
+            try:
+                job = BackgroundJob.from_record(item, default_profile_id=profile_id)
+            except ValueError:
+                continue
+            if not job.source_id:
+                continue
+            self.jobs[job.id] = job
+            self.order.append(job.id)
+
+    def recover_interrupted_jobs_locked(self) -> None:
+        changed_profiles: set[str] = set()
+        for job_id in list(self.order):
+            job = self.jobs[job_id]
+            if job.status != "running":
+                continue
+            if job.cancel_requested:
+                job.status = "cancelled"
+                job.finished_at = utc_now()
+                job.message = "Cancelled after server restart"
+                self.add_event(job, "cancelled")
+            else:
+                job.status = "queued"
+                job.started_at = None
+                job.finished_at = None
+                job.message = "Re-queued after server restart"
+                self.add_event(job, "requeued")
+            changed_profiles.add(job.profile_id)
+        for profile_id in changed_profiles:
+            self.persist_profile_jobs_locked(profile_id)
+
+    def persist_profile_jobs_locked(self, profile_id: str) -> None:
+        records = [
+            self.jobs[job_id].to_record()
+            for job_id in self.order
+            if self.jobs[job_id].profile_id == profile_id
+        ]
+        self.profile_manager.set_profile_setting(
+            BACKGROUND_JOBS_SETTING,
+            json.dumps({"jobs": records}, indent=2, sort_keys=True),
+            profile_id,
+        )
+
 
 def normalize_connector(value: str) -> str:
     normalized = value.strip().lower()
@@ -210,3 +351,43 @@ def normalize_connector(value: str) -> str:
     if normalized in {"graph", "microsoft-graph", "exchange"}:
         return "graph"
     raise ValueError(f"Unsupported sync connector: {value}")
+
+
+def string_value(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def positive_int_or_none(value: object) -> int | None:
+    try:
+        parsed = int(value or 0)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def dict_or_none(value: object) -> dict[str, Any] | None:
+    return dict(value) if isinstance(value, dict) else None
+
+
+def event_list(value: object) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    events: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        at = string_value(item.get("at"))
+        status = string_value(item.get("status"))
+        if not at or not status:
+            continue
+        events.append({"at": at, "status": status, "message": string_value(item.get("message")) or ""})
+    return events

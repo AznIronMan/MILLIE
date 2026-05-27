@@ -779,12 +779,14 @@ class MillieHTTPServer(ThreadingHTTPServer):
     def set_active_profile(self, profile_id: str):
         profile = self.profile_manager.set_active(profile_id)
         self.db = self.profile_manager.active_database()
+        self.background_jobs.on_profile_changed()
         return profile
 
     def create_profile(self, name: str, switch: bool = True):
         profile = self.profile_manager.create_profile(name, switch=switch)
         if switch:
             self.db = self.profile_manager.active_database()
+            self.background_jobs.on_profile_changed()
         return profile
 
 

@@ -15,7 +15,7 @@ from pathlib import Path
 
 from millie.auth import AuthManager, SESSION_COOKIE
 from millie.backup import create_backup, restore_backup
-from millie.background_jobs import BackgroundJobManager
+from millie.background_jobs import BACKGROUND_JOBS_SETTING, BackgroundJobManager
 from millie.config import AppConfig
 from millie.connector_reliability import classify_connector_exception
 from millie.database import MillieDatabase
@@ -1714,6 +1714,118 @@ class CoreImportExportTests(unittest.TestCase):
             self.assertEqual(current.status, "completed")
             self.assertEqual(current.result["processed"], 2)
             self.assertEqual(jobs.list_jobs()[0]["id"], job.id)
+
+    def test_background_sync_jobs_recover_running_jobs_from_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = ProfileManager(
+                root / "millie.settings",
+                root / "profiles",
+                root / "default.sqlite",
+                root / "default-data",
+            )
+            secrets = SecretManager(manager, "local")
+            manager.set_profile_setting(
+                BACKGROUND_JOBS_SETTING,
+                json.dumps(
+                    {
+                        "jobs": [
+                            {
+                                "id": "legacy-run",
+                                "task_type": "sync",
+                                "connector": "imap",
+                                "source_id": "unit-imap",
+                                "profile_id": "default",
+                                "status": "running",
+                                "queued_at": "2026-05-26T00:00:00+00:00",
+                                "started_at": "2026-05-26T00:01:00+00:00",
+                                "message": "Running",
+                                "events": [],
+                            }
+                        ]
+                    }
+                ),
+            )
+            calls: list[str] = []
+
+            def fake_runner(job):
+                calls.append(job.id)
+                return {"processed": 1}
+
+            jobs = BackgroundJobManager(manager, secrets, sync_runner=fake_runner)
+            for _ in range(100):
+                current = jobs.get_job("legacy-run")
+                if current and current.status == "completed":
+                    break
+                time.sleep(0.01)
+
+            current = jobs.get_job("legacy-run")
+            self.assertIsNotNone(current)
+            self.assertEqual(current.status, "completed")
+            self.assertEqual(calls, ["legacy-run"])
+            self.assertTrue(any(event["status"] == "requeued" for event in current.events))
+            raw = manager.get_profile_setting(BACKGROUND_JOBS_SETTING)
+            self.assertIsNotNone(raw)
+            stored = json.loads(raw or "{}")
+            self.assertEqual(stored["jobs"][0]["status"], "completed")
+
+    def test_background_sync_jobs_wait_for_matching_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = ProfileManager(
+                root / "millie.settings",
+                root / "profiles",
+                root / "default.sqlite",
+                root / "default-data",
+            )
+            alt = manager.create_profile("Alt", switch=False)
+            secrets = SecretManager(manager, "local")
+            manager.set_profile_setting(
+                BACKGROUND_JOBS_SETTING,
+                json.dumps(
+                    {
+                        "jobs": [
+                            {
+                                "id": "alt-queued",
+                                "task_type": "sync",
+                                "connector": "pop3",
+                                "source_id": "unit-pop",
+                                "profile_id": alt.id,
+                                "status": "queued",
+                                "queued_at": "2026-05-26T00:00:00+00:00",
+                                "message": "Queued",
+                                "events": [],
+                            }
+                        ]
+                    }
+                ),
+                alt.id,
+            )
+            calls: list[str] = []
+
+            def fake_runner(job):
+                calls.append(job.id)
+                return {"processed": 1}
+
+            jobs = BackgroundJobManager(manager, secrets, sync_runner=fake_runner)
+            time.sleep(0.05)
+            self.assertEqual(calls, [])
+            self.assertEqual(jobs.get_job("alt-queued").status, "queued")
+            self.assertEqual(jobs.list_jobs(), [])
+
+            manager.set_active(alt.id)
+            jobs.on_profile_changed()
+            for _ in range(100):
+                current = jobs.get_job("alt-queued")
+                if current and current.status == "completed":
+                    break
+                time.sleep(0.01)
+
+            current = jobs.get_job("alt-queued")
+            self.assertIsNotNone(current)
+            self.assertEqual(current.status, "completed")
+            self.assertEqual(calls, ["alt-queued"])
+            self.assertEqual(jobs.list_jobs()[0]["id"], "alt-queued")
 
     def test_connector_failure_classification_marks_throttling_retryable(self) -> None:
         detail = classify_connector_exception("graph", RuntimeError("429 too many requests"))

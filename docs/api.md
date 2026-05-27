@@ -59,7 +59,7 @@ Import responses and job rows distinguish:
 
 `GET /api/v1/sync-states` returns parsed connector cursor/recovery state for IMAP, POP, and Graph scopes. Each row includes source identity, scope, `updated_at`, redacted `state_json`, parsed `state`, latest import job metadata, and a `source_config_id` when it can be resolved from job options. Provider cursor links such as Graph delta/next URLs are redacted while preserving configured/not-configured signals.
 
-`GET /api/v1/background-jobs` returns in-process background sync jobs for the current server run. `POST /api/v1/background-jobs/sync` queues an IMAP, POP, or Graph sync without blocking the web request. It accepts `connector`, `sourceId`, optional `folders`, and optional `sync_limit`. `POST /api/v1/background-jobs/{id}/cancel` cancels a queued job or marks a running job as cancel-requested. Running connector calls are not interrupted mid-request in the first worker implementation.
+`GET /api/v1/background-jobs` returns background sync jobs for the active profile. Job records are persisted in that profile's `.settings` SQLite file, so queued jobs and job history survive server restarts. Any job that was `running` when the server stopped is re-queued on startup. `POST /api/v1/background-jobs/sync` queues an IMAP, POP, or Graph sync without blocking the web request. It accepts `connector`, `sourceId`, optional `folders`, and optional `sync_limit`. `POST /api/v1/background-jobs/{id}/cancel` cancels a queued job or marks a running job as cancel-requested. Running connector calls are not interrupted mid-request in the first worker implementation.
 
 ## API Tokens
 

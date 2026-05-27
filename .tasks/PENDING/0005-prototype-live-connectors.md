@@ -27,8 +27,9 @@ Add initial live mail import/sync support.
 - IMAP, POP, and Graph sync state now records latest-run recovery metadata and preserves retryability when an individual message fetch fails.
 - The web UI can override the IMAP, POP, or Graph sync limit for a single run, which makes staged backfills easier to test without editing saved source configs.
 - IMAP, POP, and Graph syncs can be queued as in-process background jobs with visible Backfill status.
+- Background job records are persisted in profile `.settings` files and interrupted running jobs are re-queued on server startup.
 
 ## Remaining
 
-- Persist background jobs across server restarts and add true pause/resume/cancel behavior inside connector loops.
+- Add true pause/resume/cancel behavior inside connector loops.
 - Harden Graph/IMAP/POP recovery paths for revoked credentials, expired consent, and production-scale background backfills.

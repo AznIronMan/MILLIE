@@ -206,7 +206,7 @@ The web app can also verify an export manifest after a run. Verification checks 
 
 ## Background Sync And API Tokens
 
-The web app can queue IMAP, POP, and Graph syncs as in-process background jobs. This keeps long backfills out of a single request/response cycle and exposes queued/running/completed/failed status in the Operations panel. The first worker is local to the running server process; persistent cross-restart workers are still future hardening work.
+The web app can queue IMAP, POP, and Graph syncs as background jobs. This keeps long backfills out of a single request/response cycle and exposes queued/running/completed/failed status in the Operations panel. Job records are stored in the active profile's `.settings` SQLite file, so queued jobs and history survive server restarts. If the server stops while a job is running, MILLIE marks that job as re-queued during the next startup. The worker is still local to the running server process, so true mid-connector pause/resume/cancel remains future hardening work.
 
 API tokens let other local tools call the MILLIE API with `Authorization: Bearer <token>`. Tokens are shown once, stored as hashes in `millie.settings`, and can be created/revoked from the web Operations panel or CLI:
 
