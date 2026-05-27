@@ -117,6 +117,8 @@ The current manifest includes:
 
 For `.eml` and `maildir`, `output_matches_raw: true` means the exported file bytes match the stored raw MIME hash. For `mbox`, each raw message is preserved inside a mailbox container, so per-message fidelity is tracked by `raw_message_hash` while `output_hash` identifies the complete MBOX file.
 
+Use `millie export-verify <manifest>` or the web verification control to confirm exported files still exist and match the manifest hashes before moving or importing the bundle elsewhere.
+
 ## Non-Goals For The First Export MVP
 
 - Perfect proprietary PST/OLM round-tripping

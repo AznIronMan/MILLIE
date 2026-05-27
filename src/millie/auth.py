@@ -7,6 +7,7 @@ import json
 import secrets
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from http import cookies
 from typing import Any
 
@@ -16,6 +17,7 @@ from .profiles import ProfileManager
 SESSION_COOKIE = "millie_session"
 SESSION_TTL_SECONDS = 60 * 60 * 12
 PASSWORD_ITERATIONS = 240_000
+API_TOKENS_SETTING = "auth.api_tokens.v1"
 
 
 @dataclass(slots=True)
@@ -129,6 +131,77 @@ class AuthManager:
         self.profile_manager.set_app_setting("auth.session_secret", secret)
         return secret
 
+    def list_api_tokens(self) -> list[dict[str, Any]]:
+        return [redact_api_token_record(record) for record in self.api_token_records()]
+
+    def create_api_token(self, name: str, scopes: list[str] | None = None) -> dict[str, Any]:
+        cleaned_name = name.strip()
+        if not cleaned_name:
+            raise ValueError("API token name is required")
+        cleaned_scopes = normalize_scopes(scopes or ["read"])
+        raw_token = f"millie_{secrets.token_urlsafe(32)}"
+        record = {
+            "id": secrets.token_hex(8),
+            "name": cleaned_name,
+            "token_prefix": raw_token[:14],
+            "token_hash": hash_api_token(raw_token),
+            "scopes": cleaned_scopes,
+            "created_at": utc_now(),
+            "last_used_at": None,
+            "revoked_at": None,
+        }
+        records = self.api_token_records()
+        records.append(record)
+        self.save_api_token_records(records)
+        return {"token": raw_token, "record": redact_api_token_record(record)}
+
+    def revoke_api_token(self, token_id: str) -> bool:
+        records = self.api_token_records()
+        revoked = False
+        for record in records:
+            if record.get("id") == token_id and not record.get("revoked_at"):
+                record["revoked_at"] = utc_now()
+                revoked = True
+        if revoked:
+            self.save_api_token_records(records)
+        return revoked
+
+    def authenticate_api_token(self, authorization_header: str | None, required_scope: str | None = None) -> dict[str, Any] | None:
+        token = bearer_token(authorization_header)
+        if not token:
+            return None
+        token_hash = hash_api_token(token)
+        records = self.api_token_records()
+        matched: dict[str, Any] | None = None
+        for record in records:
+            if record.get("revoked_at"):
+                continue
+            if hmac.compare_digest(str(record.get("token_hash") or ""), token_hash):
+                if required_scope and not token_allows(record, required_scope):
+                    return None
+                record["last_used_at"] = utc_now()
+                matched = record
+                break
+        if matched is not None:
+            self.save_api_token_records(records)
+            return redact_api_token_record(matched)
+        return None
+
+    def api_token_records(self) -> list[dict[str, Any]]:
+        raw = self.profile_manager.get_app_setting(API_TOKENS_SETTING)
+        if not raw:
+            return []
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+        if not isinstance(parsed, list):
+            return []
+        return [item for item in parsed if isinstance(item, dict)]
+
+    def save_api_token_records(self, records: list[dict[str, Any]]) -> None:
+        self.profile_manager.set_app_setting(API_TOKENS_SETTING, json.dumps(records, sort_keys=True))
+
 
 def hash_password(password: str) -> str:
     salt = secrets.token_bytes(16)
@@ -176,6 +249,52 @@ def expired_session_cookie() -> str:
 def sign(payload: bytes, secret: str) -> str:
     digest = hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).digest()
     return b64encode(digest)
+
+
+def utc_now() -> str:
+    return datetime.now(UTC).replace(microsecond=0).isoformat()
+
+
+def hash_api_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def bearer_token(authorization_header: str | None) -> str | None:
+    if not authorization_header:
+        return None
+    scheme, _, token = authorization_header.strip().partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        return None
+    return token.strip()
+
+
+def normalize_scopes(scopes: list[str]) -> list[str]:
+    cleaned = []
+    for scope in scopes:
+        value = str(scope).strip().lower()
+        if not value:
+            continue
+        if value not in cleaned:
+            cleaned.append(value)
+    return cleaned or ["read"]
+
+
+def token_allows(record: dict[str, Any], required_scope: str) -> bool:
+    scopes = [str(scope).lower() for scope in record.get("scopes") or []]
+    return "*" in scopes or "admin" in scopes or required_scope.lower() in scopes
+
+
+def redact_api_token_record(record: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": record.get("id"),
+        "name": record.get("name"),
+        "token_prefix": record.get("token_prefix"),
+        "scopes": list(record.get("scopes") or []),
+        "created_at": record.get("created_at"),
+        "last_used_at": record.get("last_used_at"),
+        "revoked_at": record.get("revoked_at"),
+        "active": not bool(record.get("revoked_at")),
+    }
 
 
 def b64encode(value: bytes) -> str:

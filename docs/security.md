@@ -31,6 +31,8 @@ Do not bind the IMAP facade to a network interface with real mail unless exact c
 
 The first auth path stores admin configuration in `millie.settings`, hashes passwords with PBKDF2-SHA256, and uses an HTTP-only `millie_session` cookie. This is a local-app baseline, not a complete production identity system.
 
+API tokens are stored in `millie.settings` as SHA-256 hashes, shown only once at creation, and accepted through `Authorization: Bearer <token>`. Treat created tokens like passwords. Revoke tokens that are no longer needed, and avoid granting `write` unless the integration needs to mutate MILLIE state.
+
 ## Webmail Rendering
 
 HTML email is untrusted content.

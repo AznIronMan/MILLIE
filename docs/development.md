@@ -197,9 +197,24 @@ PYTHONPATH=src python3 -m millie export --format eml --output .private/local/exp
 PYTHONPATH=src python3 -m millie export --format mbox --output .private/local/exports
 PYTHONPATH=src python3 -m millie export --format maildir --output .private/local/exports
 PYTHONPATH=src python3 -m millie export --profile thunderbird --format auto --output .private/local/exports/thunderbird
+PYTHONPATH=src python3 -m millie export-verify .private/local/exports/thunderbird/millie-export-manifest.json
 ```
 
 Export profiles currently include `generic-eml`, `generic-mbox`, `generic-maildir`, `thunderbird`, `evolution`, `apple-mail`, and `outlook-workflow`.
+
+The web app can also verify an export manifest after a run. Verification checks that output files still exist and match the hashes recorded in the manifest.
+
+## Background Sync And API Tokens
+
+The web app can queue IMAP, POP, and Graph syncs as in-process background jobs. This keeps long backfills out of a single request/response cycle and exposes queued/running/completed/failed status in the Operations panel. The first worker is local to the running server process; persistent cross-restart workers are still future hardening work.
+
+API tokens let other local tools call the MILLIE API with `Authorization: Bearer <token>`. Tokens are shown once, stored as hashes in `millie.settings`, and can be created/revoked from the web Operations panel or CLI:
+
+```sh
+PYTHONPATH=src python3 -m millie api-token-create "Local indexer" --scope read
+PYTHONPATH=src python3 -m millie api-tokens
+PYTHONPATH=src python3 -m millie api-token-revoke <token-id>
+```
 
 ## Backup Active Profile
 

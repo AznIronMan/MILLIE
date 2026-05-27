@@ -53,8 +53,21 @@ Import responses and job rows distinguish:
 ## Sync State
 
 - `GET /api/v1/sync-states`
+- `GET /api/v1/background-jobs`
+- `POST /api/v1/background-jobs/sync`
+- `POST /api/v1/background-jobs/{id}/cancel`
 
 `GET /api/v1/sync-states` returns parsed connector cursor/recovery state for IMAP, POP, and Graph scopes. Each row includes source identity, scope, `updated_at`, redacted `state_json`, parsed `state`, latest import job metadata, and a `source_config_id` when it can be resolved from job options. Provider cursor links such as Graph delta/next URLs are redacted while preserving configured/not-configured signals.
+
+`GET /api/v1/background-jobs` returns in-process background sync jobs for the current server run. `POST /api/v1/background-jobs/sync` queues an IMAP, POP, or Graph sync without blocking the web request. It accepts `connector`, `sourceId`, optional `folders`, and optional `sync_limit`. `POST /api/v1/background-jobs/{id}/cancel` cancels a queued job or marks a running job as cancel-requested. Running connector calls are not interrupted mid-request in the first worker implementation.
+
+## API Tokens
+
+- `GET /api/v1/api-tokens`
+- `POST /api/v1/api-tokens`
+- `POST /api/v1/api-tokens/{id}/revoke`
+
+API token management requires a browser/session login or development bypass. Created tokens are shown once, stored as hashes in `millie.settings`, and can be used as `Authorization: Bearer <token>` for API calls. Scopes are currently coarse: `read` for `GET` API calls and `write` for `POST` API calls.
 
 ## IMAP Sources
 
@@ -136,10 +149,13 @@ Microsoft Graph source configs are stored per active profile. Source configs sto
 
 - `GET /api/v1/export-profiles`
 - `POST /api/v1/export`
+- `POST /api/v1/export/verify`
 - `GET /api/v1/export-jobs`
 - `GET /api/v1/export-jobs/{id}/items`
 
 Export profiles include a target ID, display name, supported formats, recommended format, import instructions, and known limitations. `POST /api/v1/export` accepts `targetProfile` and `format`; use `format: "auto"` to select the profile recommendation.
+
+`POST /api/v1/export/verify` accepts `manifestPath` and validates output files against the export manifest hashes.
 
 ## Backups
 

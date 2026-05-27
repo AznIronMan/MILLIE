@@ -42,6 +42,7 @@ The project uses semantic versioning in `major.minor.patch` format.
 - Added a sync-state API endpoint and web operations summary for connector cursor/recovery visibility.
 - Added web Retry/Continue actions for sync-state rows and clearer connector credential recovery hints.
 - Added per-run IMAP/POP/Graph sync-limit controls in the web UI, richer export fidelity manifests, and extra local IMAP facade compatibility commands.
+- Added in-process background sync jobs, a backfill dashboard, export manifest verification, connector failure classification, and hashed API tokens for integrations.
 
 ## [0.1.0] - 2026-05-23
 

@@ -309,6 +309,52 @@ type ExportJobItem = {
   warning_json: string;
 };
 
+type BackgroundJob = {
+  id: string;
+  task_type: string;
+  connector: string;
+  source_id: string;
+  profile_id: string;
+  status: string;
+  queued_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  sync_limit: number | null;
+  folders: string[];
+  message: string;
+  result: Record<string, unknown>;
+  error: string | null;
+  failure: {
+    category: string;
+    retryable: boolean;
+    retry_after_seconds: number | null;
+    user_action: string;
+    message: string;
+  } | null;
+  cancel_requested: boolean;
+};
+
+type ApiToken = {
+  id: string;
+  name: string;
+  token_prefix: string;
+  scopes: string[];
+  created_at: string;
+  last_used_at: string | null;
+  revoked_at: string | null;
+  active: boolean;
+};
+
+type ExportVerification = {
+  manifest_path: string;
+  ok: boolean;
+  checked_count: number;
+  missing_count: number;
+  mismatch_count: number;
+  warning_count: number;
+  messages: string[];
+};
+
 type Mailbox = {
   id: number;
   path: string;
@@ -369,6 +415,9 @@ type State = {
   importJobs: ImportJob[];
   exportJobs: ExportJob[];
   syncStates: SyncState[];
+  backgroundJobs: BackgroundJob[];
+  apiTokens: ApiToken[];
+  exportVerification: ExportVerification | null;
   exportProfiles: ExportProfile[];
   selectedExportProfileId: string;
   selectedExportFormat: string;
@@ -408,6 +457,9 @@ const state: State = {
   importJobs: [],
   exportJobs: [],
   syncStates: [],
+  backgroundJobs: [],
+  apiTokens: [],
+  exportVerification: null,
   exportProfiles: [],
   selectedExportProfileId: "generic-eml",
   selectedExportFormat: "auto",
@@ -759,6 +811,11 @@ function render(): void {
           </select>
           <button id="export-button">Export</button>
           <label>
+            Verify manifest
+            <input id="verify-manifest-path" placeholder="${escapeHtml(defaultExportPath())}/millie-export-manifest.json" />
+          </label>
+          <button id="verify-export-button">Verify</button>
+          <label>
             Backup folder
             <input id="backup-path" placeholder="${escapeHtml(defaultBackupPath())}" />
           </label>
@@ -895,6 +952,7 @@ function renderImapSource(source: ImapSource): string {
         <button class="imap-discover-button" data-imap-source-id="${escapeHtml(source.id)}">Folders</button>
         <input class="sync-limit-override" data-sync-source-kind="imap" data-sync-source-id="${escapeHtml(source.id)}" type="number" min="1" max="5000" inputmode="numeric" value="${syncLimit}" aria-label="IMAP sync limit" />
         <button class="imap-sync-button" data-imap-source-id="${escapeHtml(source.id)}">Sync</button>
+        <button class="imap-queue-button" data-imap-source-id="${escapeHtml(source.id)}">Queue</button>
         <button class="imap-delete-button" data-imap-source-id="${escapeHtml(source.id)}">Delete</button>
       </div>
     </div>
@@ -995,6 +1053,7 @@ function renderPopSource(source: PopSource): string {
         <button class="pop-probe-button" data-pop-source-id="${escapeHtml(source.id)}">Probe</button>
         <input class="sync-limit-override" data-sync-source-kind="pop3" data-sync-source-id="${escapeHtml(source.id)}" type="number" min="1" max="5000" inputmode="numeric" value="${syncLimit}" aria-label="POP sync limit" />
         <button class="pop-sync-button" data-pop-source-id="${escapeHtml(source.id)}">Sync</button>
+        <button class="pop-queue-button" data-pop-source-id="${escapeHtml(source.id)}">Queue</button>
         <button class="pop-delete-button" data-pop-source-id="${escapeHtml(source.id)}">Delete</button>
       </div>
     </div>
@@ -1057,6 +1116,7 @@ function renderGraphSource(source: GraphSource): string {
         <button class="graph-probe-button" data-graph-source-id="${escapeHtml(source.id)}" ${source.token_configured ? "" : "disabled"}>Probe</button>
         <input class="sync-limit-override" data-sync-source-kind="graph" data-sync-source-id="${escapeHtml(source.id)}" type="number" min="1" max="500" inputmode="numeric" value="${syncLimit}" aria-label="Graph sync limit" />
         <button class="graph-sync-button" data-graph-source-id="${escapeHtml(source.id)}" ${source.token_configured && source.folders.length ? "" : "disabled"}>Sync</button>
+        <button class="graph-queue-button" data-graph-source-id="${escapeHtml(source.id)}" ${source.token_configured && source.folders.length ? "" : "disabled"}>Queue</button>
         <button class="graph-delete-button" data-graph-source-id="${escapeHtml(source.id)}">Delete</button>
       </div>
     </div>
@@ -1237,7 +1297,13 @@ function renderOperations(): string {
           <h4>Sync State</h4>
           ${state.syncStates.slice(0, 5).map(renderSyncState).join("") || `<p class="muted">No sync state yet.</p>`}
         </div>
+        <div>
+          <h4>Backfill</h4>
+          ${state.backgroundJobs.slice(0, 5).map(renderBackgroundJob).join("") || `<p class="muted">No queued sync jobs yet.</p>`}
+        </div>
       </div>
+      ${renderExportVerification()}
+      ${renderApiTokens()}
       ${renderSelectedJob()}
     </section>
   `;
@@ -1290,6 +1356,78 @@ function renderSyncState(sync: SyncState): string {
           ? `<button class="sync-state-retry-button" data-sync-kind="${escapeHtml(sync.source_kind)}" data-source-config-id="${escapeHtml(sync.source_config_id)}" data-sync-folder="${escapeHtml(folder)}">${sync.is_partial ? "Continue" : "Retry"}</button>`
           : ""
       }
+    </div>
+  `;
+}
+
+function renderBackgroundJob(job: BackgroundJob): string {
+  const result = job.result || {};
+  const processed = result.processed !== undefined ? `${String(result.processed)} processed` : "";
+  const failure = job.failure ? `${job.failure.category}: ${job.failure.user_action}` : "";
+  return `
+    <div class="job-row background-job-row">
+      <strong>${escapeHtml(job.connector)} · ${escapeHtml(job.status)}</strong>
+      <span>${escapeHtml([job.source_id, processed, job.sync_limit ? `limit ${job.sync_limit}` : ""].filter(Boolean).join(" · "))}</span>
+      <small>${escapeHtml(failure || job.error || job.message || formatDate(job.queued_at))}</small>
+      ${
+        job.status === "queued" || job.status === "running"
+          ? `<button class="background-cancel-button" data-background-job-id="${escapeHtml(job.id)}">Cancel</button>`
+          : ""
+      }
+    </div>
+  `;
+}
+
+function renderExportVerification(): string {
+  if (!state.exportVerification) return "";
+  const result = state.exportVerification;
+  return `
+    <section class="job-detail">
+      <div class="operations-header">
+        <h4>Export Verification</h4>
+        <span>${result.ok ? "ok" : "needs attention"}</span>
+      </div>
+      <dl class="metadata compact-metadata">
+        <div><dt>Manifest</dt><dd>${escapeHtml(result.manifest_path)}</dd></div>
+        <div><dt>Counts</dt><dd>${result.checked_count} checked, ${result.missing_count} missing, ${result.mismatch_count} mismatch(es), ${result.warning_count} warning(s)</dd></div>
+      </dl>
+      <div class="detail-list">
+        ${result.messages.slice(0, 8).map((message) => `<div class="detail-row"><span>${escapeHtml(message)}</span></div>`).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderApiTokens(): string {
+  return `
+    <section class="job-detail">
+      <div class="operations-header">
+        <h4>API Tokens</h4>
+        <span>${state.apiTokens.filter((token) => token.active).length} active</span>
+      </div>
+      <div class="token-create-row">
+        <input id="api-token-name" placeholder="External app token" />
+        <input id="api-token-scopes" placeholder="read write" />
+        <button id="api-token-create-button">Create</button>
+      </div>
+      <div class="detail-list">
+        ${
+          state.apiTokens.length
+            ? state.apiTokens.slice(0, 8).map(renderApiToken).join("")
+            : `<p class="muted">No API tokens configured.</p>`
+        }
+      </div>
+    </section>
+  `;
+}
+
+function renderApiToken(token: ApiToken): string {
+  return `
+    <div class="detail-row token-row">
+      <strong>${escapeHtml(token.name)} · ${token.active ? "active" : "revoked"}</strong>
+      <span>${escapeHtml(token.token_prefix)}... · ${escapeHtml(token.scopes.join(", "))}</span>
+      <small>${escapeHtml(token.last_used_at ? `last used ${formatDate(token.last_used_at)}` : `created ${formatDate(token.created_at)}`)}</small>
+      ${token.active ? `<button class="api-token-revoke-button" data-api-token-id="${escapeHtml(token.id)}">Revoke</button>` : ""}
     </div>
   `;
 }
@@ -1443,6 +1581,11 @@ function bindEvents(): void {
       await syncImapSource(button.dataset.imapSourceId ?? "");
     });
   });
+  document.querySelectorAll<HTMLButtonElement>(".imap-queue-button").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await queueSyncSource("imap", button.dataset.imapSourceId ?? "");
+    });
+  });
   document.querySelectorAll<HTMLButtonElement>(".imap-delete-button").forEach((button) => {
     button.addEventListener("click", async () => {
       await deleteImapSource(button.dataset.imapSourceId ?? "");
@@ -1458,6 +1601,11 @@ function bindEvents(): void {
   document.querySelectorAll<HTMLButtonElement>(".pop-sync-button").forEach((button) => {
     button.addEventListener("click", async () => {
       await syncPopSource(button.dataset.popSourceId ?? "");
+    });
+  });
+  document.querySelectorAll<HTMLButtonElement>(".pop-queue-button").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await queueSyncSource("pop3", button.dataset.popSourceId ?? "");
     });
   });
   document.querySelectorAll<HTMLButtonElement>(".pop-delete-button").forEach((button) => {
@@ -1489,6 +1637,11 @@ function bindEvents(): void {
       await syncGraphSource(button.dataset.graphSourceId ?? "");
     });
   });
+  document.querySelectorAll<HTMLButtonElement>(".graph-queue-button").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await queueSyncSource("graph", button.dataset.graphSourceId ?? "");
+    });
+  });
   document.querySelectorAll<HTMLInputElement>(".sync-limit-override").forEach((input) => {
     input.addEventListener("input", () => {
       rememberSyncLimitOverride(input);
@@ -1505,8 +1658,20 @@ function bindEvents(): void {
     });
   });
   document.querySelector<HTMLButtonElement>("#export-button")?.addEventListener("click", exportMail);
+  document.querySelector<HTMLButtonElement>("#verify-export-button")?.addEventListener("click", verifyExportManifest);
   document.querySelector<HTMLButtonElement>("#backup-button")?.addEventListener("click", backupActiveProfile);
   document.querySelector<HTMLButtonElement>("#restore-button")?.addEventListener("click", restoreBackup);
+  document.querySelector<HTMLButtonElement>("#api-token-create-button")?.addEventListener("click", createApiToken);
+  document.querySelectorAll<HTMLButtonElement>(".api-token-revoke-button").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await revokeApiToken(button.dataset.apiTokenId ?? "");
+    });
+  });
+  document.querySelectorAll<HTMLButtonElement>(".background-cancel-button").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await cancelBackgroundJob(button.dataset.backgroundJobId ?? "");
+    });
+  });
   document.querySelector<HTMLSelectElement>("#export-profile")?.addEventListener("change", (event) => {
     state.selectedExportProfileId = (event.currentTarget as HTMLSelectElement).value;
     state.selectedExportFormat = "auto";
@@ -1564,6 +1729,7 @@ async function loadInitial(): Promise<void> {
     await loadPopSources();
     await loadGraphProviders();
     await loadGraphSources();
+    await loadApiTokens();
     await loadJobs();
     await loadMailboxes();
     await loadMessages();
@@ -1590,14 +1756,21 @@ async function loadMigrations(): Promise<void> {
 }
 
 async function loadJobs(): Promise<void> {
-  const [importPayload, exportPayload, syncPayload] = await Promise.all([
+  const [importPayload, exportPayload, syncPayload, backgroundPayload] = await Promise.all([
     api<{ import_jobs: ImportJob[] }>("/api/v1/import-jobs"),
     api<{ export_jobs: ExportJob[] }>("/api/v1/export-jobs"),
     api<{ sync_states: SyncState[] }>("/api/v1/sync-states"),
+    api<{ jobs: BackgroundJob[] }>("/api/v1/background-jobs"),
   ]);
   state.importJobs = importPayload.import_jobs;
   state.exportJobs = exportPayload.export_jobs;
   state.syncStates = syncPayload.sync_states;
+  state.backgroundJobs = backgroundPayload.jobs;
+}
+
+async function loadApiTokens(): Promise<void> {
+  const payload = await api<{ tokens: ApiToken[] }>("/api/v1/api-tokens");
+  state.apiTokens = payload.tokens;
 }
 
 async function loadExportProfiles(): Promise<void> {
@@ -1935,6 +2108,63 @@ async function retrySyncState(kind: string, sourceConfigId: string, folder: stri
   }
   state.status = `Unsupported sync state type: ${kind}`;
   render();
+}
+
+async function queueSyncSource(kind: SyncSourceKind, sourceId: string, folders?: string[]): Promise<void> {
+  const source = sourceForSync(kind, sourceId);
+  if (!source) {
+    state.status = "Source is no longer available.";
+    render();
+    return;
+  }
+  const max = kind === "graph" ? 500 : 5000;
+  const syncLimit = syncLimitFor(kind, sourceId, source.sync_limit, max);
+  state.status = `Queueing ${source.name} ${kind.toUpperCase()} sync...`;
+  render();
+  try {
+    const payload = await api<{ job: BackgroundJob; jobs: BackgroundJob[] }>("/api/v1/background-jobs/sync", {
+      method: "POST",
+      body: JSON.stringify({
+        connector: kind,
+        sourceId,
+        sync_limit: syncLimit,
+        folders,
+      }),
+    });
+    state.backgroundJobs = payload.jobs;
+    state.status = `Queued ${source.name} as background job ${payload.job.id}.`;
+    render();
+    window.setTimeout(() => {
+      void loadJobs().then(render);
+    }, 2000);
+  } catch (error) {
+    state.status = connectorErrorMessage(kind === "pop3" ? "POP" : kind === "graph" ? "Graph" : "IMAP", error);
+    render();
+  }
+}
+
+function sourceForSync(kind: SyncSourceKind, sourceId: string): { id: string; name: string; sync_limit: number } | null {
+  if (kind === "imap") return state.imapSources.find((source) => source.id === sourceId) ?? null;
+  if (kind === "pop3") return state.popSources.find((source) => source.id === sourceId) ?? null;
+  return state.graphSources.find((source) => source.id === sourceId) ?? null;
+}
+
+async function cancelBackgroundJob(jobId: string): Promise<void> {
+  if (!jobId) return;
+  state.status = "Cancelling background job...";
+  render();
+  try {
+    const payload = await api<{ job: BackgroundJob; jobs: BackgroundJob[] }>(`/api/v1/background-jobs/${encodeURIComponent(jobId)}/cancel`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    state.backgroundJobs = payload.jobs;
+    state.status = `Background job ${payload.job.id}: ${payload.job.message}`;
+    render();
+  } catch (error) {
+    state.status = error instanceof Error ? error.message : String(error);
+    render();
+  }
 }
 
 async function deleteImapSource(sourceId: string): Promise<void> {
@@ -2485,6 +2715,7 @@ async function refreshActiveProfileData(): Promise<void> {
   await loadPopSources();
   await loadGraphProviders();
   await loadGraphSources();
+  await loadApiTokens();
   await loadJobs();
   await loadMailboxes();
   await loadMessages();
@@ -2557,6 +2788,68 @@ async function exportMail(): Promise<void> {
     state.status = `Exported ${result.exported} message(s), warnings=${result.warnings}. Manifest: ${result.manifest_path}`;
     await loadJobs();
     await loadExportJobDetail(result.export_job_id);
+    render();
+  } catch (error) {
+    state.status = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}
+
+async function verifyExportManifest(): Promise<void> {
+  const manifestPath =
+    document.querySelector<HTMLInputElement>("#verify-manifest-path")?.value.trim() ||
+    `${defaultExportPath()}/millie-export-manifest.json`;
+  state.status = "Verifying export manifest...";
+  render();
+  try {
+    const payload = await api<{ verification: ExportVerification }>("/api/v1/export/verify", {
+      method: "POST",
+      body: JSON.stringify({ manifestPath }),
+    });
+    state.exportVerification = payload.verification;
+    state.status = payload.verification.ok ? "Export verified." : "Export verification found issues.";
+    render();
+  } catch (error) {
+    state.status = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}
+
+async function createApiToken(): Promise<void> {
+  const name = document.querySelector<HTMLInputElement>("#api-token-name")?.value.trim() ?? "";
+  const scopes = document.querySelector<HTMLInputElement>("#api-token-scopes")?.value.trim() || "read";
+  if (!name) {
+    state.status = "Enter an API token name.";
+    render();
+    return;
+  }
+  state.status = "Creating API token...";
+  render();
+  try {
+    const payload = await api<{ token: string; record: ApiToken }>("/api/v1/api-tokens", {
+      method: "POST",
+      body: JSON.stringify({ name, scopes }),
+    });
+    await loadApiTokens();
+    state.status = `API token created. Copy it now: ${payload.token}`;
+    render();
+  } catch (error) {
+    state.status = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}
+
+async function revokeApiToken(tokenId: string): Promise<void> {
+  if (!tokenId) return;
+  state.status = "Revoking API token...";
+  render();
+  try {
+    const payload = await api<{ revoked: boolean; tokens: ApiToken[] }>(`/api/v1/api-tokens/${encodeURIComponent(tokenId)}/revoke`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    state.apiTokens = payload.tokens;
+    state.status = payload.revoked ? "API token revoked." : "API token unchanged.";
     render();
   } catch (error) {
     state.status = error instanceof Error ? error.message : String(error);
@@ -2645,6 +2938,15 @@ function connectorErrorMessage(connector: "IMAP" | "POP" | "Graph", error: unkno
   let hint = "";
   if (lowered.includes("password/app password is not configured")) {
     hint = `Save a password or app password for this ${connector} source, then retry.`;
+  } else if (
+    lowered.includes("429") ||
+    lowered.includes("too many requests") ||
+    lowered.includes("throttl") ||
+    lowered.includes("rate limit")
+  ) {
+    hint = "Wait a few minutes, then continue with a smaller sync limit.";
+  } else if (lowered.includes("timeout") || lowered.includes("timed out") || lowered.includes("connection reset")) {
+    hint = "Retry the sync; if it repeats, lower the run limit and check connectivity.";
   } else if (
     lowered.includes("authentication") ||
     lowered.includes("login failed") ||

@@ -324,7 +324,8 @@ label {
 
 .graph-discover-button:disabled,
 .graph-probe-button:disabled,
-.graph-sync-button:disabled {
+.graph-sync-button:disabled,
+.graph-queue-button:disabled {
   color: #6d6258;
   cursor: not-allowed;
   background: #f4ebe1;
@@ -670,7 +671,7 @@ label {
 
 .job-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 12px;
 }
 
@@ -709,10 +710,18 @@ label {
   font-size: 0.82rem;
 }
 
-.sync-state-retry-button {
+.sync-state-retry-button,
+.background-cancel-button,
+.api-token-revoke-button {
   justify-self: start;
   min-height: 30px;
   padding: 0 9px;
+}
+
+.token-create-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(90px, 0.7fr) auto;
+  gap: 8px;
 }
 
 .job-detail {
@@ -802,7 +811,8 @@ label {
 
   .detail-toolbar,
   .topbar,
-  .job-grid {
+  .job-grid,
+  .token-create-row {
     grid-template-columns: 1fr;
   }
 }

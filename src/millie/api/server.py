@@ -13,9 +13,10 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 from millie import __version__
 from millie.auth import AuthManager, expired_session_cookie, session_cookie
 from millie.backup import create_backup, restore_backup
+from millie.background_jobs import BackgroundJobManager
 from millie.config import AppConfig
 from millie.export_profiles import list_export_profiles
-from millie.exporters import export_messages
+from millie.exporters import export_messages, verify_export_manifest
 from millie.importers import import_path
 from millie.graph_connector import (
     complete_graph_authorization,
@@ -73,7 +74,16 @@ class MillieRequestHandler(BaseHTTPRequestHandler):
                 self.handle_graph_oauth_callback(query)
             elif path == "/api/v1/auth/status":
                 self.write_json({"auth": self.app.auth.status(self.headers.get("Cookie")).to_api()})
-            elif path.startswith("/api/v1/") and not self.app.is_authorized(self.headers.get("Cookie")):
+            elif path == "/api/v1/api-tokens":
+                if not self.app.is_session_authorized(self.headers.get("Cookie")):
+                    self.write_error(HTTPStatus.FORBIDDEN, "Session authentication is required to manage API tokens")
+                    return
+                self.write_json({"tokens": self.app.auth.list_api_tokens()})
+            elif path.startswith("/api/v1/") and not self.app.is_authorized(
+                self.headers.get("Cookie"),
+                self.headers.get("Authorization"),
+                "read",
+            ):
                 self.write_error(HTTPStatus.UNAUTHORIZED, "Authentication required")
             elif path == "/api/v1/health":
                 self.write_json(
@@ -120,6 +130,8 @@ class MillieRequestHandler(BaseHTTPRequestHandler):
                 self.write_json({"sources": self.app.db.list_sources()})
             elif path == "/api/v1/sync-states":
                 self.write_json({"sync_states": self.app.db.list_source_sync_states()})
+            elif path == "/api/v1/background-jobs":
+                self.write_json({"jobs": self.app.background_jobs.list_jobs()})
             elif path == "/api/v1/imap-sources":
                 self.write_json(
                     {"sources": [source.to_api() for source in load_imap_sources(self.app.profile_manager)]}
@@ -277,7 +289,27 @@ class MillieRequestHandler(BaseHTTPRequestHandler):
                     {"auth": self.app.auth.status(None).to_api()},
                     headers={"Set-Cookie": expired_session_cookie()},
                 )
-            elif path.startswith("/api/v1/") and not self.app.is_authorized(self.headers.get("Cookie")):
+            elif path == "/api/v1/api-tokens":
+                if not self.app.is_session_authorized(self.headers.get("Cookie")):
+                    self.write_error(HTTPStatus.FORBIDDEN, "Session authentication is required to manage API tokens")
+                    return
+                scopes = parse_scope_list(payload.get("scopes")) or ["read"]
+                created = self.app.auth.create_api_token(str(payload.get("name") or ""), scopes)
+                self.write_json({"token": created["token"], "record": created["record"]}, HTTPStatus.CREATED)
+            elif path.startswith("/api/v1/api-tokens/") and path.endswith("/revoke"):
+                if not self.app.is_session_authorized(self.headers.get("Cookie")):
+                    self.write_error(HTTPStatus.FORBIDDEN, "Session authentication is required to manage API tokens")
+                    return
+                token_id = unquote(path.split("/")[-2])
+                if not self.app.auth.revoke_api_token(token_id):
+                    self.write_error(HTTPStatus.NOT_FOUND, "API token not found")
+                    return
+                self.write_json({"revoked": True, "tokens": self.app.auth.list_api_tokens()})
+            elif path.startswith("/api/v1/") and not self.app.is_authorized(
+                self.headers.get("Cookie"),
+                self.headers.get("Authorization"),
+                "write",
+            ):
                 self.write_error(HTTPStatus.UNAUTHORIZED, "Authentication required")
             elif path == "/api/v1/profiles":
                 name = str(payload.get("name") or "").strip()
@@ -459,6 +491,26 @@ class MillieRequestHandler(BaseHTTPRequestHandler):
                         "sources": [item.to_api() for item in load_graph_sources(self.app.profile_manager)],
                     }
                 )
+            elif path == "/api/v1/background-jobs/sync":
+                source_id = str(payload.get("sourceId") or payload.get("source_id") or "").strip()
+                if not source_id:
+                    self.write_error(HTTPStatus.BAD_REQUEST, "sourceId is required")
+                    return
+                sync_limit = int(payload.get("sync_limit") or payload.get("limit") or 0) or None
+                job = self.app.background_jobs.enqueue_sync(
+                    str(payload.get("connector") or payload.get("kind") or ""),
+                    source_id,
+                    sync_limit=sync_limit,
+                    folders=parse_string_list(payload.get("folders")),
+                )
+                self.write_json({"job": job.to_api(), "jobs": self.app.background_jobs.list_jobs()}, HTTPStatus.ACCEPTED)
+            elif path.startswith("/api/v1/background-jobs/") and path.endswith("/cancel"):
+                job_id = unquote(path.split("/")[-2])
+                job = self.app.background_jobs.cancel_job(job_id)
+                if job is None:
+                    self.write_error(HTTPStatus.NOT_FOUND, "Background job not found")
+                    return
+                self.write_json({"job": job.to_api(), "jobs": self.app.background_jobs.list_jobs()})
             elif path == "/api/v1/export":
                 output_path = Path(str(payload.get("outputPath") or payload.get("output_path") or "exports"))
                 message_ids = payload.get("messageIds") or payload.get("message_ids")
@@ -485,6 +537,15 @@ class MillieRequestHandler(BaseHTTPRequestHandler):
                     },
                     HTTPStatus.CREATED,
                 )
+            elif path == "/api/v1/export/verify":
+                raw_manifest_path = str(
+                    payload.get("manifestPath") or payload.get("manifest_path") or payload.get("path") or ""
+                ).strip()
+                if not raw_manifest_path:
+                    self.write_error(HTTPStatus.BAD_REQUEST, "manifestPath is required")
+                    return
+                verification = verify_export_manifest(Path(raw_manifest_path))
+                self.write_json({"verification": verification.to_api()})
             elif path == "/api/v1/backup":
                 output_path = Path(
                     str(payload.get("outputPath") or payload.get("output_path") or ".private/local/backups")
@@ -660,7 +721,7 @@ class MillieRequestHandler(BaseHTTPRequestHandler):
             self.send_header("Vary", "Origin")
         self.send_header("Access-Control-Allow-Credentials", "true")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
     def serve_static(self, request_path: str) -> None:
         web_dir = self.app.config.web_dir
@@ -699,10 +760,21 @@ class MillieHTTPServer(ThreadingHTTPServer):
         self.profile_manager = profile_manager
         self.auth = AuthManager(profile_manager)
         self.secret_manager = SecretManager(profile_manager, secret_backend)
+        self.background_jobs = BackgroundJobManager(profile_manager, self.secret_manager)
         self.db = profile_manager.active_database()
 
-    def is_authorized(self, cookie_header: str | None) -> bool:
+    def is_session_authorized(self, cookie_header: str | None) -> bool:
         return self.auth.status(cookie_header).authenticated
+
+    def is_authorized(
+        self,
+        cookie_header: str | None,
+        authorization_header: str | None = None,
+        required_scope: str | None = None,
+    ) -> bool:
+        if self.is_session_authorized(cookie_header):
+            return True
+        return self.auth.authenticate_api_token(authorization_header, required_scope) is not None
 
     def set_active_profile(self, profile_id: str):
         profile = self.profile_manager.set_active(profile_id)
@@ -759,6 +831,18 @@ def parse_string_list(value: object) -> list[str] | None:
         return None
     if isinstance(value, str):
         items = [item.strip() for item in value.split(",")]
+    elif isinstance(value, list):
+        items = [str(item).strip() for item in value]
+    else:
+        return None
+    return [item for item in items if item]
+
+
+def parse_scope_list(value: object) -> list[str] | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        items = re.split(r"[,\s]+", value)
     elif isinstance(value, list):
         items = [str(item).strip() for item in value]
     else:

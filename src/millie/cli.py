@@ -5,10 +5,11 @@ from getpass import getpass
 import json
 from pathlib import Path
 
+from .auth import AuthManager
 from .backup import create_backup, restore_backup
 from .config import AppConfig
 from .doctor import run_doctor
-from .exporters import export_messages
+from .exporters import export_messages, verify_export_manifest
 from .graph_connector import (
     create_graph_authorization_request,
     delete_graph_source,
@@ -218,6 +219,19 @@ def build_parser() -> argparse.ArgumentParser:
     export_cmd.add_argument("--profile", default="generic-eml")
     export_cmd.add_argument("--mailbox-id", type=int, default=None)
     export_cmd.add_argument("--message-id", action="append", type=int, dest="message_ids")
+
+    export_verify = subparsers.add_parser("export-verify", help="Verify an export manifest and output hashes")
+    export_verify.add_argument("manifest", help="Path to millie-export-manifest.json")
+
+    api_tokens = subparsers.add_parser("api-tokens", help="List configured API tokens")
+    api_tokens.add_argument("--json", action="store_true", help="Print token records as JSON")
+
+    api_token_create = subparsers.add_parser("api-token-create", help="Create an API token")
+    api_token_create.add_argument("name", help="Token display name")
+    api_token_create.add_argument("--scope", action="append", dest="scopes", help="Token scope, repeatable")
+
+    api_token_revoke = subparsers.add_parser("api-token-revoke", help="Revoke an API token")
+    api_token_revoke.add_argument("token_id", help="Token id")
 
     backup_cmd = subparsers.add_parser("backup", help="Create a portable backup ZIP for the active profile")
     backup_cmd.add_argument("--output", required=True, help="Output .zip path or directory")
@@ -663,6 +677,45 @@ def main(argv: list[str] | None = None) -> int:
             f"errors={result.errors} warnings={result.warnings} manifest={result.manifest_path}"
         )
         return 0 if result.errors == 0 else 1
+    if args.command == "export-verify":
+        try:
+            verification = verify_export_manifest(Path(args.manifest))
+        except Exception as exc:  # noqa: BLE001
+            print(f"Export verification failed: {exc}")
+            return 1
+        print(
+            f"Export verification: ok={verification.ok} checked={verification.checked_count} "
+            f"missing={verification.missing_count} mismatches={verification.mismatch_count} "
+            f"warnings={verification.warning_count}"
+        )
+        for message in verification.messages:
+            print(f"- {message}")
+        return 0 if verification.ok else 1
+    if args.command == "api-tokens":
+        auth = AuthManager(profile_manager)
+        tokens = auth.list_api_tokens()
+        if args.json:
+            print(json.dumps({"tokens": tokens}, indent=2))
+        else:
+            if not tokens:
+                print("No API tokens configured.")
+            for token in tokens:
+                status = "active" if token.get("active") else "revoked"
+                print(f"- {token['id']}: {token['name']} ({status}, scopes={','.join(token.get('scopes') or [])})")
+        return 0
+    if args.command == "api-token-create":
+        auth = AuthManager(profile_manager)
+        created = auth.create_api_token(args.name, args.scopes or ["read"])
+        print(f"Created API token {created['record']['id']}: {created['record']['name']}")
+        print(created["token"])
+        return 0
+    if args.command == "api-token-revoke":
+        auth = AuthManager(profile_manager)
+        if not auth.revoke_api_token(args.token_id):
+            print(f"Unknown active API token: {args.token_id}")
+            return 1
+        print(f"Revoked API token {args.token_id}")
+        return 0
     if args.command == "backup":
         result = create_backup(profile_manager, Path(args.output), include_secrets=args.include_secrets)
         print(

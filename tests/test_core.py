@@ -8,15 +8,18 @@ import json
 import re
 import socket
 import threading
+import time
 import zipfile
 from email.message import EmailMessage
 from pathlib import Path
 
 from millie.auth import AuthManager, SESSION_COOKIE
 from millie.backup import create_backup, restore_backup
+from millie.background_jobs import BackgroundJobManager
 from millie.config import AppConfig
+from millie.connector_reliability import classify_connector_exception
 from millie.database import MillieDatabase
-from millie.exporters import export_messages
+from millie.exporters import export_messages, verify_export_manifest
 from millie.graph_connector import (
     GRAPH_SOURCES_SETTING,
     complete_graph_authorization,
@@ -144,6 +147,10 @@ class CoreImportExportTests(unittest.TestCase):
             self.assertEqual(manifest["items"][0]["source_id"], result.source_id)
             self.assertTrue(manifest["items"][0]["raw_mime_preserved"])
             self.assertTrue(manifest["items"][0]["output_matches_raw"])
+            verification = verify_export_manifest(export_result.manifest_path)
+            self.assertTrue(verification.ok)
+            self.assertEqual(verification.missing_count, 0)
+            self.assertEqual(verification.mismatch_count, 0)
             self.assertEqual(db.list_migrations()[0]["version"], 1)
             self.assertEqual(db.list_migrations()[-1]["version"], 3)
 
@@ -1655,6 +1662,65 @@ class CoreImportExportTests(unittest.TestCase):
             self.assertTrue(auth.status(f"{SESSION_COOKIE}={login_token}").authenticated)
             with self.assertRaises(ValueError):
                 auth.login("admin", "wrong-password")
+
+    def test_api_tokens_are_hashed_scoped_and_revokable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = ProfileManager(
+                root / "millie.settings",
+                root / "profiles",
+                root / "default.sqlite",
+                root / "default-data",
+            )
+            auth = AuthManager(manager)
+
+            created = auth.create_api_token("Indexer", ["read", "write"])
+            raw_token = created["token"]
+            self.assertTrue(raw_token.startswith("millie_"))
+            self.assertNotIn(raw_token, manager.get_app_setting("auth.api_tokens.v1") or "")
+            self.assertEqual(auth.authenticate_api_token(f"Bearer {raw_token}", "read")["name"], "Indexer")
+            self.assertIsNone(auth.authenticate_api_token(f"Bearer {raw_token}", "admin"))
+            listed = auth.list_api_tokens()
+            self.assertEqual(len(listed), 1)
+            self.assertTrue(listed[0]["active"])
+
+            self.assertTrue(auth.revoke_api_token(str(listed[0]["id"])))
+            self.assertIsNone(auth.authenticate_api_token(f"Bearer {raw_token}", "read"))
+
+    def test_background_sync_jobs_run_through_queue(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = ProfileManager(
+                root / "millie.settings",
+                root / "profiles",
+                root / "default.sqlite",
+                root / "default-data",
+            )
+            secrets = SecretManager(manager, "local")
+
+            def fake_runner(job):
+                return {"processed": 2, "sync_limit": job.sync_limit, "format": job.connector}
+
+            jobs = BackgroundJobManager(manager, secrets, sync_runner=fake_runner)
+            job = jobs.enqueue_sync("imap", "unit-imap", sync_limit=2, folders=["INBOX"])
+            for _ in range(100):
+                current = jobs.get_job(job.id)
+                if current and current.status == "completed":
+                    break
+                time.sleep(0.01)
+
+            current = jobs.get_job(job.id)
+            self.assertIsNotNone(current)
+            self.assertEqual(current.status, "completed")
+            self.assertEqual(current.result["processed"], 2)
+            self.assertEqual(jobs.list_jobs()[0]["id"], job.id)
+
+    def test_connector_failure_classification_marks_throttling_retryable(self) -> None:
+        detail = classify_connector_exception("graph", RuntimeError("429 too many requests"))
+
+        self.assertEqual(detail.category, "throttled")
+        self.assertTrue(detail.retryable)
+        self.assertEqual(detail.retry_after_seconds, 300)
 
 
 class FakeGraphHttpClient:

@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass
 from email.parser import BytesParser
 from pathlib import Path
+from typing import Any
 
 from . import __version__
 from .database import MillieDatabase, utc_now
@@ -20,6 +21,28 @@ class ExportResult:
     errors: int
     warnings: int
     manifest_path: Path
+
+
+@dataclass(slots=True)
+class ExportVerificationResult:
+    manifest_path: Path
+    ok: bool
+    checked_count: int
+    missing_count: int
+    mismatch_count: int
+    warning_count: int
+    messages: list[str]
+
+    def to_api(self) -> dict[str, object]:
+        return {
+            "manifest_path": str(self.manifest_path),
+            "ok": self.ok,
+            "checked_count": self.checked_count,
+            "missing_count": self.missing_count,
+            "mismatch_count": self.mismatch_count,
+            "warning_count": self.warning_count,
+            "messages": self.messages,
+        }
 
 
 def safe_path_part(value: str | None, fallback: str = "Imported") -> str:
@@ -259,3 +282,75 @@ def fidelity_notes(export_format: str) -> list[str]:
             "MBOX output_hash values identify the full mailbox container file.",
         ]
     return ["output_matches_raw verifies the exported file bytes match the stored raw MIME hash."]
+
+
+def verify_export_manifest(manifest_path: Path) -> ExportVerificationResult:
+    manifest_path = manifest_path.expanduser().resolve()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(manifest, dict):
+        raise ValueError("Export manifest must be a JSON object")
+    items = manifest.get("items")
+    if not isinstance(items, list):
+        raise ValueError("Export manifest is missing an items list")
+
+    checked = 0
+    missing = 0
+    mismatches = 0
+    warnings = 0
+    messages: list[str] = []
+    hash_cache: dict[str, str] = {}
+
+    expected_message_count = int(manifest.get("message_count") or 0)
+    if expected_message_count != len(items):
+        warnings += 1
+        messages.append(f"Manifest message_count={expected_message_count} but items={len(items)}")
+
+    for item in items:
+        if not isinstance(item, dict):
+            warnings += 1
+            messages.append("Skipped non-object manifest item")
+            continue
+        output_path = item_path(item)
+        if output_path is None:
+            warnings += 1
+            messages.append(f"Message {item.get('message_id')} has no output_path")
+            continue
+        expected_hash = string_or_none(item.get("output_hash"))
+        if not output_path.exists():
+            missing += 1
+            messages.append(f"Missing output file: {output_path}")
+            continue
+        if expected_hash:
+            checked += 1
+            output_key = str(output_path)
+            actual_hash = hash_cache.get(output_key)
+            if actual_hash is None:
+                actual_hash = sha256_file(output_path)
+                hash_cache[output_key] = actual_hash
+            if actual_hash != expected_hash:
+                mismatches += 1
+                messages.append(f"Hash mismatch for {output_path}")
+        if item.get("output_matches_raw") is True:
+            raw_hash = string_or_none(item.get("raw_message_hash") or item.get("content_hash"))
+            actual_hash = hash_cache.get(str(output_path))
+            if actual_hash is None:
+                actual_hash = sha256_file(output_path)
+                hash_cache[str(output_path)] = actual_hash
+            if raw_hash and actual_hash != raw_hash:
+                mismatches += 1
+                messages.append(f"Raw MIME hash mismatch for {output_path}")
+
+    ok = missing == 0 and mismatches == 0
+    if ok and not messages:
+        messages.append("Export manifest verified")
+    return ExportVerificationResult(manifest_path, ok, checked, missing, mismatches, warnings, messages)
+
+
+def item_path(item: dict[str, Any]) -> Path | None:
+    raw = string_or_none(item.get("output_path"))
+    return Path(raw).expanduser().resolve() if raw else None
+
+
+def string_or_none(value: object) -> str | None:
+    text = str(value or "").strip()
+    return text or None

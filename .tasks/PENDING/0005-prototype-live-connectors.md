@@ -26,7 +26,9 @@ Add initial live mail import/sync support.
 - Common IMAP/POP provider presets now cover Gmail, Outlook.com / Microsoft 365, Yahoo, AOL, Fastmail, and Zoho, with iCloud covered for IMAP only because Apple does not support POP.
 - IMAP, POP, and Graph sync state now records latest-run recovery metadata and preserves retryability when an individual message fetch fails.
 - The web UI can override the IMAP, POP, or Graph sync limit for a single run, which makes staged backfills easier to test without editing saved source configs.
+- IMAP, POP, and Graph syncs can be queued as in-process background jobs with visible Backfill status.
 
 ## Remaining
 
+- Persist background jobs across server restarts and add true pause/resume/cancel behavior inside connector loops.
 - Harden Graph/IMAP/POP recovery paths for revoked credentials, expired consent, and production-scale background backfills.

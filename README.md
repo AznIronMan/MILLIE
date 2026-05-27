@@ -97,10 +97,12 @@ MILLIE now has a first runnable foundation slice:
 - Read-only POP3 source configs, safe no-retrieve probes, UIDL-based incremental sync, and a never-delete server policy
 - Microsoft Graph / Exchange source configs with PKCE OAuth callback/token storage, token refresh, folder discovery, and limited delta-backed read-only selected-folder sync
 - Connector sync recovery metadata that keeps failed IMAP UIDs, POP UIDLs, and Graph delta pages retryable, with per-run sync-limit overrides in the web UI
+- In-process background sync jobs for staged IMAP, POP, and Graph backfills
 - Connector credential secret references with macOS Keychain support and a local development fallback
+- Hashed API tokens for external tools and local integrations
 - HTTPS-ready server configuration while keeping HTTP as the default development path
 - Read-only local IMAP facade on port `22143` with metadata/body fetch support, client-compatibility helpers, optional exact login, and direct IMAPS configuration for external client compatibility testing
-- `.eml`, `mbox`, and `maildir` export paths with fidelity manifests
+- `.eml`, `mbox`, and `maildir` export paths with fidelity manifests and manifest verification
 - Exact raw-MIME deduplication so repeat imports do not duplicate canonical messages
 - SQLite FTS search over subject, participants, and body text
 - Sanitized HTML message viewing with raw HTML preserved separately
