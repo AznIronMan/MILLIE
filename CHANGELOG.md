@@ -4,6 +4,13 @@ All notable changes to MILLIE will be documented in this file.
 
 ## [1.0.0] - 2026-05-31
 
+### Added
+
+- Added root `millie.settings` SQLite3 settings database.
+- Added a temporary browser-based settings editor launched by `tmp_settings.sh`.
+- Added repeatable IMAP retrieval and SMTP sending account settings in `millie.settings`.
+- Added customer-facing settings documentation under `docs/`.
+
 ### Changed
 
 - Reset the repository for a fresh 1.0.0 start.

@@ -10,6 +10,7 @@ This repository was reset for a fresh 1.0.0 start on 2026-05-31. The previous im
 
 - Keep `README.md` updated when project purpose, setup, status, usage, or direction changes.
 - Keep `CHANGELOG.md` updated for meaningful changes. Use semantic versioning in `major.minor.patch` format.
+- Use `docs/` for customer-facing instructions and references, including install, requirements, operation, CLI usage, web GUI usage, and troubleshooting.
 - Use `.tasks/ACTIVE`, `.tasks/PENDING`, and `.tasks/COMPLETED` for Markdown task files. Move task files between folders as their status changes.
 - Keep task files short and issue-style: title, status, goal, context, acceptance criteria, and notes or decisions.
 - Commit intentional MILLIE-scoped changes after they are verified.
@@ -19,7 +20,9 @@ This repository was reset for a fresh 1.0.0 start on 2026-05-31. The previous im
 ## Credentials And Sensitive Data
 
 - Never commit real credentials, imported mail, generated databases, attachment dumps, access tokens, app keys, local logs, or mailbox archives.
-- Put local environment variables in `.env`; keep only placeholder examples in `.env.example`.
+- Use root `millie.settings` as the primary settings/config database. It is a SQLite3 file.
+- During the temporary settings phase, `millie.settings` can contain plain text API keys, database passwords, and IMAP/SMTP passwords. Keep real secret values out of commits.
+- Use `.env` only for shell-level local overrides when needed; keep only placeholder examples in `.env.example`.
 - Put local credential files, OAuth notes, recovery material, or copied secrets under `.private/secrets/`.
 - Put generated runtime data, test databases, imported mail, exports, logs, and scratch fixtures under `.private/local/`.
 - Keep archived pre-reset material under `.private/archived/`; this path is ignored because the archive may contain sensitive historical data.

@@ -10,12 +10,28 @@ This repository has been reset for a fresh start. No application architecture or
 
 - Current baseline: `1.0.0`
 - Reset date: 2026-05-31
-- Runtime setup: not defined yet
+- Runtime setup: not defined yet beyond the temporary settings editor
 - Application structure: not defined yet
+- Settings store: root `millie.settings` SQLite3 database
 
 ## Development Notes
 
-- Keep real credentials in `.env` or `.private/secrets/`.
+- Keep real credentials out of commits. During the temporary settings phase, API keys, database passwords, and mail account passwords in `millie.settings` are plain text.
+- Use `.env` only for shell-level overrides. Application settings belong in `millie.settings`.
 - Keep generated mail data, local databases, exports, and logs in `.private/local/`.
 - Track work in `.tasks/ACTIVE`, `.tasks/PENDING`, and `.tasks/COMPLETED`.
 - Update `CHANGELOG.md` for meaningful changes.
+
+## Temporary Settings Editor
+
+Run the local settings editor from the project root:
+
+```sh
+./tmp_settings.sh
+```
+
+It opens `http://127.0.0.1:22011/`, shows the settings table, and can save edits back to `millie.settings` or cancel and reload the current database values.
+
+The temporary editor also supports repeatable IMAP retrieval accounts and SMTP sending accounts. Passwords are hidden in the page after save, but remain plain text inside `millie.settings` during this early development phase.
+
+Customer-facing docs live in `docs/`.
