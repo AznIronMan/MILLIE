@@ -1,2 +1,0 @@
-# Runtime intentionally starts with the Python standard library.
-# Future candidates: fastapi, uvicorn, sqlalchemy, pydantic.

@@ -1,7 +1,9 @@
-# Private Development Notes
+# Private Workspace
 
-This folder is for internal planning, risks, decisions, and developer-only coordination.
+This directory is for local-only development material.
 
-Do not store live secrets, tokens, passwords, private keys, imported mailboxes, generated databases, or attachment dumps in tracked docs.
+- `.private/archived/` stores local archives, including `version_0.tar.gz`.
+- `.private/secrets/` stores local credentials or secret notes.
+- `.private/local/` stores generated data, databases, logs, fixtures, imports, and exports.
 
-Use `.private/secrets/` or `.private/local/` only for ignored local-only material.
+Only this README should normally be tracked from `.private/`.

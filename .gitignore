@@ -1,4 +1,42 @@
-# Python / runtime
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+.private/secrets/
+
+# Local-only workspace data
+.private/local/
+.private/archived/
+
+# Databases and generated state
+*.sqlite
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
+*.settings
+*.settings-shm
+*.settings-wal
+
+# Mailboxes, imports, exports, and attachments
+*.pst
+*.ost
+*.olm
+*.mbox
+*.eml
+*.emlx
+Maildir/
+maildir/
+attachments/
+raw-mail/
+
+# Logs and temporary output
+*.log
+logs/
+tmp/
+temp/
+
+# Python / tooling
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -17,48 +55,6 @@ node_modules/
 dist/
 build/
 .next/
-
-# Local config and secrets
-.env
-.env.*
-!.env.example
-.private/secrets/
-.private/local/
-.private/**/*.sqlite
-.private/**/*.sqlite3
-.private/**/*.db
-.private/**/*.db-shm
-.private/**/*.db-wal
-*.settings
-*.settings-shm
-*.settings-wal
-
-# Databases and generated data
-data/
-db/
-*.sqlite
-*.sqlite3
-*.db
-*.db-shm
-*.db-wal
-
-# Mail exports and sensitive imported content
-*.pst
-*.ost
-*.olm
-*.mbox
-*.eml
-*.emlx
-Maildir/
-maildir/
-attachments/
-raw-mail/
-
-# Logs and temporary output
-logs/
-*.log
-tmp/
-temp/
 
 # OS/editor noise
 .DS_Store

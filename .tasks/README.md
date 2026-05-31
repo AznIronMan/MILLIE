@@ -1,11 +1,9 @@
-# MILLIE Task Tracker
+# Tasks
 
-Use Markdown files as issue-style task records.
+Use these folders for Markdown task files:
 
-Folders:
+- `.tasks/ACTIVE`
+- `.tasks/PENDING`
+- `.tasks/COMPLETED`
 
-- `ACTIVE`: Work currently in progress.
-- `PENDING`: Planned work not yet started.
-- `COMPLETED`: Finished work with useful notes.
-
-Move files between folders as status changes. Keep task IDs stable.
+Task files should stay short and generally include title, status, goal, context, acceptance criteria, and notes or decisions.

@@ -4,56 +4,32 @@ Project: MILLIE
 
 Working acronym: Mail Ingestion, Library, Lookup, Indexing, and Exchange.
 
-MILLIE is intended to normalize email from files, desktop mail clients, and live mail protocols into a portable store with a common API, web client, and eventually a local mail-server facade.
-It should also support high-fidelity export back into importable mailbox formats for common clients.
+This repository was reset for a fresh 1.0.0 start on 2026-05-31. The previous implementation is preserved locally at `.private/archived/version_0.tar.gz`; treat it as reference material only when explicitly needed. Do not recreate the old project structure by default.
 
-## Project Documentation Rules
+## Working Rules
 
-- Keep `README.md` updated with relevant high-level project information whenever architecture, setup, status, usage, or direction changes.
-- Use semantic versioning in `major.minor.patch` format.
-- Keep `CHANGELOG.md` updated for meaningful changes. Use an `Unreleased` section when work has not been assigned to a release yet.
-- Use `docs/` for final app-facing documents, including architecture, user/developer guides, API references, schema references, and deployment notes.
-- Use `.private/` for internal development-only notes, planning, risks, decisions, scratch docs, and non-public coordination. Do not store secrets there unless they are under an ignored secrets path.
-- Use `.tasks/ACTIVE`, `.tasks/PENDING`, and `.tasks/COMPLETED` for Markdown issue-style task files. Move task files between folders as their status changes.
+- Keep `README.md` updated when project purpose, setup, status, usage, or direction changes.
+- Keep `CHANGELOG.md` updated for meaningful changes. Use semantic versioning in `major.minor.patch` format.
+- Use `.tasks/ACTIVE`, `.tasks/PENDING`, and `.tasks/COMPLETED` for Markdown task files. Move task files between folders as their status changes.
+- Keep task files short and issue-style: title, status, goal, context, acceptance criteria, and notes or decisions.
+- Commit intentional MILLIE-scoped changes after they are verified.
+- Push `main` to the MILLIE remote when credentials are available.
+- Do not rewrite GitHub history or force-push unless the user explicitly asks for that operation.
 
-## Git Policy
+## Credentials And Sensitive Data
 
-- Git is enabled for this project.
-- After verified changes, update docs/tasks/version notes as needed, then commit intentional MILLIE-scoped changes.
-- Push to the MILLIE remote on `main` when credentials are available.
-- Revisit the direct-to-main workflow before public or multi-contributor development.
+- Never commit real credentials, imported mail, generated databases, attachment dumps, access tokens, app keys, local logs, or mailbox archives.
+- Put local environment variables in `.env`; keep only placeholder examples in `.env.example`.
+- Put local credential files, OAuth notes, recovery material, or copied secrets under `.private/secrets/`.
+- Put generated runtime data, test databases, imported mail, exports, logs, and scratch fixtures under `.private/local/`.
+- Keep archived pre-reset material under `.private/archived/`; this path is ignored because the archive may contain sensitive historical data.
+- GitHub credentials should stay outside the repo in the GitHub CLI, macOS keychain, or the configured Git credential helper.
+- Prefer OS-managed secure storage for connector credentials. If a file-based secret is temporarily required, store it under `.private/secrets/` and do not commit it.
 
-## Engineering Direction
+## Security Defaults
 
-- Start with SQLite for simplicity and portability.
-- Keep profiles isolated. A profile owns its own database and data directory, and the previously selected profile should open by default.
-- Store global settings in a SQLite file named `millie.settings`; store profile-specific settings in SQLite files named after the profile, such as `default.settings` or `fixture-mail.settings`.
-- Keep the persistence layer clean enough to add PostgreSQL, MySQL/MariaDB, and selected NoSQL connectors later.
-- Prefer a relational canonical model internally. Expose flattened message records through the API where clients need a single object.
-- Treat imported mail, attachments, OAuth tokens, app keys, and generated databases as sensitive data.
-- Preserve raw message provenance wherever practical: source type, source path/account, original IDs, raw headers, import job, hashes, and errors.
-- Preserve original raw MIME content whenever possible so exports can keep as much original message structure, headers, attachments, and timestamps as possible.
-- Treat export as a first-class workflow. Prefer client-specific export profiles over one generic output path when preserving behavior matters.
-- Avoid committing sample mailboxes, `.pst`, `.ost`, `.mbox`, `.olm`, `.eml`, `.emlx`, SQLite databases, attachment dumps, access tokens, or local credentials.
-
-## Networking And Security Defaults
-
-- Development may use non-secure HTTP paths.
-- Production must be easy to run with HTTPS/TLS/SSL, either directly or behind a reverse proxy.
-- Web/API listeners should bind to `0.0.0.0` by default, with a documented config override.
-- Use the `22xxx` port range for development web/API ports. Backend default is `22001`; Vite dev default is `22002`.
-- Because `0.0.0.0` exposes the app beyond localhost, authenticated access and clear dev/prod profiles are required before real mail data is loaded.
-- HTML email rendering must be sanitized before display.
-
-## Task File Format
-
-Task files should generally include:
-
-- Title
-- Status
-- Goal
-- Context
-- Acceptance criteria
-- Notes or decisions
-
-Keep tasks short enough that a future Codex/dev pass can understand what to do without reading the entire project history.
+- Treat email content and metadata as sensitive by default.
+- Development may use local non-secure HTTP paths.
+- Production-facing work must have a clear HTTPS/TLS story before real mail data is loaded.
+- If a web or API listener is introduced, document its bind address, port, authentication state, and development versus production behavior.
+- Sanitize HTML email before display whenever message rendering is implemented.
