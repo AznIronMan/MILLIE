@@ -12,6 +12,7 @@ All notable changes to MILLIE will be documented in this file.
 - Added Microsoft Outlook/Exchange OAuth settings for IMAP authorization.
 - Added a separate Microsoft OAuth client secret ID setting so the secret value and ID are not conflated.
 - Added a temporary Microsoft OAuth callback helper for saving Outlook authorization tokens locally.
+- Added a read-only PST probe using libpst/readpst with metadata-only reporting.
 - Added customer-facing settings documentation under `docs/`.
 
 ### Changed

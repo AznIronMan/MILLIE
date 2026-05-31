@@ -13,6 +13,7 @@ This repository has been reset for a fresh start. No application architecture or
 - Runtime setup: not defined yet beyond the temporary settings editor
 - Application structure: not defined yet
 - Settings store: local root `millie.settings` SQLite3 database, ignored by Git
+- PST import status: read-only probe available through `tools/pst_probe.py`
 
 ## Development Notes
 
@@ -43,3 +44,13 @@ For the temporary Microsoft OAuth callback/token exchange helper, run:
 ```
 
 Customer-facing docs live in `docs/`.
+
+## PST Probe
+
+MILLIE can currently smoke-test PST access with the read-only probe:
+
+```sh
+python3 tools/pst_probe.py tmp/your-archive.pst --clean
+```
+
+The probe requires `readpst` from libpst, extracts derived MH-format email files under ignored `.private/local/pst-extract/`, writes a local JSON manifest, and prints only counts and metadata. It does not modify the source PST.
