@@ -21,7 +21,8 @@ The script starts a local browser page at `http://127.0.0.1:22011/`. From there,
 - `main_api_thinking`, `second_api_thinking`, `third_api_thinking`: `low`, `med`, `high`, `xhigh`, or blank for the default behavior.
 - `microsoft_oauth_tenant`: Microsoft OAuth tenant value. Use `organizations` for work or school accounts, `common` for mixed account support, or a tenant ID/domain.
 - `microsoft_oauth_client_id`: Microsoft Entra application client ID.
-- `microsoft_oauth_client_secret`: optional Microsoft Entra client secret. Leave blank for public/native local flows. Stored in plain text for now if used.
+- `microsoft_oauth_client_secret`: optional Microsoft Entra client secret value used for token exchange. This must be the secret **Value**, not the secret ID. Leave blank for public/native local flows. Stored in plain text for now if used.
+- `microsoft_oauth_client_secret_id`: optional Microsoft Entra client secret ID for reference only. The OAuth token exchange does not use this value.
 - `microsoft_oauth_redirect_uri`: redirect URI registered in Entra. Current local value: `http://localhost:22013/oauth/microsoft/callback`.
 - `microsoft_oauth_scopes`: Microsoft OAuth scopes. Current IMAP value: `offline_access https://outlook.office.com/IMAP.AccessAsUser.All`.
 - `logging_type`: `files`, `sqlite`, or `cnblogger`. File logging should append to `logs/YYYYMMDD.log`. SQLite logging should create `data/<instance_id>.logdb` when possible. `cnblogger` is reserved and disabled for now.
@@ -57,7 +58,7 @@ Create the Entra application before authorizing an Outlook IMAP account:
 6. Add a redirect URI for platform **Web** using `http://localhost:22013/oauth/microsoft/callback`.
 7. Register the app.
 8. Copy the **Application (client) ID** into `microsoft_oauth_client_id`.
-9. If you choose to use a confidential web flow, create a client secret under **Certificates & secrets** and copy it into `microsoft_oauth_client_secret`. For a local public/native flow, leave the secret blank.
+9. If you choose to use a confidential web flow, create a client secret under **Certificates & secrets** and copy the secret **Value** into `microsoft_oauth_client_secret`. The secret ID is not used for token exchange; store it in `microsoft_oauth_client_secret_id` only if you want to track it. For a local public/native flow, leave the secret blank.
 10. Under **API permissions**, add delegated permission `IMAP.AccessAsUser.All` for Office 365 Exchange Online.
 11. Add or confirm delegated `offline_access` so MILLIE can request refresh tokens.
 12. Grant admin consent if your tenant policy requires it.

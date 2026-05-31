@@ -167,9 +167,16 @@ function buildSeedRows(instanceId) {
     {
       key: "microsoft_oauth_client_secret",
       value: "",
-      description: "Optional Microsoft Entra client secret. Leave blank for public/native local flows. Stored in plain text for now if used.",
+      description: "Optional Microsoft Entra client secret value used for token exchange. This is the secret value string, not the secret ID. Stored in plain text for now if used.",
       options: "",
       secret: true,
+    },
+    {
+      key: "microsoft_oauth_client_secret_id",
+      value: "",
+      description: "Optional Microsoft Entra client secret ID for reference only. OAuth token exchange uses the secret value, not this ID.",
+      options: "",
+      secret: false,
     },
     {
       key: "microsoft_oauth_redirect_uri",
