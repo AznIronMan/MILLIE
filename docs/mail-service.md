@@ -2,7 +2,7 @@
 
 MILLIE is intended to expose copied mail archives like a normal mail service. A user such as `geon@millie.cnbsk.cloud` should be able to sign in and browse imported IMAP, Exchange OAuth, and PST mail from one mailbox without moving or mutating the original sources. Local aliases such as `geon@MILLIE` can remain valid through `millie.settings`.
 
-This layer is dormant for now. The schema and bootstrap helpers are present, but no IMAP listener, webmail server, or live authentication service is started.
+This layer is an early development prototype. The schema, bootstrap helpers, IMAP listener, and webmail view are present for local/LAN testing, but they are not hardened production services.
 
 ## Core Model
 
@@ -71,6 +71,10 @@ The listener exposes:
 
 - Plain IMAP on port `22143`.
 - IMAP over TLS on port `22993` with a local self-signed certificate.
+- Read operations for mailbox navigation, search, fetch, and raw RFC822 retrieval.
+- Write operations against the MILLIE mailbox copy: folder create/delete/rename/subscribe, `APPEND`, flag updates, copy/move, and delete/expunge.
+
+IMAP write operations update `millie_*` mailbox facade rows and imported `mail_*` records for messages appended directly into MILLIE. They do not write back to source IMAP accounts, Exchange mailboxes, or PST files.
 
 Some mail clients require an outgoing mail server during account setup. Start the temporary SMTP setup shim only when needed:
 
@@ -91,7 +95,7 @@ kill "$(cat .private/local/millie_imap_listener.pid)"
 kill "$(cat .private/local/millie_smtp_listener.pid)"
 ```
 
-This is a development listener, not a production mail server. It is intended to verify mailbox navigation from clients such as Apple Mail, Outlook, and iOS Mail.
+This is a development listener, not a production mail server. It is intended to verify mailbox navigation and mailbox-copy edits from clients such as Apple Mail, Outlook, and iOS Mail.
 
 ## Mailbox Facade
 
@@ -134,11 +138,14 @@ Expected read path:
 5. Fetch complete raw messages from `mail_raw_mime` when an IMAP client asks for RFC822 content.
 6. Fetch normalized parts and search text from `mail_message_parts` and `mail_search_documents` for webmail/API views.
 
-Expected write path is limited at first:
+Expected write path is limited to the MILLIE copy:
 
 - IMAP flags and keywords update `millie_mailbox_messages`.
-- Deletes should mark the mailbox copy as deleted or expunged, not delete the canonical `mail_*` record by default.
-- Sending mail, drafts, labels, server-side rules, and source write-back are future workflows.
+- Folder create/delete/rename/subscribe updates `millie_mailbox_folders`.
+- IMAP copy/move changes folder membership in `millie_mailbox_messages`.
+- IMAP `APPEND` stores a new canonical `mail_messages` record with raw MIME and maps it into the target MILLIE folder.
+- Deletes mark the mailbox copy as deleted or expunged. Expunge hides the message from that folder view; it does not delete the original source account or PST.
+- Sending mail, drafts workflows, labels, server-side rules, and source write-back are future workflows.
 
 ## Views
 

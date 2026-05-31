@@ -15,9 +15,11 @@ import ssl
 import subprocess
 import sys
 import threading
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from email import policy
 from email.parser import BytesParser
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
@@ -26,7 +28,11 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from millie.service.imap_protocol import body_literal_name, imap_capabilities, summarize_fetch_items
 from millie.settings_loader import load_local_settings
-from millie.storage.postgres_store import PostgresMailStore
+
+try:
+    from millie.storage.postgres_store import PostgresMailStore
+except ModuleNotFoundError:
+    PostgresMailStore = None  # type: ignore[assignment]
 
 
 DEFAULT_HOST = "0.0.0.0"
@@ -42,6 +48,8 @@ class MillieImapHandler(socketserver.StreamRequestHandler):
 
     def setup(self) -> None:
         super().setup()
+        if PostgresMailStore is None:
+            raise RuntimeError("psycopg is required to run the MILLIE IMAP listener")
         self.store = PostgresMailStore.connect(self.server.settings)
         self.identity_id: str | None = None
         self.mailbox_id: str | None = None
@@ -52,7 +60,9 @@ class MillieImapHandler(socketserver.StreamRequestHandler):
     def finish(self) -> None:
         try:
             self.log_event("disconnect")
-            self.store.close()
+            store = getattr(self, "store", None)
+            if store:
+                store.close()
         finally:
             super().finish()
 
@@ -65,10 +75,22 @@ class MillieImapHandler(socketserver.StreamRequestHandler):
             text = line.decode("utf-8", errors="replace").rstrip("\r\n")
             if not text:
                 continue
-            if not self.handle_command(text):
+            literal = self.read_command_literal(text)
+            if not self.handle_command(text, literal=literal):
                 break
 
-    def handle_command(self, text: str) -> bool:
+    def read_command_literal(self, text: str) -> bytes | None:
+        marker = re.search(r"\{(\d+)(\+)?\}$", text)
+        if not marker:
+            return None
+        size = int(marker.group(1))
+        if not marker.group(2):
+            self.send_line("+ Ready for literal data")
+        literal = self.rfile.read(size)
+        self.rfile.readline(1024)
+        return literal
+
+    def handle_command(self, text: str, *, literal: bytes | None = None) -> bool:
         tag, command, rest = split_command(text)
         upper = command.upper()
         if upper == "UID":
@@ -102,14 +124,32 @@ class MillieImapHandler(socketserver.StreamRequestHandler):
             self.require_auth(tag) and self.select_folder(tag, rest, readonly=(upper == "EXAMINE"))
         elif upper == "STATUS":
             self.require_auth(tag) and self.status(tag, rest)
+        elif upper == "CREATE":
+            self.require_auth(tag) and self.create_folder(tag, rest)
+        elif upper == "DELETE":
+            self.require_auth(tag) and self.delete_folder(tag, rest)
+        elif upper == "RENAME":
+            self.require_auth(tag) and self.rename_folder(tag, rest)
+        elif upper == "SUBSCRIBE":
+            self.require_auth(tag) and self.subscribe_folder(tag, rest, subscribed=True)
+        elif upper == "UNSUBSCRIBE":
+            self.require_auth(tag) and self.subscribe_folder(tag, rest, subscribed=False)
+        elif upper == "APPEND":
+            self.require_auth(tag) and self.append_message(tag, rest, literal)
+        elif upper == "COPY":
+            self.require_selected(tag) and self.copy_messages(tag, rest, uid_mode=False)
+        elif upper == "MOVE":
+            self.require_selected(tag) and self.move_messages(tag, rest, uid_mode=False)
         elif upper == "SEARCH":
             self.require_selected(tag) and self.search(tag, rest, uid_mode=False)
         elif upper == "FETCH":
             self.require_selected(tag) and self.fetch(tag, rest, uid_mode=False)
-        elif upper in {"CLOSE", "EXPUNGE"}:
-            self.require_selected(tag) and self.send_ok(tag, f"{upper} completed")
-        elif upper in {"SUBSCRIBE", "UNSUBSCRIBE", "STORE"}:
-            self.require_auth(tag) and self.send_ok(tag, f"{upper} completed")
+        elif upper == "EXPUNGE":
+            self.require_selected(tag) and self.expunge(tag, respond=True)
+        elif upper == "CLOSE":
+            self.require_selected(tag) and self.close_folder(tag)
+        elif upper == "STORE":
+            self.require_selected(tag) and self.store_flags(tag, rest, uid_mode=False)
         else:
             self.log_event("unsupported", command=command)
             self.send_bad(tag, f"Unsupported command: {command}")
@@ -121,7 +161,13 @@ class MillieImapHandler(socketserver.StreamRequestHandler):
         elif subcommand == "FETCH":
             self.require_selected(tag) and self.fetch(tag, rest, uid_mode=True)
         elif subcommand == "STORE":
-            self.require_selected(tag) and self.send_ok(tag, "UID STORE completed")
+            self.require_selected(tag) and self.store_flags(tag, rest, uid_mode=True)
+        elif subcommand == "COPY":
+            self.require_selected(tag) and self.copy_messages(tag, rest, uid_mode=True)
+        elif subcommand == "MOVE":
+            self.require_selected(tag) and self.move_messages(tag, rest, uid_mode=True)
+        elif subcommand == "EXPUNGE":
+            self.require_selected(tag) and self.uid_expunge(tag, rest)
         else:
             self.send_bad(tag, f"Unsupported UID command: {subcommand}")
         return True
@@ -191,6 +237,53 @@ class MillieImapHandler(socketserver.StreamRequestHandler):
         self.log_event("list_folders", count=count)
         self.send_ok(tag, f"{command} completed")
 
+    def create_folder(self, tag: str, rest: str) -> None:
+        folder = normalize_folder_name(rest)
+        if not folder:
+            self.send_bad(tag, "CREATE requires a folder name")
+            return
+        self.store.ensure_mailbox_folder(self.mailbox_id, folder)
+        self.commit("create_folder", folder=folder)
+        self.send_ok(tag, "CREATE completed")
+
+    def delete_folder(self, tag: str, rest: str) -> None:
+        folder = normalize_folder_name(rest)
+        result = self.store.delete_mailbox_folder(self.mailbox_id, folder)
+        if result == "deleted":
+            self.commit("delete_folder", folder=folder)
+            self.send_ok(tag, "DELETE completed")
+        elif result == "protected":
+            self.rollback("delete_protected", folder=folder)
+            self.send_no(tag, "Cannot delete a protected MILLIE folder")
+        else:
+            self.rollback("delete_missing", folder=folder)
+            self.send_no(tag, "Folder not found")
+
+    def rename_folder(self, tag: str, rest: str) -> None:
+        try:
+            old_folder, new_folder = shlex.split(rest)[:2]
+        except ValueError:
+            self.send_bad(tag, "RENAME requires old and new folder names")
+            return
+        result = self.store.rename_mailbox_folder(self.mailbox_id, old_folder, new_folder)
+        if result == "renamed":
+            if self.selected_folder == normalize_folder_name(old_folder):
+                self.selected_folder = normalize_folder_name(new_folder)
+            self.commit("rename_folder", old_folder=old_folder, new_folder=new_folder)
+            self.send_ok(tag, "RENAME completed")
+        else:
+            self.rollback("rename_failed", old_folder=old_folder, new_folder=new_folder, reason=result)
+            self.send_no(tag, f"RENAME failed: {result}")
+
+    def subscribe_folder(self, tag: str, rest: str, *, subscribed: bool) -> None:
+        folder = normalize_folder_name(rest)
+        if self.store.set_folder_subscription(self.mailbox_id, folder, subscribed):
+            self.commit("subscription", folder=folder, subscribed=subscribed)
+            self.send_ok(tag, "SUBSCRIBE completed" if subscribed else "UNSUBSCRIBE completed")
+        else:
+            self.rollback("subscription_missing", folder=folder, subscribed=subscribed)
+            self.send_no(tag, "Folder not found")
+
     def select_folder(self, tag: str, rest: str, *, readonly: bool) -> None:
         folder = normalize_folder_name(rest)
         messages = self.messages(folder)
@@ -198,7 +291,7 @@ class MillieImapHandler(socketserver.StreamRequestHandler):
         self.selected_folder = folder
         self.log_event("select", folder=folder, messages=len(messages), readonly=readonly)
         self.send_line("* FLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft)")
-        self.send_line("* OK [PERMANENTFLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft)]")
+        self.send_line("* OK [PERMANENTFLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft \\*)]")
         self.send_line(f"* {len(messages)} EXISTS")
         self.send_line("* 0 RECENT")
         self.send_line("* OK [UIDVALIDITY 1] UIDs valid")
@@ -245,6 +338,139 @@ class MillieImapHandler(socketserver.StreamRequestHandler):
         for sequence, message in selected:
             self.fetch_one(sequence, message, item_text, uid_mode=uid_mode)
         self.send_ok(tag, "FETCH completed")
+
+    def store_flags(self, tag: str, rest: str, *, uid_mode: bool) -> None:
+        operation = parse_store_operation(rest)
+        if not operation:
+            self.send_bad(tag, "STORE requires a message set, operation, and flags")
+            return
+        messages = self.messages(self.selected_folder)
+        selected = select_messages(messages, operation.set_spec, uid_mode=uid_mode)
+        uids = [int(message["uid"]) for _, message in selected]
+        updates = self.store.update_message_flags(
+            mailbox_id=self.mailbox_id,
+            folder_path=self.selected_folder,
+            uids=uids,
+            mode=operation.mode,
+            flags=operation.flags,
+        )
+        self.commit("store_flags", folder=self.selected_folder, uid_mode=uid_mode, count=len(updates))
+        if not operation.silent:
+            sequence_by_uid = {int(message["uid"]): sequence for sequence, message in selected}
+            for update in updates:
+                sequence = sequence_by_uid.get(int(update["uid"]))
+                if sequence is None:
+                    continue
+                attrs = [f"FLAGS ({' '.join(update['flags'])})"]
+                if uid_mode:
+                    attrs.append(f"UID {update['uid']}")
+                self.send_line(f"* {sequence} FETCH ({' '.join(attrs)})")
+        self.send_ok(tag, "UID STORE completed" if uid_mode else "STORE completed")
+
+    def copy_messages(self, tag: str, rest: str, *, uid_mode: bool) -> None:
+        parsed = split_set_and_folder(rest)
+        if not parsed:
+            self.send_bad(tag, "COPY requires a message set and destination folder")
+            return
+        set_spec, target_folder = parsed
+        messages = self.messages(self.selected_folder)
+        selected = select_messages(messages, set_spec, uid_mode=uid_mode)
+        source_uids = [int(message["uid"]) for _, message in selected]
+        copied = self.store.copy_messages(
+            mailbox_id=self.mailbox_id,
+            source_folder_path=self.selected_folder,
+            target_folder_path=target_folder,
+            uids=source_uids,
+        )
+        if source_uids and not copied:
+            self.rollback("copy_failed", target_folder=target_folder)
+            self.send_no(tag, "[TRYCREATE] Destination folder not found")
+            return
+        self.commit("copy_messages", source=self.selected_folder, target=target_folder, count=len(copied))
+        self.send_ok(tag, copy_uid_response("COPY", copied, uid_mode=uid_mode))
+
+    def move_messages(self, tag: str, rest: str, *, uid_mode: bool) -> None:
+        parsed = split_set_and_folder(rest)
+        if not parsed:
+            self.send_bad(tag, "MOVE requires a message set and destination folder")
+            return
+        set_spec, target_folder = parsed
+        messages = self.messages(self.selected_folder)
+        selected = select_messages(messages, set_spec, uid_mode=uid_mode)
+        source_uids = [int(message["uid"]) for _, message in selected]
+        copied = self.store.move_messages(
+            mailbox_id=self.mailbox_id,
+            source_folder_path=self.selected_folder,
+            target_folder_path=target_folder,
+            uids=source_uids,
+        )
+        if source_uids and not copied:
+            self.rollback("move_failed", target_folder=target_folder)
+            self.send_no(tag, "[TRYCREATE] Destination folder not found")
+            return
+        for sequence in expunge_sequence_numbers(messages, source_uids):
+            self.send_line(f"* {sequence} EXPUNGE")
+        self.commit("move_messages", source=self.selected_folder, target=target_folder, count=len(copied))
+        self.send_ok(tag, copy_uid_response("MOVE", copied, uid_mode=uid_mode))
+
+    def append_message(self, tag: str, rest: str, literal: bytes | None) -> None:
+        if literal is None:
+            self.send_bad(tag, "APPEND requires a message literal")
+            return
+        request = parse_append_request(rest, literal)
+        if not request:
+            self.send_bad(tag, "Could not parse APPEND")
+            return
+        uid = self.store.append_raw_message_to_mailbox(
+            mailbox_id=self.mailbox_id,
+            folder_path=request.folder,
+            raw_bytes=request.literal,
+            flags=request.flags,
+            internal_date=request.internal_date,
+        )
+        self.commit("append_message", folder=request.folder, uid=uid, size=len(request.literal))
+        self.send_ok(tag, f"[APPENDUID 1 {uid}] APPEND completed")
+
+    def expunge(self, tag: str, *, respond: bool) -> None:
+        count = self.expunge_selected_folder(respond=respond)
+        self.send_ok(tag, "EXPUNGE completed")
+
+    def expunge_selected_folder(self, *, respond: bool) -> int:
+        messages = self.messages(self.selected_folder)
+        deleted_uids = [
+            int(message["uid"])
+            for message in messages
+            if "\\Deleted" in message["flags"]
+        ]
+        expunged = self.store.expunge_deleted(
+            mailbox_id=self.mailbox_id,
+            folder_path=self.selected_folder,
+        )
+        if respond:
+            for sequence in expunge_sequence_numbers(messages, expunged):
+                self.send_line(f"* {sequence} EXPUNGE")
+        self.commit("expunge", folder=self.selected_folder, requested=len(deleted_uids), count=len(expunged))
+        return len(expunged)
+
+    def uid_expunge(self, tag: str, rest: str) -> None:
+        messages = self.messages(self.selected_folder)
+        selected = select_messages(messages, rest, uid_mode=True)
+        selected_uids = [int(message["uid"]) for _, message in selected]
+        expunged = self.store.expunge_uids(
+            mailbox_id=self.mailbox_id,
+            folder_path=self.selected_folder,
+            uids=selected_uids,
+            require_deleted=True,
+        )
+        for sequence in expunge_sequence_numbers(messages, expunged):
+            self.send_line(f"* {sequence} EXPUNGE")
+        self.commit("uid_expunge", folder=self.selected_folder, count=len(expunged))
+        self.send_ok(tag, "UID EXPUNGE completed")
+
+    def close_folder(self, tag: str) -> None:
+        self.expunge_selected_folder(respond=False)
+        self.selected_folder = "INBOX"
+        self.send_ok(tag, "CLOSE completed")
 
     def fetch_one(self, sequence: int, message: dict[str, Any], item_text: str, *, uid_mode: bool) -> None:
         upper = item_text.upper()
@@ -319,6 +545,14 @@ class MillieImapHandler(socketserver.StreamRequestHandler):
     def send_bad(self, tag: str, message: str) -> None:
         self.send_line(f"{tag} BAD {message}")
 
+    def commit(self, event: str, **fields: object) -> None:
+        self.store.connection.commit()
+        self.log_event(event, **fields)
+
+    def rollback(self, event: str, **fields: object) -> None:
+        self.store.connection.rollback()
+        self.log_event(event, **fields)
+
     def log_event(self, event: str, **fields: object) -> None:
         values = {
             "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -354,6 +588,22 @@ class MillieImapServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         return request, client_address
 
 
+@dataclass(slots=True)
+class StoreOperation:
+    set_spec: str
+    mode: str
+    flags: list[str]
+    silent: bool
+
+
+@dataclass(slots=True)
+class AppendRequest:
+    folder: str
+    flags: list[str]
+    internal_date: datetime | None
+    literal: bytes
+
+
 def split_command(text: str) -> tuple[str, str, str]:
     parts = text.split(" ", 2)
     if len(parts) == 1:
@@ -375,6 +625,134 @@ def split_fetch(rest: str) -> tuple[str, str]:
     return parts[0], parts[1]
 
 
+def split_set_and_folder(rest: str) -> tuple[str, str] | None:
+    parts = rest.split(" ", 1)
+    if len(parts) != 2:
+        return None
+    return parts[0].strip(), normalize_folder_name(parts[1])
+
+
+def parse_store_operation(rest: str) -> StoreOperation | None:
+    parts = rest.split(" ", 2)
+    if len(parts) != 3:
+        return None
+    set_spec, operation_text, flags_text = parts
+    operation = operation_text.upper()
+    silent = operation.endswith(".SILENT")
+    operation = operation.removesuffix(".SILENT")
+    if operation == "FLAGS":
+        mode = "replace"
+    elif operation == "+FLAGS":
+        mode = "add"
+    elif operation == "-FLAGS":
+        mode = "remove"
+    else:
+        return None
+    return StoreOperation(
+        set_spec=set_spec,
+        mode=mode,
+        flags=parse_flag_list(flags_text),
+        silent=silent,
+    )
+
+
+def parse_flag_list(value: str) -> list[str]:
+    text = value.strip()
+    if text.startswith("("):
+        end = text.find(")")
+        if end >= 0:
+            text = text[1:end]
+    return [flag for flag in re.split(r"\s+", text.strip()) if flag]
+
+
+def parse_append_request(rest: str, literal: bytes) -> AppendRequest | None:
+    text = strip_literal_marker(rest).strip()
+    folder, index = read_imap_astring(text)
+    if folder is None:
+        return None
+    remainder = text[index:].strip()
+    flags: list[str] = []
+    internal_date: datetime | None = None
+    if remainder.startswith("("):
+        end = remainder.find(")")
+        if end < 0:
+            return None
+        flags = parse_flag_list(remainder[: end + 1])
+        remainder = remainder[end + 1 :].strip()
+    if remainder:
+        date_value, index = read_imap_astring(remainder)
+        if date_value is not None:
+            internal_date = parse_internal_date(date_value)
+            remainder = remainder[index:].strip()
+    return AppendRequest(
+        folder=normalize_folder_name(folder),
+        flags=flags,
+        internal_date=internal_date,
+        literal=literal,
+    )
+
+
+def strip_literal_marker(value: str) -> str:
+    return re.sub(r"\s*\{\d+\+?\}\s*$", "", value)
+
+
+def read_imap_astring(value: str) -> tuple[str | None, int]:
+    text = value.lstrip()
+    offset = len(value) - len(text)
+    if not text:
+        return None, offset
+    if text[0] != '"':
+        match = re.match(r"[^\s]+", text)
+        if not match:
+            return None, offset
+        return match.group(0), offset + match.end()
+    result: list[str] = []
+    escaped = False
+    for index, char in enumerate(text[1:], start=1):
+        if escaped:
+            result.append(char)
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == '"':
+            return "".join(result), offset + index + 1
+        else:
+            result.append(char)
+    return None, len(value)
+
+
+def parse_internal_date(value: str) -> datetime | None:
+    try:
+        parsed = datetime.strptime(value, "%d-%b-%Y %H:%M:%S %z")
+    except ValueError:
+        try:
+            parsed = parsedate_to_datetime(value)
+        except (TypeError, ValueError, IndexError, OverflowError):
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def copy_uid_response(command: str, copied: list[dict[str, int]], *, uid_mode: bool) -> str:
+    if not copied:
+        return f"{'UID ' if uid_mode else ''}{command} completed"
+    source = ",".join(str(item["source_uid"]) for item in copied)
+    target = ",".join(str(item["target_uid"]) for item in copied)
+    return f"[COPYUID 1 {source} {target}] {'UID ' if uid_mode else ''}{command} completed"
+
+
+def expunge_sequence_numbers(messages: list[dict[str, Any]], expunged_uids: list[int]) -> list[int]:
+    expunged = set(expunged_uids)
+    deleted_before = 0
+    sequences: list[int] = []
+    for sequence, message in enumerate(messages, start=1):
+        if int(message["uid"]) in expunged:
+            sequences.append(sequence - deleted_before)
+            deleted_before += 1
+    return sequences
+
+
 def log_value(value: object) -> str:
     text = str(value).replace("\n", "\\n").replace("\r", "\\r").replace(" ", "_")
     return text[:160]
@@ -382,11 +760,9 @@ def log_value(value: object) -> str:
 
 def normalize_folder_name(value: str) -> str:
     text = value.strip()
-    if " " in text and not text.startswith('"'):
-        text = text.split(" ", 1)[0]
     try:
         parts = shlex.split(text)
-        if parts:
+        if parts and (text.startswith('"') or len(parts) == 1):
             text = parts[0]
     except ValueError:
         text = text.strip('"')

@@ -6,7 +6,7 @@ import re
 
 
 def imap_capabilities() -> list[str]:
-    return ["IMAP4rev1", "UIDPLUS", "LITERAL+", "AUTH=PLAIN", "ID", "NAMESPACE"]
+    return ["IMAP4rev1", "UIDPLUS", "MOVE", "LITERAL+", "AUTH=PLAIN", "ID", "NAMESPACE"]
 
 
 def summarize_fetch_items(value: str) -> str:

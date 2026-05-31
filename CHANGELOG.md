@@ -28,6 +28,7 @@ All notable changes to MILLIE will be documented in this file.
 - Added a minimal development IMAP listener backed by the Postgres mailbox facade.
 - Added a minimal authenticated development SMTP listener for mail client account setup.
 - Added customer-facing settings documentation under `docs/`.
+- Added IMAP mailbox-copy mutation support for folder changes, `APPEND`, flag updates, copy/move, delete, and expunge.
 
 ### Changed
 
@@ -40,3 +41,4 @@ All notable changes to MILLIE will be documented in this file.
 - Added a no-auth development webmail view for browsing the current MILLIE mailbox with Gmail, Outlook, and Microsoft 365-inspired themes.
 - Added configurable service mailbox domains in `millie.settings`, defaulting to `millie.cnbsk.cloud` with local `MILLIE` aliases for identities such as `geon@millie.cnbsk.cloud`.
 - Changed the temporary SMTP listener into a setup-only blackhole shim that accepts any or no SMTP authentication, discards submitted message data, and never relays, stores, queues, or delivers outbound mail from MILLIE.
+- Clarified that IMAP client edits mutate only MILLIE's copied mailbox facade and do not write back to original IMAP, Exchange, or PST sources.

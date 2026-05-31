@@ -17,7 +17,7 @@ This repository has been reset for a fresh start. The prior version is archived 
 - PST import status: read-only probe available through `tools/pst_probe.py`
 - Mail import status: dormant source/normalization/storage pipeline scaffolded
 - Mail service status: dormant Postgres identity/mailbox facade scaffolded
-- Dev IMAP status: minimal listener available for local/LAN testing
+- Dev IMAP status: development listener available for local/LAN browse and mailbox-copy mutation testing
 - Dev SMTP status: optional setup-only blackhole listener; MILLIE never sends outbound SMTP
 - Dev webmail status: no-auth browser view available for local/LAN testing
 
@@ -91,7 +91,9 @@ After importing samples, start the temporary IMAP listener:
 .private/venv/bin/python tools/millie_imap_listener.py --host 0.0.0.0 --plain-port 22143 --tls-port 22993 --daemon
 ```
 
-Credentials are written to ignored `.private/local/millie_ios_mail_credentials.txt`. The listener is a development prototype only; it supports enough IMAP to browse copied messages, but it is not a hardened mail server.
+Credentials are written to ignored `.private/local/millie_ios_mail_credentials.txt`. The listener is a development prototype only; it is not a hardened mail server.
+
+The IMAP listener supports browsing copied messages plus mailbox-copy mutations for client testing: folder create/delete/rename/subscribe, `APPEND` uploads, flag changes, copy/move, and delete/expunge. These operations affect MILLIE's Postgres mailbox facade only. They do not mutate source IMAP accounts, Exchange mailboxes, or PST files.
 
 For mail clients that require an outgoing server during account setup, the temporary SMTP setup shim is available:
 

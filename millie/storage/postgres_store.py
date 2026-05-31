@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import uuid
+from datetime import datetime, timezone
 from email import policy
 from email.message import EmailMessage
 from email.parser import BytesParser
@@ -14,6 +16,7 @@ from psycopg import Connection
 from psycopg.types.json import Jsonb
 
 from millie.importing.models import NormalizedAddress, NormalizedMessage, stable_id
+from millie.importing.normalize import normalize_email
 from millie.service.auth import (
     MillieIdentity,
     build_identity_sql,
@@ -308,7 +311,349 @@ class PostgresMailStore:
         )
         return int(next_uid)
 
+    def ensure_mailbox_folder(
+        self,
+        mailbox_id: str,
+        folder_path: str,
+        *,
+        selectable: bool = True,
+        subscribed: bool = True,
+    ) -> str:
+        folder_path = normalize_mailbox_path(folder_path)
+        existing = self.folder_id(mailbox_id, folder_path)
+        parent_id = None
+        if "/" in folder_path:
+            parent_path = folder_path.rsplit("/", 1)[0]
+            parent_id = self.ensure_mailbox_folder(
+                mailbox_id,
+                parent_path,
+                selectable=True,
+                subscribed=subscribed,
+            )
+        display_name = folder_path.rsplit("/", 1)[-1]
+        folder_id = existing or stable_id("millie_folder", mailbox_id, folder_path)
+        sort_order = self.connection.execute(
+            """
+            SELECT coalesce(max(sort_order), 1000) + 10
+            FROM millie_mailbox_folders
+            WHERE mailbox_id = %s
+            """,
+            (mailbox_id,),
+        ).fetchone()[0]
+        self.connection.execute(
+            """
+            INSERT INTO millie_mailbox_folders (
+                id, mailbox_id, parent_id, folder_path, display_name,
+                folder_role, selectable, subscribed, sort_order
+            )
+            VALUES (%s, %s, %s, %s, %s, 'custom', %s, %s, %s)
+            ON CONFLICT (mailbox_id, folder_path) DO UPDATE SET
+                parent_id = excluded.parent_id,
+                display_name = excluded.display_name,
+                selectable = excluded.selectable,
+                subscribed = excluded.subscribed,
+                updated_at = now()
+            """,
+            (
+                folder_id,
+                mailbox_id,
+                parent_id,
+                folder_path,
+                display_name,
+                selectable,
+                subscribed,
+                sort_order,
+            ),
+        )
+        return folder_id
+
+    def delete_mailbox_folder(self, mailbox_id: str, folder_path: str) -> str:
+        folder_path = normalize_mailbox_path(folder_path)
+        row = self.connection.execute(
+            """
+            SELECT id, folder_role
+            FROM millie_mailbox_folders
+            WHERE mailbox_id = %s AND folder_path = %s
+            """,
+            (mailbox_id, folder_path),
+        ).fetchone()
+        if not row:
+            return "not_found"
+        if row[1] != "custom":
+            return "protected"
+        self.connection.execute(
+            """
+            DELETE FROM millie_mailbox_folders
+            WHERE mailbox_id = %s
+              AND (folder_path = %s OR folder_path LIKE %s)
+            """,
+            (mailbox_id, folder_path, f"{folder_path}/%"),
+        )
+        return "deleted"
+
+    def rename_mailbox_folder(self, mailbox_id: str, old_path: str, new_path: str) -> str:
+        old_path = normalize_mailbox_path(old_path)
+        new_path = normalize_mailbox_path(new_path)
+        if not old_path or not new_path or old_path == new_path:
+            return "invalid"
+        row = self.connection.execute(
+            """
+            SELECT id, folder_role
+            FROM millie_mailbox_folders
+            WHERE mailbox_id = %s AND folder_path = %s
+            """,
+            (mailbox_id, old_path),
+        ).fetchone()
+        if not row:
+            return "not_found"
+        if row[1] != "custom":
+            return "protected"
+        target = self.folder_id(mailbox_id, new_path)
+        if target:
+            return "exists"
+        parent_id = None
+        if "/" in new_path:
+            parent_id = self.ensure_mailbox_folder(mailbox_id, new_path.rsplit("/", 1)[0])
+        rows = self.connection.execute(
+            """
+            SELECT id, folder_path
+            FROM millie_mailbox_folders
+            WHERE mailbox_id = %s
+              AND (folder_path = %s OR folder_path LIKE %s)
+            ORDER BY length(folder_path)
+            """,
+            (mailbox_id, old_path, f"{old_path}/%"),
+        ).fetchall()
+        for folder_id, current_path in rows:
+            suffix = str(current_path)[len(old_path):]
+            updated_path = f"{new_path}{suffix}"
+            display_name = updated_path.rsplit("/", 1)[-1]
+            updated_parent_id = parent_id if current_path == old_path else None
+            if current_path != old_path and "/" in updated_path:
+                current_parent_path = updated_path.rsplit("/", 1)[0]
+                updated_parent_id = self.folder_id(mailbox_id, current_parent_path)
+            self.connection.execute(
+                """
+                UPDATE millie_mailbox_folders
+                SET folder_path = %s,
+                    display_name = %s,
+                    parent_id = %s,
+                    updated_at = now()
+                WHERE id = %s
+                """,
+                (updated_path, display_name, updated_parent_id, folder_id),
+            )
+        return "renamed"
+
+    def set_folder_subscription(self, mailbox_id: str, folder_path: str, subscribed: bool) -> bool:
+        result = self.connection.execute(
+            """
+            UPDATE millie_mailbox_folders
+            SET subscribed = %s, updated_at = now()
+            WHERE mailbox_id = %s AND folder_path = %s
+            """,
+            (subscribed, mailbox_id, normalize_mailbox_path(folder_path)),
+        )
+        return bool(result.rowcount)
+
+    def update_message_flags(
+        self,
+        *,
+        mailbox_id: str,
+        folder_path: str,
+        uids: list[int],
+        mode: str,
+        flags: list[str],
+    ) -> list[dict[str, object]]:
+        if not uids:
+            return []
+        normalized_flags = normalize_message_flags(flags)
+        rows = self._mailbox_message_rows_by_uid(
+            mailbox_id=mailbox_id,
+            folder_path=folder_path,
+            uids=uids,
+        )
+        updates: list[dict[str, object]] = []
+        for row in rows:
+            current = normalize_message_flags(row["flags"])
+            if mode == "replace":
+                updated = normalized_flags
+            elif mode == "add":
+                updated = normalize_message_flags([*current, *normalized_flags])
+            elif mode == "remove":
+                remove = {flag.lower() for flag in normalized_flags}
+                updated = [flag for flag in current if flag.lower() not in remove]
+            else:
+                raise ValueError(f"Unsupported flag mode: {mode}")
+            self._update_mailbox_message_flags(str(row["id"]), updated)
+            updates.append({"uid": int(row["uid"]), "flags": updated})
+        return updates
+
+    def copy_messages(
+        self,
+        *,
+        mailbox_id: str,
+        source_folder_path: str,
+        target_folder_path: str,
+        uids: list[int],
+    ) -> list[dict[str, int]]:
+        if not uids:
+            return []
+        target_folder_id = self.folder_id(mailbox_id, normalize_mailbox_path(target_folder_path))
+        if not target_folder_id:
+            return []
+        rows = self._mailbox_message_rows_by_uid(
+            mailbox_id=mailbox_id,
+            folder_path=source_folder_path,
+            uids=uids,
+        )
+        copied: list[dict[str, int]] = []
+        for row in rows:
+            target_uid = self._copy_mailbox_message_row(
+                mailbox_id=mailbox_id,
+                target_folder_id=target_folder_id,
+                source_row=row,
+            )
+            copied.append({"source_uid": int(row["uid"]), "target_uid": target_uid})
+        return copied
+
+    def move_messages(
+        self,
+        *,
+        mailbox_id: str,
+        source_folder_path: str,
+        target_folder_path: str,
+        uids: list[int],
+    ) -> list[dict[str, int]]:
+        copied = self.copy_messages(
+            mailbox_id=mailbox_id,
+            source_folder_path=source_folder_path,
+            target_folder_path=target_folder_path,
+            uids=uids,
+        )
+        self.expunge_uids(
+            mailbox_id=mailbox_id,
+            folder_path=source_folder_path,
+            uids=[item["source_uid"] for item in copied],
+            require_deleted=False,
+        )
+        return copied
+
+    def expunge_deleted(self, *, mailbox_id: str, folder_path: str) -> list[int]:
+        rows = self._mailbox_message_rows_by_uid(
+            mailbox_id=mailbox_id,
+            folder_path=folder_path,
+            uids=[],
+        )
+        uids = [
+            int(row["uid"])
+            for row in rows
+            if "\\Deleted" in normalize_message_flags(row["flags"]) or bool(row["is_deleted"])
+        ]
+        return self.expunge_uids(
+            mailbox_id=mailbox_id,
+            folder_path=folder_path,
+            uids=uids,
+            require_deleted=True,
+        )
+
+    def expunge_uids(
+        self,
+        *,
+        mailbox_id: str,
+        folder_path: str,
+        uids: list[int],
+        require_deleted: bool,
+    ) -> list[int]:
+        if not uids:
+            return []
+        rows = self._mailbox_message_rows_by_uid(
+            mailbox_id=mailbox_id,
+            folder_path=folder_path,
+            uids=uids,
+        )
+        expunged: list[int] = []
+        for row in rows:
+            flags = normalize_message_flags(row["flags"])
+            if require_deleted and "\\Deleted" not in flags and not bool(row["is_deleted"]):
+                continue
+            self.connection.execute(
+                """
+                UPDATE millie_mailbox_messages
+                SET is_expunged = TRUE, updated_at = now()
+                WHERE id = %s
+                """,
+                (row["id"],),
+            )
+            expunged.append(int(row["uid"]))
+        return expunged
+
+    def append_raw_message_to_mailbox(
+        self,
+        *,
+        mailbox_id: str,
+        folder_path: str,
+        raw_bytes: bytes,
+        flags: list[str] | None = None,
+        internal_date: datetime | None = None,
+    ) -> int:
+        folder_path = normalize_mailbox_path(folder_path)
+        folder_id = self.ensure_mailbox_folder(mailbox_id, folder_path)
+        source_uri = f"millie://mailbox/{mailbox_id}/imap-append"
+        source_id = self.upsert_source(
+            source_type="imap",
+            source_uri=source_uri,
+            display_name="MILLIE IMAP append",
+            auth_mode="imap_append",
+            is_active=False,
+        )
+        job_id = self.create_import_job(
+            source_id=source_id,
+            mode="imap_append",
+            metadata={"mailbox_id": mailbox_id, "folder_path": folder_path},
+        )
+        source_message_id = f"append:{uuid.uuid4()}"
+        normalized = normalize_email(
+            raw_bytes,
+            source_message_id=source_message_id,
+            source_uri=source_uri,
+            folder=folder_path,
+            metadata={
+                "appended_to_mailbox": mailbox_id,
+                "appended_to_folder": folder_path,
+                "appended_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        self.store_message(
+            source_id=source_id,
+            import_job_id=job_id,
+            message=normalized,
+            folder=folder_path,
+        )
+        normalized_flags = normalize_message_flags(flags or [])
+        uid = self._insert_mailbox_message(
+            mailbox_id=mailbox_id,
+            folder_id=folder_id,
+            message_id=normalized.id,
+            binding_id=None,
+            internal_date=internal_date,
+            flags=normalized_flags,
+        )
+        if folder_path != "All Mail":
+            all_mail_id = self.folder_id(mailbox_id, "All Mail")
+            if all_mail_id:
+                self._insert_mailbox_message(
+                    mailbox_id=mailbox_id,
+                    folder_id=all_mail_id,
+                    message_id=normalized.id,
+                    binding_id=None,
+                    internal_date=internal_date,
+                    flags=normalized_flags,
+                )
+        return uid
+
     def folder_id(self, mailbox_id: str, folder_path: str) -> str | None:
+        folder_path = normalize_mailbox_path(folder_path)
         row = self.connection.execute(
             """
             SELECT id
@@ -666,6 +1011,172 @@ class PostgresMailStore:
             return None
         return BytesParser(policy=policy.default).parsebytes(raw)
 
+    def _mailbox_message_rows_by_uid(
+        self,
+        *,
+        mailbox_id: str,
+        folder_path: str,
+        uids: list[int],
+    ) -> list[dict[str, object]]:
+        folder_path = normalize_mailbox_path(folder_path)
+        params: list[object] = [mailbox_id, folder_path]
+        uid_filter = ""
+        if uids:
+            uid_filter = f"AND mm.imap_uid IN ({placeholders(uids)})"
+            params.extend(uids)
+        rows = self.connection.execute(
+            f"""
+            SELECT
+                mm.id,
+                mm.imap_uid,
+                mm.flags,
+                mm.keywords,
+                mm.is_deleted,
+                mm.message_id,
+                mm.binding_id,
+                mm.internal_date
+            FROM millie_mailbox_messages mm
+            JOIN millie_mailbox_folders mf ON mf.id = mm.folder_id
+            WHERE mm.mailbox_id = %s
+              AND mf.folder_path = %s
+              AND mm.is_expunged = FALSE
+              {uid_filter}
+            ORDER BY mm.imap_uid
+            """,
+            tuple(params),
+        ).fetchall()
+        return [
+            {
+                "id": row[0],
+                "uid": int(row[1]),
+                "flags": list(row[2] or []),
+                "keywords": list(row[3] or []),
+                "is_deleted": bool(row[4]),
+                "message_id": row[5],
+                "binding_id": row[6],
+                "internal_date": row[7],
+            }
+            for row in rows
+        ]
+
+    def _copy_mailbox_message_row(
+        self,
+        *,
+        mailbox_id: str,
+        target_folder_id: str,
+        source_row: dict[str, object],
+    ) -> int:
+        existing = self.connection.execute(
+            """
+            SELECT imap_uid
+            FROM millie_mailbox_messages
+            WHERE folder_id = %s AND message_id = %s
+            """,
+            (target_folder_id, source_row["message_id"]),
+        ).fetchone()
+        if existing:
+            return int(existing[0])
+        return self._insert_mailbox_message(
+            mailbox_id=mailbox_id,
+            folder_id=target_folder_id,
+            message_id=str(source_row["message_id"]),
+            binding_id=source_row["binding_id"],
+            internal_date=source_row["internal_date"],
+            flags=normalize_message_flags(source_row["flags"]),
+        )
+
+    def _insert_mailbox_message(
+        self,
+        *,
+        mailbox_id: str,
+        folder_id: str,
+        message_id: str,
+        binding_id: object | None,
+        internal_date: object | None,
+        flags: list[str],
+    ) -> int:
+        existing = self.connection.execute(
+            """
+            SELECT imap_uid
+            FROM millie_mailbox_messages
+            WHERE folder_id = %s AND message_id = %s
+            """,
+            (folder_id, message_id),
+        ).fetchone()
+        if existing:
+            return int(existing[0])
+        next_uid = self.connection.execute(
+            """
+            SELECT coalesce(max(imap_uid), 0) + 1
+            FROM millie_mailbox_messages
+            WHERE folder_id = %s
+            """,
+            (folder_id,),
+        ).fetchone()[0]
+        row_id = stable_id("millie_mailbox_message", mailbox_id, folder_id, message_id)
+        date_value = internal_date or datetime.now(timezone.utc)
+        booleans = message_flag_booleans(flags)
+        keywords = [flag for flag in flags if not flag.startswith("\\")]
+        self.connection.execute(
+            """
+            INSERT INTO millie_mailbox_messages (
+                id, mailbox_id, folder_id, message_id, binding_id, imap_uid,
+                internal_date, flags, keywords, is_seen, is_answered, is_flagged,
+                is_deleted, is_draft, is_recent
+            )
+            VALUES (
+                %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s,
+                %s, %s, FALSE
+            )
+            """,
+            (
+                row_id,
+                mailbox_id,
+                folder_id,
+                message_id,
+                binding_id,
+                next_uid,
+                date_value,
+                flags,
+                keywords,
+                booleans["is_seen"],
+                booleans["is_answered"],
+                booleans["is_flagged"],
+                booleans["is_deleted"],
+                booleans["is_draft"],
+            ),
+        )
+        return int(next_uid)
+
+    def _update_mailbox_message_flags(self, row_id: str, flags: list[str]) -> None:
+        booleans = message_flag_booleans(flags)
+        keywords = [flag for flag in flags if not flag.startswith("\\")]
+        self.connection.execute(
+            """
+            UPDATE millie_mailbox_messages
+            SET flags = %s,
+                keywords = %s,
+                is_seen = %s,
+                is_answered = %s,
+                is_flagged = %s,
+                is_deleted = %s,
+                is_draft = %s,
+                updated_at = now()
+            WHERE id = %s
+            """,
+            (
+                flags,
+                keywords,
+                booleans["is_seen"],
+                booleans["is_answered"],
+                booleans["is_flagged"],
+                booleans["is_deleted"],
+                booleans["is_draft"],
+                row_id,
+            ),
+        )
+
     def _replace_message(
         self,
         source_id: str,
@@ -910,6 +1421,58 @@ def placeholders(values: Iterable[object]) -> str:
     if not values:
         raise ValueError("At least one value is required.")
     return ", ".join(["%s"] * len(values))
+
+
+def normalize_mailbox_path(value: str) -> str:
+    path = str(value).strip().strip('"')
+    path = path.replace("\\", "/")
+    while "//" in path:
+        path = path.replace("//", "/")
+    path = path.strip("/")
+    if path.upper() == "INBOX":
+        return "INBOX"
+    return path
+
+
+SYSTEM_FLAGS = {
+    "\\seen": "\\Seen",
+    "\\answered": "\\Answered",
+    "\\flagged": "\\Flagged",
+    "\\deleted": "\\Deleted",
+    "\\draft": "\\Draft",
+    "\\recent": "\\Recent",
+}
+SYSTEM_FLAG_ORDER = ["\\Seen", "\\Answered", "\\Flagged", "\\Deleted", "\\Draft", "\\Recent"]
+
+
+def normalize_message_flags(flags: Iterable[object]) -> list[str]:
+    seen: dict[str, str] = {}
+    for value in flags:
+        flag = str(value).strip()
+        if not flag:
+            continue
+        if flag.startswith("\\"):
+            flag = SYSTEM_FLAGS.get(flag.lower(), flag)
+        key = flag.lower()
+        seen[key] = flag
+    ordered: list[str] = []
+    for flag in SYSTEM_FLAG_ORDER:
+        value = seen.pop(flag.lower(), None)
+        if value:
+            ordered.append(value)
+    ordered.extend(seen[key] for key in sorted(seen))
+    return ordered
+
+
+def message_flag_booleans(flags: Iterable[object]) -> dict[str, bool]:
+    values = {str(flag).lower() for flag in flags}
+    return {
+        "is_seen": "\\seen" in values,
+        "is_answered": "\\answered" in values,
+        "is_flagged": "\\flagged" in values,
+        "is_deleted": "\\deleted" in values,
+        "is_draft": "\\draft" in values,
+    }
 
 
 def _metadata_value(value: object) -> str:
