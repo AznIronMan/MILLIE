@@ -18,6 +18,9 @@ All notable changes to MILLIE will be documented in this file.
 - Added SQLite storage writer coverage for normalized message graphs.
 - Added PST password input handling with explicit backend capability reporting.
 - Added a dry-run import planner that does not connect, extract, or write data.
+- Added AES-256-GCM protection for secret values stored in `millie.settings`.
+- Added automatic migration of existing plaintext settings secrets and mail account passwords.
+- Updated the Microsoft OAuth helper to read and write encrypted settings secrets.
 - Added customer-facing settings documentation under `docs/`.
 
 ### Changed

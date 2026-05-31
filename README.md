@@ -18,7 +18,8 @@ This repository has been reset for a fresh start. No application architecture or
 
 ## Development Notes
 
-- Keep real credentials out of commits. During the temporary settings phase, API keys, database passwords, and mail account passwords in `millie.settings` are plain text.
+- Keep real credentials out of commits. During the temporary settings phase, API keys, database passwords, and mail account passwords in `millie.settings` are encrypted locally but still sensitive.
+- Secret values in `millie.settings` are encrypted at rest with AES-256-GCM. The encryption key is stored in macOS Keychain when available, or under ignored `.private/secrets/` as a fallback.
 - Use `.env` only for shell-level overrides. Application settings belong in `millie.settings`.
 - Keep generated mail data, local databases, exports, logs, secrets, and scratch work out of Git.
 - `.private/`, `.tasks/`, `/data/`, `/logs/`, `*.settings`, and `*.millie` are ignored.
@@ -32,9 +33,9 @@ Run the local settings editor from the project root:
 ./tmp_settings.sh
 ```
 
-It opens `http://127.0.0.1:22011/`, shows the settings table, and can save edits back to `millie.settings` or cancel and reload the current database values.
+It opens `http://127.0.0.1:22011/`, shows the settings table, and can save edits back to `millie.settings` or cancel and reload the current database values. Starting the editor also migrates any existing plaintext secret values to encrypted values.
 
-The temporary editor also supports repeatable IMAP retrieval accounts and SMTP sending accounts. Passwords are hidden in the page after save, but remain plain text inside `millie.settings` during this early development phase.
+The temporary editor also supports repeatable IMAP retrieval accounts and SMTP sending accounts. Passwords are hidden in the page after save and encrypted at rest in `millie.settings`.
 
 Microsoft Outlook IMAP OAuth settings are also stored there. Use `http://localhost:22013/oauth/microsoft/callback` as the local Entra redirect URI.
 

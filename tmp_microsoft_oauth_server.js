@@ -3,6 +3,12 @@
 const crypto = require("node:crypto");
 const http = require("node:http");
 const { spawnSync } = require("node:child_process");
+const {
+  isProtectedSecret,
+  isSecretSetting,
+  protectSecret,
+  revealSecret,
+} = require("./tmp_settings_crypto");
 
 const SETTINGS_DB = `${__dirname}/millie.settings`;
 const CALLBACK_PORT = 22013;
@@ -32,17 +38,31 @@ function quote(value) {
 function settings() {
   const output = sqlite("select setting_key, setting_value from settings;", { json: true }).trim();
   const rows = output ? JSON.parse(output) : [];
-  return Object.fromEntries(rows.map((row) => [row.setting_key, row.setting_value]));
+  return Object.fromEntries(rows.map((row) => {
+    const value = isSecretSetting(row.setting_key) && isProtectedSecret(row.setting_value)
+      ? revealSecret(row.setting_value, settingSecretContext(row.setting_key))
+      : row.setting_value;
+    return [row.setting_key, value];
+  }));
 }
 
-function saveSetting(key, value) {
+function saveSetting(key, value, options = {}) {
+  const secret = Boolean(options.secret ?? isSecretSetting(key));
+  const storedValue = secret && value
+    ? protectSecret(value, settingSecretContext(key))
+    : value;
   sqlite(`
 INSERT INTO settings (setting_key, setting_value, description, options, is_secret, sort_order, updated_at)
-VALUES (${quote(key)}, ${quote(value)}, '', '', 0, 9990, datetime('now'))
+VALUES (${quote(key)}, ${quote(storedValue)}, '', '', ${secret ? 1 : 0}, 9990, datetime('now'))
 ON CONFLICT(setting_key) DO UPDATE SET
   setting_value = excluded.setting_value,
+  is_secret = excluded.is_secret,
   updated_at = excluded.updated_at;
 `);
+}
+
+function settingSecretContext(key) {
+  return `settings:${key}`;
 }
 
 function makeAuthUrl(config, state) {
@@ -87,8 +107,8 @@ async function exchangeCode(code, config) {
 
 function storeToken(payload) {
   const expiresAt = new Date(Date.now() + Number(payload.expires_in || 0) * 1000).toISOString();
-  saveSetting("microsoft_oauth_access_token", payload.access_token || "");
-  saveSetting("microsoft_oauth_refresh_token", payload.refresh_token || "");
+  saveSetting("microsoft_oauth_access_token", payload.access_token || "", { secret: true });
+  saveSetting("microsoft_oauth_refresh_token", payload.refresh_token || "", { secret: true });
   saveSetting("microsoft_oauth_expires_at", expiresAt);
   saveSetting("microsoft_oauth_token_scope", payload.scope || "");
 }

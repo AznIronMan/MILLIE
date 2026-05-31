@@ -20,7 +20,8 @@ This repository was reset for a fresh 1.0.0 start on 2026-05-31. The previous im
 
 - Never commit real credentials, imported mail, generated databases, attachment dumps, access tokens, app keys, local logs, or mailbox archives.
 - Use root `millie.settings` as the primary local settings/config database. It is a SQLite3 file and is ignored by Git.
-- During the temporary settings phase, `millie.settings` can contain plain text API keys, database passwords, and IMAP/SMTP passwords. Keep real secret values out of commits.
+- Secret values in `millie.settings` are encrypted at rest with AES-256-GCM. The settings encryption key lives in macOS Keychain when available, or in ignored `.private/secrets/millie_settings.key` as a fallback.
+- Keep real secret values out of commits even when they are encrypted locally.
 - Use `.env` only for shell-level local overrides when needed; keep only placeholder examples in `.env.example`.
 - Put local credential files, OAuth notes, recovery material, copied secrets, generated runtime data, test databases, imported mail, exports, logs, scratch fixtures, and local archives under `.private/`.
 - `.private/`, `.tasks/`, `/data/`, `/logs/`, `*.settings`, and `*.millie` must stay ignored by Git.

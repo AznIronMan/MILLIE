@@ -2,6 +2,8 @@
 
 MILLIE stores application settings in the root `millie.settings` file. This file is a SQLite3 database, not an environment file, and it is ignored by Git.
 
+Secret values in `millie.settings` are encrypted at rest with AES-256-GCM. The encryption key is stored in macOS Keychain when available. If Keychain is not available, MILLIE creates an ignored fallback key at `.private/secrets/millie_settings.key`.
+
 During early development, run the temporary settings editor from the project root:
 
 ```sh
@@ -10,18 +12,20 @@ During early development, run the temporary settings editor from the project roo
 
 The script starts a local browser page at `http://127.0.0.1:22011/`. From there, review settings, edit values, then choose **Save changes** or **Cancel**.
 
+Starting the settings editor also migrates existing plaintext secret values to encrypted values.
+
 ## Current Settings
 
 - `database_mode`: `sqlite` or `postgres`.
 - `sqlite_location`: optional SQLite data path. If blank, MILLIE should create `data/<instance_id>.millie`.
-- `postgres_host_ip`, `postgres_port`, `postgres_username`, `postgres_password`, `postgres_database`: PostgreSQL connection settings. Password values are hidden in the editor and stored in plain text for now.
+- `postgres_host_ip`, `postgres_port`, `postgres_username`, `postgres_password`, `postgres_database`: PostgreSQL connection settings. Password values are hidden in the editor and encrypted at rest.
 - `main_api_provider`, `second_api_provider`, `third_api_provider`: `openai`, `claude`, `gemini`, `xai`, `local`, or blank for unused fallback tiers.
-- `main_api_key`, `second_api_key`, `third_api_key`: provider API keys. Leave empty for local models. Values are hidden in the editor and stored in plain text for now.
+- `main_api_key`, `second_api_key`, `third_api_key`: provider API keys. Leave empty for local models. Values are hidden in the editor and encrypted at rest.
 - `main_api_model`, `second_api_model`, `third_api_model`: provider model identifier, or a local LLM path when the provider is `local`.
 - `main_api_thinking`, `second_api_thinking`, `third_api_thinking`: `low`, `med`, `high`, `xhigh`, or blank for the default behavior.
 - `microsoft_oauth_tenant`: Microsoft OAuth tenant value. Use `organizations` for work or school accounts, `common` for mixed account support, or a tenant ID/domain.
 - `microsoft_oauth_client_id`: Microsoft Entra application client ID.
-- `microsoft_oauth_client_secret`: optional Microsoft Entra client secret value used for token exchange. This must be the secret **Value**, not the secret ID. Leave blank for public/native local flows. Stored in plain text for now if used.
+- `microsoft_oauth_client_secret`: optional Microsoft Entra client secret value used for token exchange. This must be the secret **Value**, not the secret ID. Leave blank for public/native local flows. Encrypted at rest if used.
 - `microsoft_oauth_client_secret_id`: optional Microsoft Entra client secret ID for reference only. The OAuth token exchange does not use this value.
 - `microsoft_oauth_redirect_uri`: redirect URI registered in Entra. Current local value: `http://localhost:22013/oauth/microsoft/callback`.
 - `microsoft_oauth_scopes`: Microsoft OAuth scopes. Current IMAP value: `offline_access https://outlook.office.com/IMAP.AccessAsUser.All`.
@@ -40,7 +44,7 @@ Each account includes:
 - Host.
 - Port.
 - Username.
-- Password, stored in plain text for now and hidden in the editor after save.
+- Password, encrypted at rest and hidden in the editor after save.
 - Security mode: blank/default, `none`, `starttls`, or `ssl_tls`.
 - Auth method: `password`, `oauth`, or `none`.
 - Enabled state.
@@ -82,6 +86,24 @@ During early development, run the callback helper before opening the authorizati
 
 The helper listens at `http://localhost:22013/oauth/microsoft/callback`, exchanges the returned authorization code for tokens, and saves the token values into local `millie.settings`.
 
-## Security Note
+## Secret Protection
 
-The temporary settings editor keeps secrets simple and stores them in plain text. Do not commit real API keys, database passwords, OAuth client secrets, tokens, or mail account passwords.
+Protected values are stored in `millie.settings` with a `millie:v1:aes-256-gcm` prefix. The database alone is not enough to decrypt them; the local encryption key is also required.
+
+Key lookup order:
+
+1. `MILLIE_SETTINGS_KEY`, if set. This can be a 32-byte base64/base64url/hex key, or a passphrase that MILLIE derives into a key.
+2. Existing macOS Keychain item named `MILLIE settings encryption key`.
+3. Existing ignored fallback file `.private/secrets/millie_settings.key`.
+4. New macOS Keychain item when Keychain is available.
+5. New ignored fallback file `.private/secrets/millie_settings.key`.
+
+To force migration of existing plaintext settings without opening the browser:
+
+```sh
+node tmp_settings_server.js --init-only
+```
+
+Losing the encryption key means existing encrypted secrets cannot be recovered. Re-enter affected passwords, API keys, and OAuth credentials through the settings editor.
+
+Do not commit real API keys, database passwords, OAuth client secrets, tokens, mail account passwords, `millie.settings`, or `.private/secrets/`.
