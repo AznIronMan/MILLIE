@@ -18,6 +18,7 @@ This repository has been reset for a fresh start. The prior version is archived 
 - Mail service status: dormant Postgres identity/mailbox facade scaffolded
 - Dev IMAP status: minimal listener available for local/LAN testing
 - Dev SMTP status: minimal authenticated listener available for mail client setup
+- Dev webmail status: no-auth browser view available for local/LAN testing
 
 ## Development Notes
 
@@ -96,3 +97,15 @@ For iOS Mail account setup, start the temporary authenticated SMTP companion as 
 ```sh
 .private/venv/bin/python tools/millie_smtp_listener.py --host 0.0.0.0 --submission-port 22587 --tls-port 22465 --daemon
 ```
+
+For SSL-off client testing, use IMAP port `22143` and SMTP port `22587`. Those plaintext dev ports intentionally do not advertise STARTTLS because some clients auto-upgrade and then reject the local self-signed certificate. The TLS ports remain `22993` for IMAP and `22465` for SMTP. Sanitized listener diagnostics are written under `.private/local/`.
+
+## Dev Webmail
+
+Start the temporary no-auth webmail view:
+
+```sh
+.private/venv/bin/python tools/millie_webmail_server.py --host 0.0.0.0 --port 22001 --daemon
+```
+
+It opens the current `geon@millie` mailbox through the Postgres mailbox facade and provides Gmail, Outlook, and Microsoft 365-inspired theme options. The first pass is read-only and does not include SMTP or compose behavior.

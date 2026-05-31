@@ -36,3 +36,5 @@ All notable changes to MILLIE will be documented in this file.
 - Reset the repository for a fresh 1.0.0 start.
 - Archived the previous implementation locally at `.private/archived/version_0.tar.gz`.
 - Recreated baseline project documentation, task lanes, and local secret/archive ignore rules.
+- Updated the dev IMAP/SMTP listeners so SSL-off ports do not advertise STARTTLS, added sanitized listener diagnostics, and corrected IMAP `BODY.PEEK` fetch responses for stricter mail clients.
+- Added a no-auth development webmail view for browsing the current MILLIE mailbox with Gmail, Outlook, and Microsoft 365-inspired themes.

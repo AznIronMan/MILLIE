@@ -24,6 +24,7 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from millie.service.imap_protocol import body_literal_name, imap_capabilities, summarize_fetch_items
 from millie.settings_loader import load_local_settings
 from millie.storage.postgres_store import PostgresMailStore
 
@@ -45,9 +46,12 @@ class MillieImapHandler(socketserver.StreamRequestHandler):
         self.identity_id: str | None = None
         self.mailbox_id: str | None = None
         self.selected_folder = "INBOX"
+        self.client = f"{self.client_address[0]}:{self.client_address[1]}"
+        self.log_event("connect", mode="tls" if self.server.implicit_tls else "plain")
 
     def finish(self) -> None:
         try:
+            self.log_event("disconnect")
             self.store.close()
         finally:
             super().finish()
@@ -69,7 +73,9 @@ class MillieImapHandler(socketserver.StreamRequestHandler):
         upper = command.upper()
         if upper == "UID":
             subcommand, subrest = split_subcommand(rest)
+            self.log_event("command", command=f"UID {subcommand.upper()}")
             return self.handle_uid_command(tag, subcommand.upper(), subrest)
+        self.log_event("command", command=upper)
         if upper == "CAPABILITY":
             self.send_capability()
             self.send_ok(tag, "CAPABILITY completed")
@@ -83,8 +89,7 @@ class MillieImapHandler(socketserver.StreamRequestHandler):
             self.send_ok(tag, "LOGOUT completed")
             return False
         elif upper == "STARTTLS":
-            self.send_ok(tag, "Begin TLS negotiation")
-            self.start_tls()
+            self.send_no(tag, "STARTTLS disabled on this dev plaintext port")
         elif upper == "LOGIN":
             self.login(tag, rest)
         elif upper == "AUTHENTICATE":
@@ -106,6 +111,7 @@ class MillieImapHandler(socketserver.StreamRequestHandler):
         elif upper in {"SUBSCRIBE", "UNSUBSCRIBE", "STORE"}:
             self.require_auth(tag) and self.send_ok(tag, f"{upper} completed")
         else:
+            self.log_event("unsupported", command=command)
             self.send_bad(tag, f"Unsupported command: {command}")
         return True
 
@@ -121,15 +127,13 @@ class MillieImapHandler(socketserver.StreamRequestHandler):
         return True
 
     def send_capability(self) -> None:
-        capabilities = ["IMAP4rev1", "UIDPLUS", "LITERAL+", "AUTH=PLAIN", "ID", "NAMESPACE"]
-        if not self.server.implicit_tls:
-            capabilities.append("STARTTLS")
-        self.send_line("* CAPABILITY " + " ".join(capabilities))
+        self.send_line("* CAPABILITY " + " ".join(imap_capabilities()))
 
     def login(self, tag: str, rest: str) -> None:
         try:
             username, password = shlex.split(rest)[:2]
         except ValueError:
+            self.log_event("login_parse_failed")
             self.send_bad(tag, "LOGIN requires username and password")
             return
         self.complete_login(tag, username, password)
@@ -138,6 +142,7 @@ class MillieImapHandler(socketserver.StreamRequestHandler):
         parts = rest.split()
         mechanism = parts[0].upper() if parts else ""
         if mechanism != "PLAIN":
+            self.log_event("auth_unsupported", mechanism=mechanism or "unknown")
             self.send_no(tag, "Only AUTHENTICATE PLAIN is supported")
             return
         if len(parts) > 1:
@@ -150,6 +155,7 @@ class MillieImapHandler(socketserver.StreamRequestHandler):
             decoded = base64.b64decode(payload).decode("utf-8", errors="replace")
             authzid, username, password = decoded.split("\x00", 2)
         except (ValueError, base64.binascii.Error):
+            self.log_event("auth_parse_failed", mechanism=mechanism)
             self.send_bad(tag, "Invalid AUTHENTICATE PLAIN payload")
             return
         self.complete_login(tag, username or authzid, password)
@@ -157,14 +163,17 @@ class MillieImapHandler(socketserver.StreamRequestHandler):
     def complete_login(self, tag: str, username: str, password: str) -> None:
         identity_id = self.store.authenticate(username, password)
         if not identity_id:
+            self.log_event("auth_failed", username=username)
             self.send_no(tag, "Authentication failed")
             return
         mailbox_id = self.store.primary_mailbox_for_identity(identity_id)
         if not mailbox_id:
+            self.log_event("auth_no_mailbox", username=username)
             self.send_no(tag, "No primary mailbox")
             return
         self.identity_id = identity_id
         self.mailbox_id = mailbox_id
+        self.log_event("auth_ok", username=username)
         self.send_ok(tag, "LOGIN completed")
 
     def namespace(self, tag: str) -> None:
@@ -172,11 +181,14 @@ class MillieImapHandler(socketserver.StreamRequestHandler):
         self.send_ok(tag, "NAMESPACE completed")
 
     def list_folders(self, tag: str, command: str, rest: str) -> None:
+        count = 0
         for folder in self.store.list_folders(self.mailbox_id):
+            count += 1
             attributes = "\\HasNoChildren" if folder["selectable"] else "\\Noselect"
             self.send_line(
                 f'* {command} ({attributes}) "/" {imap_quote(str(folder["path"]))}'
             )
+        self.log_event("list_folders", count=count)
         self.send_ok(tag, f"{command} completed")
 
     def select_folder(self, tag: str, rest: str, *, readonly: bool) -> None:
@@ -184,6 +196,7 @@ class MillieImapHandler(socketserver.StreamRequestHandler):
         messages = self.messages(folder)
         uid_next = max([int(message["uid"]) for message in messages], default=0) + 1
         self.selected_folder = folder
+        self.log_event("select", folder=folder, messages=len(messages), readonly=readonly)
         self.send_line("* FLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft)")
         self.send_line("* OK [PERMANENTFLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft)]")
         self.send_line(f"* {len(messages)} EXISTS")
@@ -199,6 +212,7 @@ class MillieImapHandler(socketserver.StreamRequestHandler):
         messages = self.messages(folder)
         uid_next = max([int(message["uid"]) for message in messages], default=0) + 1
         unseen = sum(1 for message in messages if "\\Seen" not in message["flags"])
+        self.log_event("status", folder=folder, messages=len(messages), unseen=unseen)
         self.send_line(
             f'* STATUS {imap_quote(folder)} '
             f"(MESSAGES {len(messages)} RECENT 0 UIDNEXT {uid_next} UIDVALIDITY 1 UNSEEN {unseen})"
@@ -211,6 +225,7 @@ class MillieImapHandler(socketserver.StreamRequestHandler):
             values = [str(message["uid"]) for message in messages]
         else:
             values = [str(index) for index, _ in enumerate(messages, start=1)]
+        self.log_event("search", folder=self.selected_folder, uid_mode=uid_mode, count=len(values))
         self.send_line("* SEARCH " + " ".join(values))
         self.send_ok(tag, "SEARCH completed")
 
@@ -218,6 +233,15 @@ class MillieImapHandler(socketserver.StreamRequestHandler):
         set_spec, item_text = split_fetch(rest)
         messages = self.messages(self.selected_folder)
         selected = select_messages(messages, set_spec, uid_mode=uid_mode)
+        self.log_event(
+            "fetch",
+            folder=self.selected_folder,
+            uid_mode=uid_mode,
+            set=set_spec,
+            count=len(selected),
+            items=summarize_fetch_items(item_text),
+            request=item_text,
+        )
         for sequence, message in selected:
             self.fetch_one(sequence, message, item_text, uid_mode=uid_mode)
         self.send_ok(tag, "FETCH completed")
@@ -295,6 +319,15 @@ class MillieImapHandler(socketserver.StreamRequestHandler):
     def send_bad(self, tag: str, message: str) -> None:
         self.send_line(f"{tag} BAD {message}")
 
+    def log_event(self, event: str, **fields: object) -> None:
+        values = {
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "client": getattr(self, "client", "unknown"),
+            "event": event,
+        }
+        values.update(fields)
+        print("IMAP " + " ".join(f"{key}={log_value(value)}" for key, value in values.items()), flush=True)
+
 
 class MillieImapServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     allow_reuse_address = True
@@ -340,6 +373,11 @@ def split_fetch(rest: str) -> tuple[str, str]:
     if len(parts) == 1:
         return parts[0], ""
     return parts[0], parts[1]
+
+
+def log_value(value: object) -> str:
+    text = str(value).replace("\n", "\\n").replace("\r", "\\r").replace(" ", "_")
+    return text[:160]
 
 
 def normalize_folder_name(value: str) -> str:
@@ -404,11 +442,6 @@ def fetch_literal(item_text: str, raw: bytes) -> tuple[str | None, bytes]:
     if "BODY.PEEK[]" in upper or "BODY[]" in upper:
         return body_literal_name(item_text), raw
     return None, b""
-
-
-def body_literal_name(item_text: str) -> str:
-    match = re.search(r"(BODY(?:\.PEEK)?\[[^\]]*\])", item_text, flags=re.I)
-    return match.group(1) if match else "BODY[]"
 
 
 def selected_headers(raw: bytes, item_text: str) -> bytes:

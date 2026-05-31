@@ -11,6 +11,7 @@ import ssl
 import subprocess
 import sys
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -38,9 +39,12 @@ class MillieSmtpHandler(socketserver.StreamRequestHandler):
         self.identity_id: str | None = None
         self.in_data = False
         self.data_lines: list[bytes] = []
+        self.client = f"{self.client_address[0]}:{self.client_address[1]}"
+        self.log_event("connect", mode="tls" if self.server.implicit_tls else "plain")
 
     def finish(self) -> None:
         try:
+            self.log_event("disconnect")
             self.store.close()
         finally:
             super().finish()
@@ -66,14 +70,14 @@ class MillieSmtpHandler(socketserver.StreamRequestHandler):
     def handle_command(self, text: str) -> bool:
         command, _, rest = text.partition(" ")
         upper = command.upper()
+        self.log_event("command", command=upper)
         if upper in {"EHLO", "HELO"}:
             self.ehlo()
         elif upper == "STARTTLS":
             if self.server.implicit_tls:
                 self.send_line("503 Already using TLS")
             else:
-                self.send_line("220 Begin TLS")
-                self.start_tls()
+                self.send_line("454 TLS not available on this dev plaintext port")
         elif upper == "AUTH":
             self.auth(rest)
         elif upper == "MAIL":
@@ -83,6 +87,7 @@ class MillieSmtpHandler(socketserver.StreamRequestHandler):
         elif upper == "DATA":
             if self.require_auth_or_reject():
                 self.in_data = True
+                self.log_event("data_begin")
                 self.send_line("354 End data with <CR><LF>.<CR><LF>")
         elif upper == "RSET":
             self.data_lines.clear()
@@ -93,13 +98,12 @@ class MillieSmtpHandler(socketserver.StreamRequestHandler):
             self.send_line("221 Bye")
             return False
         else:
+            self.log_event("unsupported", command=upper)
             self.send_line("502 Command not implemented")
         return True
 
     def ehlo(self) -> None:
         self.send_line("250-MILLIE")
-        if not self.server.implicit_tls:
-            self.send_line("250-STARTTLS")
         self.send_line("250-AUTH PLAIN LOGIN")
         self.send_line("250 8BITMIME")
 
@@ -132,15 +136,18 @@ class MillieSmtpHandler(socketserver.StreamRequestHandler):
     def complete_auth(self, username: str, password: str) -> None:
         identity_id = self.store.authenticate(username, password)
         if not identity_id:
+            self.log_event("auth_failed", username=username)
             self.send_line("535 Authentication failed")
             return
         self.identity_id = identity_id
         self.authenticated = True
+        self.log_event("auth_ok", username=username)
         self.send_line("235 Authentication successful")
 
     def require_auth_or_reject(self) -> bool:
         if self.authenticated:
             return True
+        self.log_event("auth_required")
         self.send_line("530 Authentication required")
         return False
 
@@ -156,6 +163,15 @@ class MillieSmtpHandler(socketserver.StreamRequestHandler):
     def send_line(self, value: str) -> None:
         self.wfile.write(value.encode("utf-8") + b"\r\n")
         self.wfile.flush()
+
+    def log_event(self, event: str, **fields: object) -> None:
+        values = {
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "client": getattr(self, "client", "unknown"),
+            "event": event,
+        }
+        values.update(fields)
+        print("SMTP " + " ".join(f"{key}={log_value(value)}" for key, value in values.items()), flush=True)
 
 
 class MillieSmtpServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
@@ -173,6 +189,11 @@ class MillieSmtpServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         if self.implicit_tls:
             request = self.ssl_context.wrap_socket(request, server_side=True)
         return request, client_address
+
+
+def log_value(value: object) -> str:
+    text = str(value).replace("\n", "\\n").replace("\r", "\\r").replace(" ", "_")
+    return text[:160]
 
 
 def ensure_certificates() -> tuple[Path, Path]:

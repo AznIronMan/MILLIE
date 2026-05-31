@@ -7,7 +7,7 @@ from email import policy
 from email.message import EmailMessage
 from email.parser import BytesParser
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 import psycopg
 from psycopg import Connection
@@ -24,6 +24,12 @@ class PostgresMailStore:
 
     def __init__(self, connection: Connection) -> None:
         self.connection = connection
+
+    def __enter__(self) -> "PostgresMailStore":
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        self.close()
 
     @classmethod
     def connect(cls, settings: dict[str, str]) -> "PostgresMailStore":
@@ -247,6 +253,215 @@ class PostgresMailStore:
                 "role": row[3],
                 "selectable": row[4],
                 "subscribed": row[5],
+            }
+            for row in rows
+        ]
+
+    def mailbox_by_address(self, mailbox_address: str | None = None) -> dict[str, object] | None:
+        if mailbox_address:
+            row = self.connection.execute(
+                """
+                SELECT mb.id, mb.mailbox_address, mb.display_name, mb.owner_identity_id
+                FROM millie_mailboxes mb
+                WHERE lower(mb.mailbox_address) = lower(%s)
+                ORDER BY mb.created_at
+                LIMIT 1
+                """,
+                (mailbox_address,),
+            ).fetchone()
+        else:
+            row = self.connection.execute(
+                """
+                SELECT mb.id, mb.mailbox_address, mb.display_name, mb.owner_identity_id
+                FROM millie_mailboxes mb
+                JOIN millie_identities i ON i.id = mb.owner_identity_id
+                WHERE mb.is_primary = TRUE
+                  AND i.status = 'active'
+                ORDER BY mb.created_at
+                LIMIT 1
+                """
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0],
+            "mailbox_address": row[1],
+            "display_name": row[2],
+            "owner_identity_id": row[3],
+        }
+
+    def list_webmail_messages(
+        self,
+        *,
+        mailbox_id: str,
+        folder_path: str,
+        limit: int = 100,
+    ) -> list[dict[str, object]]:
+        rows = self.connection.execute(
+            """
+            SELECT
+                mm.imap_uid,
+                mm.flags,
+                mm.internal_date,
+                m.id,
+                m.internet_message_id,
+                m.subject,
+                coalesce(m.sent_at, m.received_at, mm.internal_date) AS message_date,
+                m.body_preview,
+                m.has_attachments,
+                m.raw_mime_size_bytes,
+                from_addr.value AS from_text,
+                to_addr.value AS to_text
+            FROM millie_mailbox_messages mm
+            JOIN millie_mailbox_folders mf ON mf.id = mm.folder_id
+            JOIN mail_messages m ON m.id = mm.message_id
+            LEFT JOIN LATERAL (
+                SELECT string_agg(
+                    CASE
+                        WHEN coalesce(display_name, '') <> '' AND coalesce(email_address, '') <> ''
+                            THEN display_name || ' <' || email_address || '>'
+                        WHEN coalesce(email_address, '') <> '' THEN email_address
+                        ELSE coalesce(raw_value, '')
+                    END,
+                    ', ' ORDER BY ordinal
+                ) AS value
+                FROM mail_message_addresses a
+                WHERE a.message_id = m.id AND a.role = 'from'
+            ) from_addr ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT string_agg(
+                    CASE
+                        WHEN coalesce(display_name, '') <> '' AND coalesce(email_address, '') <> ''
+                            THEN display_name || ' <' || email_address || '>'
+                        WHEN coalesce(email_address, '') <> '' THEN email_address
+                        ELSE coalesce(raw_value, '')
+                    END,
+                    ', ' ORDER BY ordinal
+                ) AS value
+                FROM mail_message_addresses a
+                WHERE a.message_id = m.id AND a.role = 'to'
+            ) to_addr ON TRUE
+            WHERE mm.mailbox_id = %s
+              AND mf.folder_path = %s
+              AND mm.is_expunged = FALSE
+            ORDER BY message_date DESC NULLS LAST, mm.imap_uid DESC
+            LIMIT %s
+            """,
+            (mailbox_id, folder_path, limit),
+        ).fetchall()
+        return [
+            {
+                "uid": int(row[0]),
+                "flags": list(row[1] or []),
+                "internal_date": row[2],
+                "message_id": row[3],
+                "internet_message_id": row[4],
+                "subject": row[5],
+                "message_date": row[6],
+                "body_preview": row[7],
+                "has_attachments": bool(row[8]),
+                "size": int(row[9] or 0),
+                "from": row[10] or "",
+                "to": row[11] or "",
+            }
+            for row in rows
+        ]
+
+    def get_webmail_message_by_uid(
+        self,
+        *,
+        mailbox_id: str,
+        folder_path: str,
+        uid: int,
+    ) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            """
+            SELECT
+                mm.imap_uid,
+                mm.flags,
+                mm.internal_date,
+                m.id,
+                m.internet_message_id,
+                m.subject,
+                coalesce(m.sent_at, m.received_at, mm.internal_date) AS message_date,
+                m.body_preview,
+                m.body_text,
+                m.body_html,
+                m.has_attachments,
+                m.raw_mime_size_bytes,
+                r.content_blob
+            FROM millie_mailbox_messages mm
+            JOIN millie_mailbox_folders mf ON mf.id = mm.folder_id
+            JOIN mail_messages m ON m.id = mm.message_id
+            LEFT JOIN mail_raw_mime r ON r.message_id = m.id
+            WHERE mm.mailbox_id = %s
+              AND mf.folder_path = %s
+              AND mm.imap_uid = %s
+              AND mm.is_expunged = FALSE
+            LIMIT 1
+            """,
+            (mailbox_id, folder_path, uid),
+        ).fetchone()
+        if not row:
+            return None
+        message_id = row[3]
+        return {
+            "uid": int(row[0]),
+            "flags": list(row[1] or []),
+            "internal_date": row[2],
+            "message_id": message_id,
+            "internet_message_id": row[4],
+            "subject": row[5],
+            "message_date": row[6],
+            "body_preview": row[7],
+            "body_text": row[8],
+            "body_html": row[9],
+            "has_attachments": bool(row[10]),
+            "size": int(row[11] or 0),
+            "raw_mime": bytes(row[12]) if row[12] is not None else None,
+            "addresses": self.message_addresses(message_id),
+            "attachments": self.message_attachments(message_id),
+        }
+
+    def message_addresses(self, message_id: str) -> list[dict[str, object]]:
+        rows = self.connection.execute(
+            """
+            SELECT role, ordinal, display_name, email_address, raw_value
+            FROM mail_message_addresses
+            WHERE message_id = %s
+            ORDER BY role, ordinal
+            """,
+            (message_id,),
+        ).fetchall()
+        return [
+            {
+                "role": row[0],
+                "ordinal": row[1],
+                "display_name": row[2],
+                "email_address": row[3],
+                "raw_value": row[4],
+                "display": format_address_value(row[2], row[3], row[4]),
+            }
+            for row in rows
+        ]
+
+    def message_attachments(self, message_id: str) -> list[dict[str, object]]:
+        rows = self.connection.execute(
+            """
+            SELECT filename, content_type, size_bytes, sha256
+            FROM mail_message_parts
+            WHERE message_id = %s
+              AND is_attachment = TRUE
+            ORDER BY ordinal
+            """,
+            (message_id,),
+        ).fetchall()
+        return [
+            {
+                "filename": row[0] or "attachment",
+                "content_type": row[1] or "application/octet-stream",
+                "size": int(row[2] or 0),
+                "sha256": row[3],
             }
             for row in rows
         ]
@@ -544,6 +759,18 @@ def _role_text(addresses: Iterable[NormalizedAddress]) -> dict[str, str]:
         role: " ".join(value for value in role_values if value)
         for role, role_values in values.items()
     }
+
+
+def format_address_value(
+    display_name: str | None,
+    email_address: str | None,
+    raw_value: str | None,
+) -> str:
+    if display_name and email_address:
+        return f"{display_name} <{email_address}>"
+    if email_address:
+        return email_address
+    return raw_value or ""
 
 
 def _metadata_value(value: object) -> str:
