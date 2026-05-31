@@ -9,6 +9,7 @@ All notable changes to MILLIE will be documented in this file.
 - Added root `millie.settings` SQLite3 settings database.
 - Added a temporary browser-based settings editor launched by `tmp_settings.sh`.
 - Added repeatable IMAP retrieval and SMTP sending account settings in `millie.settings`.
+- Added Microsoft Outlook/Exchange OAuth settings for IMAP authorization.
 - Added customer-facing settings documentation under `docs/`.
 
 ### Changed

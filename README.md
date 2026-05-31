@@ -34,4 +34,6 @@ It opens `http://127.0.0.1:22011/`, shows the settings table, and can save edits
 
 The temporary editor also supports repeatable IMAP retrieval accounts and SMTP sending accounts. Passwords are hidden in the page after save, but remain plain text inside `millie.settings` during this early development phase.
 
+Microsoft Outlook IMAP OAuth settings are also stored there. Use `http://localhost:22013/oauth/microsoft/callback` as the local Entra redirect URI.
+
 Customer-facing docs live in `docs/`.
