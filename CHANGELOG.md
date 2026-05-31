@@ -29,6 +29,7 @@ All notable changes to MILLIE will be documented in this file.
 - Added a minimal authenticated development SMTP listener for mail client account setup.
 - Added customer-facing settings documentation under `docs/`.
 - Added IMAP mailbox-copy mutation support for folder changes, `APPEND`, flag updates, copy/move, delete, and expunge.
+- Added a dry-run-first bulk PST import tool that separates archives under `Sources/PST/<archive name>/...`.
 
 ### Changed
 

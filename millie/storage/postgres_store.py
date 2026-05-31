@@ -229,6 +229,18 @@ class PostgresMailStore:
         )
         return job_id
 
+    def source_message_exists(self, *, source_id: str, source_message_id: str) -> bool:
+        row = self.connection.execute(
+            """
+            SELECT 1
+            FROM mail_messages
+            WHERE source_id = %s AND source_message_id = %s
+            LIMIT 1
+            """,
+            (source_id, source_message_id),
+        ).fetchone()
+        return row is not None
+
     def store_message(
         self,
         *,

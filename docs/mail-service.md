@@ -119,7 +119,7 @@ Default folders are:
 - `Sources/IMAP`
 - `Sources/PST`
 
-An imported source can preserve its original folder structure under `Sources/<type>/...` while also appearing in `All Mail` or other service folders.
+An imported source can preserve its original folder structure under `Sources/<type>/...` while also appearing in `All Mail` or other service folders. Multiple PST imports stay separated under `Sources/PST/<archive name>/...`.
 
 ## Client/Server Shape
 

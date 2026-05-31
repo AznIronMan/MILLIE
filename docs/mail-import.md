@@ -25,6 +25,22 @@ python3 tools/pst_probe.py tmp/your-archive.pst --password-env MILLIE_PST_PASSWO
 
 For local files, keep password files under ignored `.private/secrets/`.
 
+## Bulk PST Planning And Import
+
+Use the bulk PST tool to plan a directory of PST files. The default mode is a dry run:
+
+```sh
+.private/venv/bin/python tools/millie_pst_bulk_import.py "/Users/ironman/HomeDrive/Outlook Files"
+```
+
+The bulk importer keeps PST files separated in the mailbox facade. A PST named `CSU_Archive.pst` maps to `Sources/PST/CSU_Archive`, and original folders inside that PST are nested below that root. Imported messages are also mapped into `All Mail` by default.
+
+Run the actual import only when ready:
+
+```sh
+.private/venv/bin/python tools/millie_pst_bulk_import.py "/Users/ironman/HomeDrive/Outlook Files" --apply
+```
+
 ## Dry-Run Planning
 
 Use the planner to inspect how a source would flow through the dormant pipeline:

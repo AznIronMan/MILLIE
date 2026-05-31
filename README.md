@@ -14,7 +14,7 @@ This repository has been reset for a fresh start. The prior version is archived 
 - Application structure: early dormant import, storage, identity, and mailbox service scaffolds
 - Settings store: local root `millie.settings` SQLite3 database, ignored by Git
 - Service mail domain: configured in `millie.settings`; current default is `millie.cnbsk.cloud` with local `MILLIE` aliases
-- PST import status: read-only probe available through `tools/pst_probe.py`
+- PST import status: read-only probe and dry-run-first bulk importer available
 - Mail import status: dormant source/normalization/storage pipeline scaffolded
 - Mail service status: dormant Postgres identity/mailbox facade scaffolded
 - Dev IMAP status: development listener available for local/LAN browse and mailbox-copy mutation testing
@@ -61,6 +61,14 @@ python3 tools/pst_probe.py tmp/your-archive.pst --clean
 ```
 
 The probe requires `readpst` from libpst, extracts derived MH-format email files under ignored `.private/local/pst-extract/`, writes a local JSON manifest, and prints only counts and metadata. It does not modify the source PST.
+
+To plan a multi-PST import without extracting or writing data:
+
+```sh
+.private/venv/bin/python tools/millie_pst_bulk_import.py "/Users/ironman/HomeDrive/Outlook Files"
+```
+
+When applied, each PST is mapped under its own mailbox root such as `Sources/PST/CSU_Archive`, with original PST folders nested below that root. Imported messages are also mapped into `All Mail` by default.
 
 ## Dormant Mail Import Pipeline
 
