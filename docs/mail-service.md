@@ -43,6 +43,56 @@ python3 tools/millie_identity_plan.py \
 
 The tool does not connect to Postgres. Review and apply the generated SQL later when the service is ready.
 
+## Live Sample Import
+
+The temporary live sample importer can copy one message from each configured source into the Postgres-backed MILLIE mailbox:
+
+```sh
+.private/venv/bin/python tools/millie_live_sample_import.py --login geon@MILLIE --display-name Geon
+```
+
+The tool applies the Postgres schema, creates or updates the `geon@millie` identity, imports one PST message, one password-IMAP message, and one Exchange OAuth IMAP message, then maps them into `INBOX`, `All Mail`, and source folders.
+
+Generated dev IMAP credentials are stored under ignored `.private/local/millie_ios_mail_credentials.txt`.
+
+## Dev IMAP Listener
+
+Start the minimal listener:
+
+```sh
+.private/venv/bin/python tools/millie_imap_listener.py \
+  --host 0.0.0.0 \
+  --plain-port 22143 \
+  --tls-port 22993 \
+  --daemon
+```
+
+The listener exposes:
+
+- Plain IMAP on port `22143`.
+- IMAP over TLS on port `22993` with a local self-signed certificate.
+
+iOS Mail normally requires an outgoing mail server during account setup. Start the temporary authenticated SMTP companion:
+
+```sh
+.private/venv/bin/python tools/millie_smtp_listener.py \
+  --host 0.0.0.0 \
+  --submission-port 22587 \
+  --tls-port 22465 \
+  --daemon
+```
+
+The SMTP listener authenticates with the same `geon@millie` credential and accepts test messages for dev discard. It is only there so mail clients can complete account setup; sending and archival of outgoing mail are future workflows.
+
+Stop the listener:
+
+```sh
+kill "$(cat .private/local/millie_imap_listener.pid)"
+kill "$(cat .private/local/millie_smtp_listener.pid)"
+```
+
+This is a development listener, not a production mail server. It is intended to verify mailbox navigation from clients such as Apple Mail, Outlook, and iOS Mail.
+
 ## Mailbox Facade
 
 Mailbox state is stored in:

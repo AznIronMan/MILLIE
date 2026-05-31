@@ -16,6 +16,8 @@ This repository has been reset for a fresh start. The prior version is archived 
 - PST import status: read-only probe available through `tools/pst_probe.py`
 - Mail import status: dormant source/normalization/storage pipeline scaffolded
 - Mail service status: dormant Postgres identity/mailbox facade scaffolded
+- Dev IMAP status: minimal listener available for local/LAN testing
+- Dev SMTP status: minimal authenticated listener available for mail client setup
 
 ## Development Notes
 
@@ -77,3 +79,20 @@ python3 tools/millie_identity_plan.py --login geon@MILLIE --display-name Geon
 ```
 
 The command generates bootstrap SQL only. It does not connect to Postgres or start an IMAP/webmail listener.
+
+## Dev IMAP Listener
+
+After importing samples, start the temporary IMAP listener:
+
+```sh
+.private/venv/bin/python tools/millie_live_sample_import.py --login geon@MILLIE --display-name Geon
+.private/venv/bin/python tools/millie_imap_listener.py --host 0.0.0.0 --plain-port 22143 --tls-port 22993 --daemon
+```
+
+Credentials are written to ignored `.private/local/millie_ios_mail_credentials.txt`. The listener is a development prototype only; it supports enough IMAP to browse copied messages, but it is not a hardened mail server.
+
+For iOS Mail account setup, start the temporary authenticated SMTP companion as well:
+
+```sh
+.private/venv/bin/python tools/millie_smtp_listener.py --host 0.0.0.0 --submission-port 22587 --tls-port 22465 --daemon
+```

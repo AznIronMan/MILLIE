@@ -24,6 +24,9 @@ All notable changes to MILLIE will be documented in this file.
 - Added dormant Postgres identity/authentication tables for MILLIE logins.
 - Added dormant Postgres mailbox facade tables and views for IMAP/webmail clients.
 - Added a bootstrap SQL planner for identities such as `geon@MILLIE`.
+- Added a live sample importer for copying one PST, one IMAP, and one Exchange OAuth message into MILLIE.
+- Added a minimal development IMAP listener backed by the Postgres mailbox facade.
+- Added a minimal authenticated development SMTP listener for mail client account setup.
 - Added customer-facing settings documentation under `docs/`.
 
 ### Changed
