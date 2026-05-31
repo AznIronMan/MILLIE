@@ -21,6 +21,9 @@ All notable changes to MILLIE will be documented in this file.
 - Added AES-256-GCM protection for secret values stored in `millie.settings`.
 - Added automatic migration of existing plaintext settings secrets and mail account passwords.
 - Updated the Microsoft OAuth helper to read and write encrypted settings secrets.
+- Added dormant Postgres identity/authentication tables for MILLIE logins.
+- Added dormant Postgres mailbox facade tables and views for IMAP/webmail clients.
+- Added a bootstrap SQL planner for identities such as `geon@MILLIE`.
 - Added customer-facing settings documentation under `docs/`.
 
 ### Changed

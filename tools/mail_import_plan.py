@@ -64,7 +64,8 @@ def main() -> int:
     print("  3. Normalize headers, addresses, dates, bodies, MIME parts, attachments, and inline items.")
     print("  4. Store the connected graph in mail_* tables.")
     print("  5. Populate search documents for SQLite FTS5 or PostgreSQL tsvector indexing.")
-    print("  6. Rehydrate messages from raw MIME plus connected DB records when called.")
+    print("  6. Map copied messages into Postgres-backed millie_* mailboxes when enabled.")
+    print("  7. Rehydrate messages from raw MIME plus connected DB records when called.")
     return 0
 
 

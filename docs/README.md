@@ -8,4 +8,5 @@ Internal planning, scratch notes, risks, credentials, fixtures, generated data, 
 
 - [Settings](settings.md)
 - [Mail Import Pipeline](mail-import.md)
+- [Mail Service Facade](mail-service.md)
 - [PST Probe](pst.md)

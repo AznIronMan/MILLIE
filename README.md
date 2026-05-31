@@ -4,17 +4,18 @@ Version: 1.0.0
 
 MILLIE stands for Mail Ingestion, Library, Lookup, Indexing, and Exchange.
 
-This repository has been reset for a fresh start. No application architecture or implementation scaffold is currently committed. The prior version is archived locally at `.private/archived/version_0.tar.gz` for reference only.
+This repository has been reset for a fresh start. The prior version is archived locally at `.private/archived/version_0.tar.gz` for reference only.
 
 ## Status
 
 - Current baseline: `1.0.0`
 - Reset date: 2026-05-31
-- Runtime setup: not defined yet beyond the temporary settings editor
-- Application structure: not defined yet
+- Runtime setup: not defined yet beyond temporary tools and dormant scaffolds
+- Application structure: early dormant import, storage, identity, and mailbox service scaffolds
 - Settings store: local root `millie.settings` SQLite3 database, ignored by Git
 - PST import status: read-only probe available through `tools/pst_probe.py`
 - Mail import status: dormant source/normalization/storage pipeline scaffolded
+- Mail service status: dormant Postgres identity/mailbox facade scaffolded
 
 ## Development Notes
 
@@ -66,3 +67,13 @@ python3 tools/mail_import_plan.py --source pst --database postgres --pst tmp/you
 ```
 
 The planned flow supports PST, IMAP password auth, and Exchange/Outlook OAuth IMAP sources. Normalized records have schema coverage for addresses, headers, dates, subjects, body projections, raw MIME, attachments, inline parts, embedded parts, metadata, folders, import jobs, and search indexes in SQLite or PostgreSQL.
+
+## Dormant Mail Service Facade
+
+Postgres schema now includes a `millie_*` service layer for identities such as `geon@MILLIE`, credentials, sessions, service mailboxes, IMAP/webmail folders, one-way source bindings, mailbox message flags, and webmail/IMAP query views.
+
+```sh
+python3 tools/millie_identity_plan.py --login geon@MILLIE --display-name Geon
+```
+
+The command generates bootstrap SQL only. It does not connect to Postgres or start an IMAP/webmail listener.

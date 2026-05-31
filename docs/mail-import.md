@@ -8,7 +8,7 @@ MILLIE now has a dormant import pipeline design for turning mail sources into co
 - IMAP accounts with password authentication.
 - Exchange/Outlook IMAP with OAuth using XOAUTH2 access tokens.
 
-IMAP extraction is designed to use a read-only mailbox select and `BODY.PEEK[]` fetches by UID so messages are not marked read during import.
+IMAP extraction is designed to use a read-only mailbox select and `BODY.PEEK[]` fetches by UID so messages are not marked read during import. Imported source messages are copied into MILLIE's canonical `mail_*` tables and can then be presented through the Postgres-backed `millie_*` mailbox facade.
 
 ## PST Passwords
 
@@ -78,3 +78,7 @@ MILLIE should recall an email from two connected layers:
 - Normalized tables make the message searchable, filterable, inspectable, and callable by API clients without reparsing the whole MIME message every time.
 
 The original raw MIME should remain the source of truth whenever exact email reconstruction matters.
+
+## Service Facade
+
+The Postgres schema also includes a dormant `millie_*` service layer for identities, credentials, mailbox folders, source bindings, IMAP flags, webmail views, and protocol clients. See [Mail Service Facade](mail-service.md).
