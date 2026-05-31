@@ -2,11 +2,10 @@
 .env
 .env.*
 !.env.example
-.private/secrets/
 
 # Local-only workspace data
-.private/local/
-.private/archived/
+.private/
+.tasks/
 
 # Databases and generated state
 *.sqlite
@@ -15,10 +14,11 @@
 *.db-shm
 *.db-wal
 *.settings
-!/millie.settings
 *.settings-journal
 *.settings-shm
 *.settings-wal
+*.millie
+/data/
 
 # Mailboxes, imports, exports, and attachments
 *.pst
@@ -34,7 +34,7 @@ raw-mail/
 
 # Logs and temporary output
 *.log
-logs/
+/logs/
 tmp/
 temp/
 

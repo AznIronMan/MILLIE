@@ -12,14 +12,14 @@ This repository has been reset for a fresh start. No application architecture or
 - Reset date: 2026-05-31
 - Runtime setup: not defined yet beyond the temporary settings editor
 - Application structure: not defined yet
-- Settings store: root `millie.settings` SQLite3 database
+- Settings store: local root `millie.settings` SQLite3 database, ignored by Git
 
 ## Development Notes
 
 - Keep real credentials out of commits. During the temporary settings phase, API keys, database passwords, and mail account passwords in `millie.settings` are plain text.
 - Use `.env` only for shell-level overrides. Application settings belong in `millie.settings`.
-- Keep generated mail data, local databases, exports, and logs in `.private/local/`.
-- Track work in `.tasks/ACTIVE`, `.tasks/PENDING`, and `.tasks/COMPLETED`.
+- Keep generated mail data, local databases, exports, logs, secrets, and scratch work out of Git.
+- `.private/`, `.tasks/`, `/data/`, `/logs/`, `*.settings`, and `*.millie` are ignored.
 - Update `CHANGELOG.md` for meaningful changes.
 
 ## Temporary Settings Editor

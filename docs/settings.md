@@ -1,6 +1,6 @@
 # Settings
 
-MILLIE stores application settings in the root `millie.settings` file. This file is a SQLite3 database, not an environment file.
+MILLIE stores application settings in the root `millie.settings` file. This file is a SQLite3 database, not an environment file, and it is ignored by Git.
 
 During early development, run the temporary settings editor from the project root:
 

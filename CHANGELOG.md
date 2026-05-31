@@ -13,6 +13,8 @@ All notable changes to MILLIE will be documented in this file.
 
 ### Changed
 
+- Stopped tracking local settings and task/private workspace files.
+- Updated ignore rules for `.private/`, `.tasks/`, `/data/`, `/logs/`, `*.settings`, and `*.millie`.
 - Reset the repository for a fresh 1.0.0 start.
 - Archived the previous implementation locally at `.private/archived/version_0.tar.gz`.
 - Recreated baseline project documentation, task lanes, and local secret/archive ignore rules.
