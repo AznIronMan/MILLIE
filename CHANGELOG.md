@@ -11,6 +11,7 @@ All notable changes to MILLIE will be documented in this file.
 - Added repeatable IMAP retrieval and SMTP sending account settings in `millie.settings`.
 - Added Microsoft Outlook/Exchange OAuth settings for IMAP authorization.
 - Added a separate Microsoft OAuth client secret ID setting so the secret value and ID are not conflated.
+- Added a temporary Microsoft OAuth callback helper for saving Outlook authorization tokens locally.
 - Added customer-facing settings documentation under `docs/`.
 
 ### Changed

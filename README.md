@@ -36,4 +36,10 @@ The temporary editor also supports repeatable IMAP retrieval accounts and SMTP s
 
 Microsoft Outlook IMAP OAuth settings are also stored there. Use `http://localhost:22013/oauth/microsoft/callback` as the local Entra redirect URI.
 
+For the temporary Microsoft OAuth callback/token exchange helper, run:
+
+```sh
+./tmp_microsoft_oauth.sh
+```
+
 Customer-facing docs live in `docs/`.
