@@ -18,7 +18,7 @@ This repository has been reset for a fresh start. The prior version is archived 
 - Mail import status: dormant source/normalization/storage pipeline scaffolded
 - Mail service status: dormant Postgres identity/mailbox facade scaffolded
 - Dev IMAP status: minimal listener available for local/LAN testing
-- Dev SMTP status: optional authenticated listener available only for mail clients that require outgoing setup
+- Dev SMTP status: optional setup-only blackhole listener; MILLIE never sends outbound SMTP
 - Dev webmail status: no-auth browser view available for local/LAN testing
 
 ## Development Notes
@@ -40,7 +40,7 @@ Run the local settings editor from the project root:
 
 It opens `http://127.0.0.1:22011/`, shows the settings table, and can save edits back to `millie.settings` or cancel and reload the current database values. Starting the editor also migrates any existing plaintext secret values to encrypted values.
 
-The temporary editor also supports service mailbox domain settings plus repeatable IMAP retrieval accounts and SMTP sending accounts. Passwords are hidden in the page after save and encrypted at rest in `millie.settings`.
+The temporary editor also supports service mailbox domain settings plus repeatable IMAP retrieval accounts and SMTP account metadata. Passwords are hidden in the page after save and encrypted at rest in `millie.settings`. MILLIE does not send outbound SMTP.
 
 Microsoft Outlook IMAP OAuth settings are also stored there. Use `http://localhost:22013/oauth/microsoft/callback` as the local Entra redirect URI.
 
@@ -93,13 +93,15 @@ After importing samples, start the temporary IMAP listener:
 
 Credentials are written to ignored `.private/local/millie_ios_mail_credentials.txt`. The listener is a development prototype only; it supports enough IMAP to browse copied messages, but it is not a hardened mail server.
 
-For mail clients that require an outgoing server during account setup, the temporary authenticated SMTP companion is available:
+For mail clients that require an outgoing server during account setup, the temporary SMTP setup shim is available:
 
 ```sh
 .private/venv/bin/python tools/millie_smtp_listener.py --host 0.0.0.0 --submission-port 22587 --tls-port 22465 --daemon
 ```
 
-For SSL-off client testing, use IMAP port `22143` and, only if needed, SMTP port `22587`. Those plaintext dev ports intentionally do not advertise STARTTLS because some clients auto-upgrade and then reject the local self-signed certificate. The TLS ports remain `22993` for IMAP and `22465` for SMTP. Sanitized listener diagnostics are written under `.private/local/`.
+This shim accepts any SMTP username/password or no SMTP authentication so client configuration screens can pass, then discards `DATA`. It does not relay, store, queue, or deliver outbound mail from MILLIE.
+
+For SSL-off client testing, use IMAP port `22143` and, only if needed, SMTP port `22587`. Those plaintext dev ports intentionally do not advertise STARTTLS because some clients auto-upgrade and then reject the local self-signed certificate. The TLS ports remain `22993` for IMAP and `22465` for SMTP setup checks. Sanitized listener diagnostics are written under `.private/local/`.
 
 ## Dev Webmail
 

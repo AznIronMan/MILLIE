@@ -72,7 +72,7 @@ The listener exposes:
 - Plain IMAP on port `22143`.
 - IMAP over TLS on port `22993` with a local self-signed certificate.
 
-Some mail clients require an outgoing mail server during account setup. Start the temporary authenticated SMTP companion only when needed:
+Some mail clients require an outgoing mail server during account setup. Start the temporary SMTP setup shim only when needed:
 
 ```sh
 .private/venv/bin/python tools/millie_smtp_listener.py \
@@ -82,7 +82,7 @@ Some mail clients require an outgoing mail server during account setup. Start th
   --daemon
 ```
 
-The SMTP listener authenticates with the same mailbox credential and accepts test messages for dev discard. It is only there for mail clients that insist on an outgoing server during account setup; sending and archival of outgoing mail are future workflows.
+The SMTP setup shim accepts any SMTP username/password, or no SMTP authentication at all, so client configuration checks can pass. It discards message `DATA` and never relays, stores, queues, or delivers outbound mail. SMTP from MILLIE is intentionally unsupported for this archive workflow.
 
 Stop the listener:
 

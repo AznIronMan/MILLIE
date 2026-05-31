@@ -37,11 +37,11 @@ Starting the settings editor also migrates existing plaintext secret values to e
 
 ## Mail Accounts
 
-The temporary settings editor stores repeatable IMAP and SMTP accounts in the `mail_accounts` table inside `millie.settings`.
+The temporary settings editor stores repeatable IMAP accounts and SMTP account metadata in the `mail_accounts` table inside `millie.settings`. SMTP settings may be kept for source/account reference, but MILLIE does not send outbound SMTP.
 
 Each account includes:
 
-- Account type: `imap` for retrieval or `smtp` for sending.
+- Account type: `imap` for retrieval or `smtp` for SMTP account metadata.
 - Display name.
 - Email address.
 - Host.
@@ -52,7 +52,7 @@ Each account includes:
 - Auth method: `password`, `oauth`, or `none`.
 - Enabled state.
 
-The editor can add one or many IMAP accounts and one or many SMTP accounts. Removing an account and choosing **Save changes** deletes it from `millie.settings`.
+The editor can add one or many IMAP accounts and one or many SMTP account records. Removing an account and choosing **Save changes** deletes it from `millie.settings`.
 
 ## Microsoft Entra OAuth For Outlook IMAP
 

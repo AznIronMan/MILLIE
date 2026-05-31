@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Minimal authenticated dev SMTP listener for iOS Mail account setup."""
+"""SMTP setup shim that accepts client checks but never sends mail."""
 
 from __future__ import annotations
 
@@ -17,9 +17,6 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from millie.settings_loader import load_local_settings
-from millie.storage.postgres_store import PostgresMailStore
-
 
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_SUBMISSION_PORT = 22587
@@ -34,23 +31,20 @@ class MillieSmtpHandler(socketserver.StreamRequestHandler):
 
     def setup(self) -> None:
         super().setup()
-        self.store = PostgresMailStore.connect(self.server.settings)
-        self.authenticated = False
-        self.identity_id: str | None = None
+        self.authenticated = True
         self.in_data = False
-        self.data_lines: list[bytes] = []
+        self.discarded_bytes = 0
         self.client = f"{self.client_address[0]}:{self.client_address[1]}"
         self.log_event("connect", mode="tls" if self.server.implicit_tls else "plain")
 
     def finish(self) -> None:
         try:
-            self.log_event("disconnect")
-            self.store.close()
+            self.log_event("disconnect", discarded_bytes=self.discarded_bytes)
         finally:
             super().finish()
 
     def handle(self) -> None:
-        self.send_line("220 MILLIE dev SMTP ready")
+        self.send_line("220 MILLIE SMTP setup shim ready; outbound SMTP is disabled")
         while True:
             raw = self.rfile.readline(1024 * 1024)
             if not raw:
@@ -58,10 +52,9 @@ class MillieSmtpHandler(socketserver.StreamRequestHandler):
             if self.in_data:
                 if raw.rstrip(b"\r\n") == b".":
                     self.in_data = False
-                    self.data_lines.clear()
-                    self.send_line("250 Message accepted for dev discard")
+                    self.send_line("250 Message accepted for discard; outbound SMTP is disabled")
                 else:
-                    self.data_lines.append(raw)
+                    self.discarded_bytes += len(raw)
                 continue
             text = raw.decode("utf-8", errors="replace").rstrip("\r\n")
             if not self.handle_command(text):
@@ -81,16 +74,15 @@ class MillieSmtpHandler(socketserver.StreamRequestHandler):
         elif upper == "AUTH":
             self.auth(rest)
         elif upper == "MAIL":
-            self.require_auth_or_reject() and self.send_line("250 Sender OK")
+            self.send_line("250 Sender OK; outbound SMTP is disabled")
         elif upper == "RCPT":
-            self.require_auth_or_reject() and self.send_line("250 Recipient OK")
+            self.send_line("250 Recipient OK; outbound SMTP is disabled")
         elif upper == "DATA":
-            if self.require_auth_or_reject():
-                self.in_data = True
-                self.log_event("data_begin")
-                self.send_line("354 End data with <CR><LF>.<CR><LF>")
+            self.in_data = True
+            self.log_event("data_begin")
+            self.send_line("354 End data with <CR><LF>.<CR><LF>")
         elif upper == "RSET":
-            self.data_lines.clear()
+            self.discarded_bytes = 0
             self.send_line("250 Reset OK")
         elif upper == "NOOP":
             self.send_line("250 OK")
@@ -104,6 +96,7 @@ class MillieSmtpHandler(socketserver.StreamRequestHandler):
 
     def ehlo(self) -> None:
         self.send_line("250-MILLIE")
+        self.send_line("250-PIPELINING")
         self.send_line("250-AUTH PLAIN LOGIN")
         self.send_line("250 8BITMIME")
 
@@ -114,42 +107,30 @@ class MillieSmtpHandler(socketserver.StreamRequestHandler):
             payload = parts[1] if len(parts) > 1 else self.prompt("334 ")
             try:
                 decoded = base64.b64decode(payload).decode("utf-8", errors="replace")
-                authzid, username, password = decoded.split("\x00", 2)
+                authzid, username, _password = decoded.split("\x00", 2)
             except (ValueError, base64.binascii.Error):
-                self.send_line("501 Invalid AUTH PLAIN payload")
-                return
-            self.complete_auth(username or authzid, password)
+                username = ""
+                authzid = ""
+            self.complete_auth(username or authzid, mechanism)
             return
         if mechanism == "LOGIN":
             username_payload = parts[1] if len(parts) > 1 else self.prompt("334 VXNlcm5hbWU6")
-            password_payload = self.prompt("334 UGFzc3dvcmQ6")
+            self.prompt("334 UGFzc3dvcmQ6")
             try:
                 username = base64.b64decode(username_payload).decode("utf-8", errors="replace")
-                password = base64.b64decode(password_payload).decode("utf-8", errors="replace")
             except base64.binascii.Error:
-                self.send_line("501 Invalid AUTH LOGIN payload")
-                return
-            self.complete_auth(username, password)
+                username = ""
+            self.complete_auth(username, mechanism)
             return
-        self.send_line("504 Unsupported authentication mechanism")
+        if mechanism:
+            self.complete_auth("", mechanism)
+            return
+        self.complete_auth("", "none")
 
-    def complete_auth(self, username: str, password: str) -> None:
-        identity_id = self.store.authenticate(username, password)
-        if not identity_id:
-            self.log_event("auth_failed", username=username)
-            self.send_line("535 Authentication failed")
-            return
-        self.identity_id = identity_id
+    def complete_auth(self, username: str, mechanism: str) -> None:
         self.authenticated = True
-        self.log_event("auth_ok", username=username)
-        self.send_line("235 Authentication successful")
-
-    def require_auth_or_reject(self) -> bool:
-        if self.authenticated:
-            return True
-        self.log_event("auth_required")
-        self.send_line("530 Authentication required")
-        return False
+        self.log_event("auth_accepted", username=username or "unspecified", mechanism=mechanism)
+        self.send_line("235 Authentication accepted; outbound SMTP is disabled")
 
     def prompt(self, value: str) -> str:
         self.send_line(value)
@@ -178,8 +159,7 @@ class MillieSmtpServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     allow_reuse_address = True
     daemon_threads = True
 
-    def __init__(self, server_address, handler_class, *, settings, implicit_tls, ssl_context):
-        self.settings = settings
+    def __init__(self, server_address, handler_class, *, implicit_tls, ssl_context):
         self.implicit_tls = implicit_tls
         self.ssl_context = ssl_context
         super().__init__(server_address, handler_class)
@@ -232,7 +212,7 @@ def ensure_certificates() -> tuple[Path, Path]:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Start MILLIE's minimal dev SMTP listener.")
+    parser = argparse.ArgumentParser(description="Start MILLIE's setup-only SMTP blackhole listener.")
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--submission-port", type=int, default=DEFAULT_SUBMISSION_PORT)
     parser.add_argument("--tls-port", type=int, default=DEFAULT_TLS_PORT)
@@ -265,22 +245,18 @@ def daemonize(*, pid_file: Path, log_file: Path) -> None:
 
 
 def serve(args: argparse.Namespace) -> None:
-    config = load_local_settings()
-    settings = config["settings"]
     cert, key = ensure_certificates()
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(certfile=cert, keyfile=key)
     submission_server = MillieSmtpServer(
         (args.host, args.submission_port),
         MillieSmtpHandler,
-        settings=settings,
         implicit_tls=False,
         ssl_context=context,
     )
     tls_server = MillieSmtpServer(
         (args.host, args.tls_port),
         MillieSmtpHandler,
-        settings=settings,
         implicit_tls=True,
         ssl_context=context,
     )
