@@ -14,6 +14,7 @@ This repository has been reset for a fresh start. No application architecture or
 - Application structure: not defined yet
 - Settings store: local root `millie.settings` SQLite3 database, ignored by Git
 - PST import status: read-only probe available through `tools/pst_probe.py`
+- Mail import status: dormant source/normalization/storage pipeline scaffolded
 
 ## Development Notes
 
@@ -54,3 +55,13 @@ python3 tools/pst_probe.py tmp/your-archive.pst --clean
 ```
 
 The probe requires `readpst` from libpst, extracts derived MH-format email files under ignored `.private/local/pst-extract/`, writes a local JSON manifest, and prints only counts and metadata. It does not modify the source PST.
+
+## Dormant Mail Import Pipeline
+
+The initial import pipeline code and database schemas are present but not activated for live imports.
+
+```sh
+python3 tools/mail_import_plan.py --source pst --database postgres --pst tmp/your-archive.pst
+```
+
+The planned flow supports PST, IMAP password auth, and Exchange/Outlook OAuth IMAP sources. Normalized records have schema coverage for addresses, headers, dates, subjects, body projections, raw MIME, attachments, inline parts, embedded parts, metadata, folders, import jobs, and search indexes in SQLite or PostgreSQL.

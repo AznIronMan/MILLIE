@@ -32,6 +32,25 @@ The probe:
 - Writes `pst_probe_manifest.json` in the extraction directory.
 - Prints counts, date range, header presence counts, folder counts, parse errors, and attachment MIME part counts.
 
+## Password Input
+
+Do not put PST passwords directly on the command line. Use one of:
+
+```sh
+MILLIE_PST_PASSWORD='value goes here' \
+python3 tools/pst_probe.py tmp/your-archive.pst --password-env MILLIE_PST_PASSWORD
+```
+
+```sh
+python3 tools/pst_probe.py tmp/your-archive.pst --password-file .private/secrets/pst-password.txt
+```
+
+```sh
+python3 tools/pst_probe.py tmp/your-archive.pst --password-prompt
+```
+
+The current installed `readpst` backend has no password parameter. MILLIE validates that password input exists and records that a password was supplied, but cannot pass the password to `readpst`. If this backend cannot open a locked PST, the probe fails with an explicit password-backend error.
+
 ## Report Shape
 
 The compact report includes:

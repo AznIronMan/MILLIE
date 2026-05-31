@@ -9,8 +9,10 @@ contents, senders, recipients, or subjects.
 from __future__ import annotations
 
 import argparse
+import getpass
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -70,7 +72,13 @@ def remove_output_dir(path: Path) -> None:
     shutil.rmtree(resolved)
 
 
-def run_readpst(readpst_bin: str, pst_path: Path, output_dir: Path) -> None:
+def run_readpst(
+    readpst_bin: str,
+    pst_path: Path,
+    output_dir: Path,
+    *,
+    password_supplied: bool = False,
+) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     command = [
         readpst_bin,
@@ -95,6 +103,13 @@ def run_readpst(readpst_bin: str, pst_path: Path, output_dir: Path) -> None:
         stderr = result.stderr.strip()
         stdout = result.stdout.strip()
         details = stderr or stdout or f"exit code {result.returncode}"
+        if password_supplied:
+            raise SystemExit(
+                "readpst failed. A PST password was supplied, but the installed "
+                "readpst backend has no password parameter. Configure a "
+                "password-capable PST backend before importing this file. "
+                f"Backend detail: {details}"
+            )
         raise SystemExit(f"readpst failed: {details}")
 
 
@@ -214,6 +229,24 @@ def build_parser() -> argparse.ArgumentParser:
         default=shutil.which("readpst") or "readpst",
         help="Path to the readpst executable.",
     )
+    password_group = parser.add_mutually_exclusive_group()
+    password_group.add_argument(
+        "--password-env",
+        help=(
+            "Name of an environment variable containing the PST password. "
+            "The value is validated but is not printed."
+        ),
+    )
+    password_group.add_argument(
+        "--password-file",
+        type=Path,
+        help="Path to a local file containing the PST password.",
+    )
+    password_group.add_argument(
+        "--password-prompt",
+        action="store_true",
+        help="Prompt for a PST password without echoing it.",
+    )
     parser.add_argument(
         "--json",
         action="store_true",
@@ -229,6 +262,11 @@ def print_report(manifest: dict[str, Any]) -> None:
     print(f"Extraction: {'created' if manifest['extracted_now'] else 'reused'}")
     print(f"Extract dir: {manifest['extract_dir']}")
     print(f"Manifest: {manifest['manifest_path']}")
+    if manifest["pst_password_mode"] != "none":
+        print(
+            "PST password: provided and validated; readpst cannot receive "
+            "passwords, so extraction uses the installed backend as-is"
+        )
     print(
         "Messages: "
         f"{manifest['parsed_messages']} parsed, "
@@ -253,6 +291,27 @@ def print_report(manifest: dict[str, Any]) -> None:
         print(f"  {count:5d}  {folder}")
 
 
+def resolve_password_mode(args: argparse.Namespace) -> str:
+    if args.password_env:
+        if not os.environ.get(args.password_env):
+            raise SystemExit(f"PST password env var is empty or missing: {args.password_env}")
+        return "env"
+    if args.password_file:
+        password_file = args.password_file.expanduser()
+        if not password_file.is_absolute():
+            password_file = (Path.cwd() / password_file).resolve()
+        if not password_file.is_file():
+            raise SystemExit(f"PST password file not found: {display_path(password_file)}")
+        if not password_file.read_text().strip():
+            raise SystemExit(f"PST password file is empty: {display_path(password_file)}")
+        return "file"
+    if args.password_prompt:
+        if not getpass.getpass("PST password: "):
+            raise SystemExit("PST password cannot be empty.")
+        return "prompt"
+    return "none"
+
+
 def main() -> int:
     args = build_parser().parse_args()
     pst_path = args.pst
@@ -261,6 +320,8 @@ def main() -> int:
         pst = (Path.cwd() / pst).resolve()
     if not pst.is_file():
         raise SystemExit(f"PST not found: {pst_path}")
+    password_mode = resolve_password_mode(args)
+    password_supplied = password_mode != "none"
 
     readpst_bin = (
         shutil.which(args.readpst_bin)
@@ -278,8 +339,13 @@ def main() -> int:
     extracted_now = False
     if output_dir.exists() and args.clean:
         remove_output_dir(output_dir)
+    if output_dir.exists() and not (output_dir / MANIFEST_NAME).exists():
+        raise SystemExit(
+            "Existing PST extraction has no manifest and may be incomplete. "
+            "Rerun with --clean or choose a different --output-dir."
+        )
     if not output_dir.exists():
-        run_readpst(readpst_bin, pst, output_dir)
+        run_readpst(readpst_bin, pst, output_dir, password_supplied=password_supplied)
         extracted_now = True
 
     message_root = find_message_root(output_dir)
@@ -297,6 +363,8 @@ def main() -> int:
         "manifest_path": display_path(output_dir / MANIFEST_NAME),
         "readpst_bin": readpst_bin,
         "readpst_mode": "MH email-only (-M -te)",
+        "pst_password_mode": password_mode,
+        "pst_password_backend": "readpst-no-password-argument",
         "extracted_now": extracted_now,
         **scan,
     }

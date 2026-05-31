@@ -13,6 +13,11 @@ All notable changes to MILLIE will be documented in this file.
 - Added a separate Microsoft OAuth client secret ID setting so the secret value and ID are not conflated.
 - Added a temporary Microsoft OAuth callback helper for saving Outlook authorization tokens locally.
 - Added a read-only PST probe using libpst/readpst with metadata-only reporting.
+- Added dormant mail import pipeline models for PST, IMAP, and Exchange OAuth IMAP sources.
+- Added SQLite and PostgreSQL canonical mail storage schemas.
+- Added SQLite storage writer coverage for normalized message graphs.
+- Added PST password input handling with explicit backend capability reporting.
+- Added a dry-run import planner that does not connect, extract, or write data.
 - Added customer-facing settings documentation under `docs/`.
 
 ### Changed
