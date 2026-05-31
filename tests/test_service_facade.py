@@ -5,7 +5,10 @@ import unittest
 from millie.service.auth import (
     MillieIdentity,
     build_identity_sql,
+    default_service_login,
     hash_password,
+    identity_from_settings,
+    login_address_candidates,
     normalize_login_address,
     verify_password,
 )
@@ -41,6 +44,25 @@ class ServiceFacadeTest(unittest.TestCase):
         self.assertIn("All Mail", paths)
         self.assertIn("Sources/IMAP", paths)
         self.assertIn("Sources/PST", paths)
+
+    def test_settings_domain_canonicalizes_local_aliases(self) -> None:
+        settings = {
+            "service_mail_domain": "millie.cnbsk.cloud",
+            "service_mail_local_domain": "MILLIE",
+            "service_mail_domain_aliases": "local.millie.test",
+        }
+        identity = identity_from_settings("Geon@MILLIE", "Geon", settings)
+
+        self.assertEqual(default_service_login(settings, "geon"), "geon@millie.cnbsk.cloud")
+        self.assertEqual(identity.normalized_login, "geon@millie.cnbsk.cloud")
+        self.assertIn(
+            "geon@millie",
+            login_address_candidates(
+                "geon@millie.cnbsk.cloud",
+                primary_domain="millie.cnbsk.cloud",
+                domain_aliases=("MILLIE",),
+            ),
+        )
 
 
 if __name__ == "__main__":

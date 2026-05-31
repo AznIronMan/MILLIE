@@ -38,3 +38,4 @@ All notable changes to MILLIE will be documented in this file.
 - Recreated baseline project documentation, task lanes, and local secret/archive ignore rules.
 - Updated the dev IMAP/SMTP listeners so SSL-off ports do not advertise STARTTLS, added sanitized listener diagnostics, and corrected IMAP `BODY.PEEK` fetch responses for stricter mail clients.
 - Added a no-auth development webmail view for browsing the current MILLIE mailbox with Gmail, Outlook, and Microsoft 365-inspired themes.
+- Added configurable service mailbox domains in `millie.settings`, defaulting to `millie.cnbsk.cloud` with local `MILLIE` aliases for identities such as `geon@millie.cnbsk.cloud`.

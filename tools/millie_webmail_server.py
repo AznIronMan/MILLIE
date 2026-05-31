@@ -23,12 +23,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from millie.settings_loader import load_local_settings
+from millie.service.auth import default_service_login
 from millie.storage.postgres_store import PostgresMailStore
 
 
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 22001
-DEFAULT_MAILBOX = "geon@millie"
 DEFAULT_PID_FILE = PROJECT_ROOT / ".private" / "local" / "millie_webmail_server.pid"
 DEFAULT_LOG_FILE = PROJECT_ROOT / ".private" / "local" / "millie_webmail_server.log"
 
@@ -262,7 +262,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Start MILLIE's no-auth development webmail.")
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
-    parser.add_argument("--mailbox", default=DEFAULT_MAILBOX)
+    parser.add_argument(
+        "--mailbox",
+        default="",
+        help="Mailbox address to open. Defaults to geon@<service_mail_domain> from millie.settings.",
+    )
     parser.add_argument("--daemon", action="store_true", help="Detach into the background.")
     parser.add_argument("--pid-file", type=Path, default=DEFAULT_PID_FILE)
     parser.add_argument("--log-file", type=Path, default=DEFAULT_LOG_FILE)
@@ -293,11 +297,12 @@ def daemonize(*, pid_file: Path, log_file: Path) -> None:
 
 def serve(args: argparse.Namespace) -> None:
     settings = load_local_settings()["settings"]
+    mailbox_address = args.mailbox or default_service_login(settings, "geon")
     server = MillieWebmailServer(
         (args.host, args.port),
         MillieWebmailHandler,
         settings=settings,
-        mailbox_address=args.mailbox,
+        mailbox_address=mailbox_address,
     )
     print(f"MILLIE webmail listening on http://{args.host}:{args.port}", flush=True)
     try:

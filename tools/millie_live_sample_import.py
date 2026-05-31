@@ -20,12 +20,11 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from millie.importing.normalize import normalize_email
 from millie.importing.sources import ImapSource, PstSource
-from millie.service.auth import MillieIdentity, hash_password
+from millie.service.auth import default_service_login, hash_password, identity_from_settings
 from millie.settings_loader import load_local_settings
 from millie.storage.postgres_store import PostgresMailStore
 
 
-DEFAULT_LOGIN = "geon@MILLIE"
 DEFAULT_PST = PROJECT_ROOT / "tmp" / "CSU_Archive.pst"
 DEFAULT_CREDENTIAL_FILE = PROJECT_ROOT / ".private" / "local" / "millie_ios_mail_credentials.txt"
 
@@ -34,7 +33,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Import one sample message from PST, IMAP, and Exchange OAuth into MILLIE."
     )
-    parser.add_argument("--login", default=DEFAULT_LOGIN, help="MILLIE login to create/use.")
+    parser.add_argument(
+        "--login",
+        default="",
+        help="MILLIE login to create/use. Defaults to geon@<service_mail_domain> from millie.settings.",
+    )
     parser.add_argument("--display-name", default="Geon", help="MILLIE mailbox display name.")
     parser.add_argument("--pst", type=Path, default=DEFAULT_PST, help="PST path.")
     parser.add_argument(
@@ -53,7 +56,8 @@ def main() -> int:
     accounts = config["accounts"]
 
     password = ensure_listener_password(args.credential_file)
-    identity = MillieIdentity(args.login, args.display_name)
+    login = args.login or default_service_login(settings, "geon")
+    identity = identity_from_settings(login, args.display_name, settings)
     store = PostgresMailStore.connect(settings)
     imported: list[dict[str, Any]] = []
     try:

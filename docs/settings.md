@@ -18,6 +18,9 @@ Starting the settings editor also migrates existing plaintext secret values to e
 
 - `database_mode`: `sqlite` or `postgres`.
 - `sqlite_location`: optional SQLite data path. If blank, MILLIE should create `data/<instance_id>.millie`.
+- `service_mail_domain`: primary hosted MILLIE mailbox domain. Current default: `millie.cnbsk.cloud`.
+- `service_mail_local_domain`: local development alias domain. Current default: `MILLIE`.
+- `service_mail_domain_aliases`: comma-separated additional domains accepted as aliases for `service_mail_domain`.
 - `postgres_host_ip`, `postgres_port`, `postgres_username`, `postgres_password`, `postgres_database`: PostgreSQL connection settings. Password values are hidden in the editor and encrypted at rest.
 - `main_api_provider`, `second_api_provider`, `third_api_provider`: `openai`, `claude`, `gemini`, `xai`, `local`, or blank for unused fallback tiers.
 - `main_api_key`, `second_api_key`, `third_api_key`: provider API keys. Leave empty for local models. Values are hidden in the editor and encrypted at rest.

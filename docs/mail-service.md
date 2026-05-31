@@ -1,6 +1,6 @@
 # MILLIE Mail Service Facade
 
-MILLIE is intended to expose copied mail archives like a normal mail service. A user such as `geon@MILLIE` should be able to sign in and browse imported IMAP, Exchange OAuth, and PST mail from one mailbox without moving or mutating the original sources.
+MILLIE is intended to expose copied mail archives like a normal mail service. A user such as `geon@millie.cnbsk.cloud` should be able to sign in and browse imported IMAP, Exchange OAuth, and PST mail from one mailbox without moving or mutating the original sources. Local aliases such as `geon@MILLIE` can remain valid through `millie.settings`.
 
 This layer is dormant for now. The schema and bootstrap helpers are present, but no IMAP listener, webmail server, or live authentication service is started.
 
@@ -23,7 +23,7 @@ The source account or PST remains the source. MILLIE stores a copy and presents 
 
 Authentication state is stored in Postgres under `millie_*` tables:
 
-- `millie_identities`: login identities such as `geon@millie`.
+- `millie_identities`: login identities such as `geon@millie.cnbsk.cloud`.
 - `millie_identity_credentials`: password or app-password hashes.
 - `millie_auth_sessions`: web/API/IMAP session tokens.
 - `millie_protocol_clients`: protocol/client records for IMAP, webmail, and API access.
@@ -35,7 +35,7 @@ Generate bootstrap SQL for a local identity:
 ```sh
 MILLIE_BOOTSTRAP_PASSWORD='temporary password' \
 python3 tools/millie_identity_plan.py \
-  --login geon@MILLIE \
+  --login geon@millie.cnbsk.cloud \
   --display-name Geon \
   --password-env MILLIE_BOOTSTRAP_PASSWORD \
   --output .private/local/geon_identity.sql
@@ -48,10 +48,10 @@ The tool does not connect to Postgres. Review and apply the generated SQL later 
 The temporary live sample importer can copy one message from each configured source into the Postgres-backed MILLIE mailbox:
 
 ```sh
-.private/venv/bin/python tools/millie_live_sample_import.py --login geon@MILLIE --display-name Geon
+.private/venv/bin/python tools/millie_live_sample_import.py --display-name Geon
 ```
 
-The tool applies the Postgres schema, creates or updates the `geon@millie` identity, imports one PST message, one password-IMAP message, and one Exchange OAuth IMAP message, then maps them into `INBOX`, `All Mail`, and source folders.
+The tool applies the Postgres schema, creates or updates the `geon@millie.cnbsk.cloud` identity from the configured `service_mail_domain`, imports one PST message, one password-IMAP message, and one Exchange OAuth IMAP message, then maps them into `INBOX`, `All Mail`, and source folders. If a local `geon@millie` identity already exists, the importer promotes it to the configured domain and keeps the existing mailbox/folder rows.
 
 Generated dev IMAP credentials are stored under ignored `.private/local/millie_ios_mail_credentials.txt`.
 
@@ -72,7 +72,7 @@ The listener exposes:
 - Plain IMAP on port `22143`.
 - IMAP over TLS on port `22993` with a local self-signed certificate.
 
-iOS Mail normally requires an outgoing mail server during account setup. Start the temporary authenticated SMTP companion:
+Some mail clients require an outgoing mail server during account setup. Start the temporary authenticated SMTP companion only when needed:
 
 ```sh
 .private/venv/bin/python tools/millie_smtp_listener.py \
@@ -82,7 +82,7 @@ iOS Mail normally requires an outgoing mail server during account setup. Start t
   --daemon
 ```
 
-The SMTP listener authenticates with the same `geon@millie` credential and accepts test messages for dev discard. It is only there so mail clients can complete account setup; sending and archival of outgoing mail are future workflows.
+The SMTP listener authenticates with the same mailbox credential and accepts test messages for dev discard. It is only there for mail clients that insist on an outgoing server during account setup; sending and archival of outgoing mail are future workflows.
 
 Stop the listener:
 
@@ -127,7 +127,7 @@ The schema is intended to support multiple frontends over the same mailbox:
 
 Expected read path:
 
-1. Authenticate `geon@MILLIE` against `millie_identities` and `millie_identity_credentials`.
+1. Authenticate `geon@millie.cnbsk.cloud` or configured aliases such as `geon@MILLIE` against `millie_identities` and `millie_identity_credentials`.
 2. Resolve the user's `millie_mailboxes` row.
 3. List folders from `millie_mailbox_folders`.
 4. List message summaries from `millie_v_mailbox_messages`.

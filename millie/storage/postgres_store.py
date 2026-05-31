@@ -14,7 +14,15 @@ from psycopg import Connection
 from psycopg.types.json import Jsonb
 
 from millie.importing.models import NormalizedAddress, NormalizedMessage, stable_id
-from millie.service.auth import MillieIdentity, build_identity_sql
+from millie.service.auth import (
+    MillieIdentity,
+    build_identity_sql,
+    login_address_candidates,
+    service_mail_domain,
+    service_mail_domain_aliases,
+    verify_password,
+)
+from millie.service.mailbox import default_mailbox_folders
 
 from .schema import load_schema
 
@@ -22,8 +30,9 @@ from .schema import load_schema
 class PostgresMailStore:
     """Persist and serve normalized mail records from Postgres."""
 
-    def __init__(self, connection: Connection) -> None:
+    def __init__(self, connection: Connection, settings: dict[str, str] | None = None) -> None:
         self.connection = connection
+        self.settings = settings or {}
 
     def __enter__(self) -> "PostgresMailStore":
         return self
@@ -41,7 +50,7 @@ class PostgresMailStore:
             dbname=settings["postgres_database"],
             connect_timeout=10,
         )
-        return cls(connection)
+        return cls(connection, settings=settings)
 
     def close(self) -> None:
         self.connection.close()
@@ -57,8 +66,120 @@ class PostgresMailStore:
         password_hash: str | None = None,
     ) -> str:
         with self.connection.transaction():
+            existing = self._existing_identity(identity.login_candidates)
+            if existing:
+                identity_id, mailbox_id = existing
+                self._promote_existing_identity(
+                    identity,
+                    identity_id=identity_id,
+                    mailbox_id=mailbox_id,
+                    password_hash=password_hash,
+                )
+                return mailbox_id
             self.connection.execute(build_identity_sql(identity, password_hash=password_hash))
-        return identity.mailbox_id
+            return identity.mailbox_id
+
+    def _existing_identity(self, login_candidates: list[str]) -> tuple[str, str] | None:
+        if not login_candidates:
+            return None
+        rows = self.connection.execute(
+            f"""
+            SELECT i.login_address, i.id, mb.id
+            FROM millie_identities i
+            LEFT JOIN millie_mailboxes mb
+              ON mb.owner_identity_id = i.id
+             AND mb.is_primary = TRUE
+            WHERE lower(i.login_address) IN ({placeholders(login_candidates)})
+            ORDER BY i.created_at
+            """,
+            tuple(login_candidates),
+        ).fetchall()
+        by_login = {str(row[0]).lower(): row for row in rows}
+        for candidate in login_candidates:
+            row = by_login.get(candidate)
+            if row:
+                identity_id = row[1]
+                mailbox_id = row[2] or stable_id("millie_mailbox", identity_id, candidate)
+                return identity_id, mailbox_id
+        return None
+
+    def _promote_existing_identity(
+        self,
+        identity: MillieIdentity,
+        *,
+        identity_id: str,
+        mailbox_id: str,
+        password_hash: str | None,
+    ) -> None:
+        login = identity.normalized_login
+        display_name = identity.display_name or identity.local_part
+        self.connection.execute(
+            """
+            UPDATE millie_identities
+            SET login_address = %s,
+                login_local_part = %s,
+                login_domain = %s,
+                display_name = %s,
+                status = 'active',
+                updated_at = now()
+            WHERE id = %s
+            """,
+            (login, identity.local_part, identity.domain, display_name, identity_id),
+        )
+        self.connection.execute(
+            """
+            INSERT INTO millie_mailboxes (
+                id, owner_identity_id, mailbox_address, display_name, is_primary
+            )
+            VALUES (%s, %s, %s, %s, TRUE)
+            ON CONFLICT(id) DO UPDATE SET
+                mailbox_address = excluded.mailbox_address,
+                display_name = excluded.display_name,
+                is_primary = TRUE,
+                updated_at = now()
+            """,
+            (mailbox_id, identity_id, login, display_name),
+        )
+        if password_hash:
+            credential_id = stable_id("millie_credential", identity_id, "primary-password")
+            self.connection.execute(
+                """
+                INSERT INTO millie_identity_credentials (
+                    id, identity_id, credential_type, credential_label, secret_hash
+                )
+                VALUES (%s, %s, 'password_pbkdf2_sha256', 'primary password', %s)
+                ON CONFLICT(id) DO UPDATE SET
+                    secret_hash = excluded.secret_hash,
+                    disabled_at = NULL
+                """,
+                (credential_id, identity_id, password_hash),
+            )
+        for folder in default_mailbox_folders(mailbox_id):
+            self.connection.execute(
+                """
+                INSERT INTO millie_mailbox_folders (
+                    id, mailbox_id, parent_id, folder_path, display_name, folder_role,
+                    special_use, sort_order
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (mailbox_id, folder_path) DO UPDATE SET
+                    display_name = excluded.display_name,
+                    folder_role = excluded.folder_role,
+                    special_use = excluded.special_use,
+                    sort_order = excluded.sort_order,
+                    updated_at = now()
+                """,
+                (
+                    folder.id,
+                    mailbox_id,
+                    folder.parent_id,
+                    folder.path,
+                    folder.display_name,
+                    folder.role,
+                    folder.special_use,
+                    folder.sort_order,
+                ),
+            )
 
     def upsert_source(
         self,
@@ -199,28 +320,33 @@ class PostgresMailStore:
         return row[0] if row else None
 
     def authenticate(self, login: str, password: str) -> str | None:
-        from millie.service.auth import verify_password
-
-        row = self.connection.execute(
-            """
-            SELECT i.id, c.secret_hash
+        candidates = login_address_candidates(
+            login,
+            primary_domain=service_mail_domain(self.settings),
+            domain_aliases=service_mail_domain_aliases(self.settings),
+        )
+        rows = self.connection.execute(
+            f"""
+            SELECT i.login_address, i.id, c.secret_hash
             FROM millie_identities i
             JOIN millie_identity_credentials c ON c.identity_id = i.id
-            WHERE lower(i.login_address) = lower(%s)
+            WHERE lower(i.login_address) IN ({placeholders(candidates)})
               AND i.status = 'active'
               AND c.disabled_at IS NULL
               AND (c.expires_at IS NULL OR c.expires_at > now())
             ORDER BY c.created_at DESC
-            LIMIT 1
             """,
-            (login,),
-        ).fetchone()
-        if not row:
-            return None
-        identity_id, secret_hash = row
-        if not verify_password(password, secret_hash):
-            return None
-        return identity_id
+            tuple(candidates),
+        ).fetchall()
+        rows_by_login: dict[str, list[tuple[object, ...]]] = {}
+        for row in rows:
+            rows_by_login.setdefault(str(row[0]).lower(), []).append(row)
+        for candidate in candidates:
+            for row in rows_by_login.get(candidate, []):
+                _, identity_id, secret_hash = row
+                if verify_password(password, secret_hash):
+                    return identity_id
+        return None
 
     def primary_mailbox_for_identity(self, identity_id: str) -> str | None:
         row = self.connection.execute(
@@ -259,16 +385,22 @@ class PostgresMailStore:
 
     def mailbox_by_address(self, mailbox_address: str | None = None) -> dict[str, object] | None:
         if mailbox_address:
-            row = self.connection.execute(
-                """
+            candidates = login_address_candidates(
+                mailbox_address,
+                primary_domain=service_mail_domain(self.settings),
+                domain_aliases=service_mail_domain_aliases(self.settings),
+            )
+            rows = self.connection.execute(
+                f"""
                 SELECT mb.id, mb.mailbox_address, mb.display_name, mb.owner_identity_id
                 FROM millie_mailboxes mb
-                WHERE lower(mb.mailbox_address) = lower(%s)
+                WHERE lower(mb.mailbox_address) IN ({placeholders(candidates)})
                 ORDER BY mb.created_at
-                LIMIT 1
                 """,
-                (mailbox_address,),
-            ).fetchone()
+                tuple(candidates),
+            ).fetchall()
+            by_address = {str(row[1]).lower(): row for row in rows}
+            row = next((by_address[candidate] for candidate in candidates if candidate in by_address), None)
         else:
             row = self.connection.execute(
                 """
@@ -771,6 +903,13 @@ def format_address_value(
     if email_address:
         return email_address
     return raw_value or ""
+
+
+def placeholders(values: Iterable[object]) -> str:
+    values = list(values)
+    if not values:
+        raise ValueError("At least one value is required.")
+    return ", ".join(["%s"] * len(values))
 
 
 def _metadata_value(value: object) -> str:

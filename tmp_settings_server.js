@@ -105,6 +105,27 @@ function buildSeedRows(instanceId) {
       secret: false,
     },
     {
+      key: "service_mail_domain",
+      value: "millie.cnbsk.cloud",
+      description: "Primary MILLIE mailbox DNS domain. Hosted identities are canonicalized here, for example geon@millie.cnbsk.cloud.",
+      options: "",
+      secret: false,
+    },
+    {
+      key: "service_mail_local_domain",
+      value: "MILLIE",
+      description: "Local development mailbox domain alias. This keeps addresses like geon@MILLIE usable while the primary domain is hosted DNS.",
+      options: "",
+      secret: false,
+    },
+    {
+      key: "service_mail_domain_aliases",
+      value: "MILLIE,millie",
+      description: "Comma-separated additional domains accepted as aliases for the primary MILLIE mailbox domain.",
+      options: "",
+      secret: false,
+    },
+    {
       key: "database_mode",
       value: "sqlite",
       description: "Primary database engine. Use sqlite for local single-file storage or postgres for an external PostgreSQL database.",
@@ -519,6 +540,27 @@ function validateValue(row, value) {
   if (row.setting_key === "postgres_port" && value !== "" && !/^[0-9]+$/.test(value)) {
     throw httpError(400, "postgres_port must be numeric.");
   }
+
+  if (row.setting_key === "service_mail_domain") {
+    if (!isValidDomainToken(value)) {
+      throw httpError(400, "service_mail_domain must be a domain such as millie.cnbsk.cloud.");
+    }
+  }
+
+  if (row.setting_key === "service_mail_local_domain" && value !== "" && !isValidDomainToken(value)) {
+    throw httpError(400, "service_mail_local_domain must use letters, numbers, dots, or hyphens.");
+  }
+
+  if (row.setting_key === "service_mail_domain_aliases") {
+    const aliases = value.split(",").map((item) => item.trim()).filter(Boolean);
+    if (aliases.some((alias) => !isValidDomainToken(alias))) {
+      throw httpError(400, "service_mail_domain_aliases must be comma-separated domain tokens.");
+    }
+  }
+}
+
+function isValidDomainToken(value) {
+  return /^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/.test(String(value || ""));
 }
 
 function buildMailAccountStatements(accounts) {

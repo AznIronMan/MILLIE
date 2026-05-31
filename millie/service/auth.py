@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import os
 from dataclasses import dataclass
+from typing import Iterable, Mapping
 
 from millie.importing.models import stable_id
 from millie.service.mailbox import default_mailbox_folders
@@ -14,16 +15,24 @@ from millie.service.mailbox import default_mailbox_folders
 
 DEFAULT_PASSWORD_ITERATIONS = 310_000
 PASSWORD_ALGORITHM = "pbkdf2_sha256"
+DEFAULT_SERVICE_MAIL_DOMAIN = "millie.cnbsk.cloud"
+DEFAULT_SERVICE_LOCAL_DOMAIN = "MILLIE"
 
 
 @dataclass(frozen=True, slots=True)
 class MillieIdentity:
     login_address: str
     display_name: str = ""
+    primary_domain: str | None = None
+    domain_aliases: tuple[str, ...] = ()
 
     @property
     def normalized_login(self) -> str:
-        return normalize_login_address(self.login_address)
+        return normalize_login_address(
+            self.login_address,
+            primary_domain=self.primary_domain,
+            domain_aliases=self.domain_aliases,
+        )
 
     @property
     def local_part(self) -> str:
@@ -41,8 +50,54 @@ class MillieIdentity:
     def mailbox_id(self) -> str:
         return stable_id("millie_mailbox", self.id, self.normalized_login)
 
+    @property
+    def login_candidates(self) -> list[str]:
+        return login_address_candidates(
+            self.login_address,
+            primary_domain=self.primary_domain,
+            domain_aliases=self.domain_aliases,
+        )
 
-def normalize_login_address(value: str) -> str:
+
+def identity_from_settings(
+    login_address: str,
+    display_name: str,
+    settings: Mapping[str, str],
+) -> MillieIdentity:
+    return MillieIdentity(
+        login_address=login_address,
+        display_name=display_name,
+        primary_domain=service_mail_domain(settings),
+        domain_aliases=service_mail_domain_aliases(settings),
+    )
+
+
+def default_service_login(settings: Mapping[str, str], local_part: str = "geon") -> str:
+    return normalize_login_address(f"{local_part}@{service_mail_domain(settings)}")
+
+
+def service_mail_domain(settings: Mapping[str, str] | None = None) -> str:
+    value = (settings or {}).get("service_mail_domain", "")
+    return normalize_domain(value) or DEFAULT_SERVICE_MAIL_DOMAIN
+
+
+def service_mail_domain_aliases(settings: Mapping[str, str] | None = None) -> tuple[str, ...]:
+    settings = settings or {}
+    aliases = [
+        settings.get("service_mail_local_domain", "") or DEFAULT_SERVICE_LOCAL_DOMAIN,
+        "millie",
+    ]
+    aliases.extend(split_domain_list(settings.get("service_mail_domain_aliases", "")))
+    primary = service_mail_domain(settings)
+    return tuple(unique_domains(alias for alias in aliases if normalize_domain(alias) != primary))
+
+
+def normalize_login_address(
+    value: str,
+    *,
+    primary_domain: str | None = None,
+    domain_aliases: tuple[str, ...] | list[str] = (),
+) -> str:
     login = " ".join(str(value).strip().split())
     if "@" not in login:
         raise ValueError("MILLIE login addresses must include @, such as geon@MILLIE.")
@@ -51,7 +106,52 @@ def normalize_login_address(value: str) -> str:
     domain = domain.strip().lower()
     if not local_part or not domain:
         raise ValueError("MILLIE login local part and domain are required.")
+    primary = normalize_domain(primary_domain or "")
+    aliases = set(unique_domains(domain_aliases))
+    if primary and domain in aliases:
+        domain = primary
     return f"{local_part}@{domain}"
+
+
+def login_address_candidates(
+    value: str,
+    *,
+    primary_domain: str | None = None,
+    domain_aliases: tuple[str, ...] | list[str] = (),
+) -> list[str]:
+    normalized = normalize_login_address(value)
+    local_part, input_domain = normalized.split("@", 1)
+    domains = [input_domain]
+    primary = normalize_domain(primary_domain or "")
+    if primary:
+        domains.insert(0, primary)
+    domains.extend(unique_domains(domain_aliases))
+    return [f"{local_part}@{domain}" for domain in unique_domains(domains)]
+
+
+def split_domain_list(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [
+        item.strip()
+        for item in str(value).replace("\n", ",").split(",")
+        if item.strip()
+    ]
+
+
+def unique_domains(values: Iterable[object]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        domain = normalize_domain(str(value))
+        if domain and domain not in seen:
+            result.append(domain)
+            seen.add(domain)
+    return result
+
+
+def normalize_domain(value: str | None) -> str:
+    return str(value or "").strip().strip(".").lower()
 
 
 def hash_password(password: str, *, iterations: int = DEFAULT_PASSWORD_ITERATIONS) -> str:
