@@ -11,6 +11,7 @@ All notable changes to MILLIE will be documented in this file.
 - Added a dedupe backfill/report tool for exact raw-message, Message-ID, and normalized fingerprint duplicate groups.
 - Added incremental IMAP/OAuth live sync helpers that import only newer UIDs while a MILLIE process is running.
 - Added `--live-sync` support to the development webmail listener.
+- Added iCloud Mail presets/defaults for `icloud.com`, `me.com`, and `mac.com` IMAP retrieval accounts.
 
 ## [1.0.0] - 2026-05-31
 

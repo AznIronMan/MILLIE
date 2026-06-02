@@ -7,6 +7,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from millie.mail_providers import normalize_mail_account
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -78,4 +80,9 @@ def load_local_settings() -> dict[str, Any]:
         cwd=PROJECT_ROOT,
         text=True,
     )
-    return json.loads(output)
+    config = json.loads(output)
+    config["accounts"] = [
+        normalize_mail_account(account)
+        for account in config.get("accounts", [])
+    ]
+    return config

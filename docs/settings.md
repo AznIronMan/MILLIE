@@ -54,6 +54,27 @@ Each account includes:
 
 The editor can add one or many IMAP accounts and one or many SMTP account records. Removing an account and choosing **Save changes** deletes it from `millie.settings`.
 
+## iCloud Mail / me.com IMAP
+
+MILLIE supports iCloud Mail through standard IMAP. In the settings editor, use **Add iCloud IMAP** for retrieval accounts using `icloud.com`, `me.com`, or `mac.com` addresses.
+
+iCloud defaults:
+
+- IMAP host: `imap.mail.me.com`
+- IMAP port: `993`
+- IMAP security: `ssl_tls`
+- IMAP auth: `password`
+- IMAP username: the local part before `@`, unless you explicitly enter a different username
+
+Apple requires an app-specific password for third-party mail clients when two-factor authentication is enabled. Store that app-specific password in the account password field; do not use the Apple ID login password.
+
+MILLIE still does not send outbound SMTP, but the settings editor also has **Add iCloud SMTP** for reference/setup metadata:
+
+- SMTP host: `smtp.mail.me.com`
+- SMTP port: `587`
+- SMTP security: `starttls`
+- SMTP username: full iCloud email address
+
 ## Microsoft Entra OAuth For Outlook IMAP
 
 Create the Entra application before authorizing an Outlook IMAP account:

@@ -86,7 +86,7 @@ For configured IMAP accounts in `millie.settings`, the bulk importer lists every
 .private/venv/bin/python tools/millie_imap_bulk_import.py --apply
 ```
 
-The flow supports PST, IMAP password auth, and Exchange/Outlook OAuth IMAP sources. Normalized records have schema coverage for addresses, headers, dates, subjects, body projections, raw MIME, attachments, inline parts, embedded parts, metadata, folders, import jobs, and search indexes in SQLite or PostgreSQL.
+The flow supports PST, generic IMAP password auth, iCloud Mail/me.com/mac.com IMAP with Apple app-specific passwords, and Exchange/Outlook OAuth IMAP sources. Normalized records have schema coverage for addresses, headers, dates, subjects, body projections, raw MIME, attachments, inline parts, embedded parts, metadata, folders, import jobs, and search indexes in SQLite or PostgreSQL.
 
 After a full import, use the incremental live checker to import only newer IMAP UIDs:
 

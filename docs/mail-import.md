@@ -6,6 +6,7 @@ MILLIE has an import pipeline for turning mail sources into connected database r
 
 - PST files through `readpst`, staged under `.private/local/pst-extract/`.
 - IMAP accounts with password authentication.
+- iCloud Mail / me.com / mac.com IMAP using Apple app-specific passwords.
 - Exchange/Outlook IMAP with OAuth using XOAUTH2 access tokens.
 
 IMAP extraction uses read-only mailbox selection and `BODY.PEEK[]` fetches by UID so messages are not marked read during import. Imported source messages are copied into MILLIE's canonical `mail_*` tables and can then be presented through the Postgres-backed `millie_*` mailbox facade.

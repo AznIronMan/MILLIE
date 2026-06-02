@@ -22,6 +22,7 @@ const THINKING_LEVELS = ["", "low", "med", "high", "xhigh"];
 const ACCOUNT_TYPES = ["imap", "smtp"];
 const ACCOUNT_SECURITY = ["", "none", "starttls", "ssl_tls"];
 const ACCOUNT_AUTH = ["password", "oauth", "none"];
+const ICLOUD_DOMAINS = new Set(["icloud.com", "me.com", "mac.com"]);
 
 function parseArgs(argv) {
   const args = {
@@ -643,9 +644,33 @@ function normalizeMailAccount(account, index, existing) {
 
   const id = String(account.id || crypto.randomUUID());
   const accountType = String(account.account_type || "");
-  const security = String(account.security ?? "");
-  const authMethod = String(account.auth_method || "password");
-  const port = String(account.port ?? "");
+  const emailAddress = String(account.email_address ?? "").trim();
+  let displayName = String(account.display_name ?? "");
+  let host = String(account.host ?? "").trim();
+  let port = String(account.port ?? "").trim();
+  let username = String(account.username ?? "").trim();
+  let security = String(account.security ?? "");
+  let authMethod = String(account.auth_method || "password");
+
+  const provider = mailProviderForAccount(emailAddress, host);
+  if (provider === "icloud") {
+    if (!displayName) {
+      displayName = "iCloud Mail";
+    }
+    if (accountType === "imap") {
+      host = host || "imap.mail.me.com";
+      port = port || "993";
+      security = security || "ssl_tls";
+      authMethod = authMethod || "password";
+      username = username || icloudImapUsername(emailAddress);
+    } else if (accountType === "smtp") {
+      host = host || "smtp.mail.me.com";
+      port = port || "587";
+      security = security || "starttls";
+      authMethod = authMethod || "password";
+      username = username || emailAddress;
+    }
+  }
 
   if (!ACCOUNT_TYPES.includes(accountType)) {
     throw httpError(400, "Mail account type must be imap or smtp.");
@@ -673,17 +698,31 @@ function normalizeMailAccount(account, index, existing) {
   return {
     id,
     account_type: accountType,
-    display_name: String(account.display_name ?? ""),
-    email_address: String(account.email_address ?? ""),
-    host: String(account.host ?? ""),
+    display_name: displayName,
+    email_address: emailAddress,
+    host,
     port,
-    username: String(account.username ?? ""),
+    username,
     password,
     security,
     auth_method: authMethod,
     enabled: Boolean(account.enabled),
     sort_order: (index + 1) * 10,
   };
+}
+
+function mailProviderForAccount(emailAddress, host) {
+  const normalizedHost = String(host || "").trim().toLowerCase();
+  if (normalizedHost === "imap.mail.me.com" || normalizedHost === "smtp.mail.me.com") {
+    return "icloud";
+  }
+  const domain = String(emailAddress || "").split("@").pop().trim().toLowerCase();
+  return ICLOUD_DOMAINS.has(domain) ? "icloud" : "";
+}
+
+function icloudImapUsername(emailAddress) {
+  const local = String(emailAddress || "").split("@", 1)[0].trim();
+  return local || String(emailAddress || "").trim();
 }
 
 function settingSecretContext(key) {
@@ -885,6 +924,13 @@ function renderPage() {
       justify-content: space-between;
       gap: 12px;
       margin: 28px 0 12px;
+    }
+
+    .button-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: flex-end;
     }
 
     h2 {
@@ -1090,6 +1136,10 @@ function renderPage() {
         flex-direction: column;
       }
 
+      .button-row {
+        justify-content: stretch;
+      }
+
       .account-grid {
         grid-template-columns: 1fr;
       }
@@ -1123,14 +1173,20 @@ function renderPage() {
     <section aria-labelledby="imap-heading">
       <div class="section-heading">
         <h2 id="imap-heading">IMAP Retrieval Accounts</h2>
-        <button type="button" data-add-account="imap">Add IMAP</button>
+        <div class="button-row">
+          <button type="button" data-add-account="imap">Add IMAP</button>
+          <button type="button" data-add-account="imap" data-provider="icloud">Add iCloud IMAP</button>
+        </div>
       </div>
       <div id="imap-accounts" class="accounts"></div>
     </section>
     <section aria-labelledby="smtp-heading">
       <div class="section-heading">
         <h2 id="smtp-heading">SMTP Sending Accounts</h2>
-        <button type="button" data-add-account="smtp">Add SMTP</button>
+        <div class="button-row">
+          <button type="button" data-add-account="smtp">Add SMTP</button>
+          <button type="button" data-add-account="smtp" data-provider="icloud">Add iCloud SMTP</button>
+        </div>
       </div>
       <div id="smtp-accounts" class="accounts"></div>
     </section>
@@ -1255,8 +1311,8 @@ function renderPage() {
       return "mail-" + Date.now() + "-" + Math.random().toString(16).slice(2);
     }
 
-    function defaultAccount(type) {
-      return {
+    function defaultAccount(type, provider = "") {
+      const account = {
         id: newAccountId(),
         account_type: type,
         display_name: "",
@@ -1270,6 +1326,27 @@ function renderPage() {
         auth_method: "password",
         enabled: true,
       };
+      return applyProviderDefaults(account, provider);
+    }
+
+    function applyProviderDefaults(account, provider) {
+      if (provider !== "icloud") {
+        return account;
+      }
+      const next = { ...account };
+      next.display_name = next.display_name || "iCloud Mail";
+      if (next.account_type === "imap") {
+        next.host = "imap.mail.me.com";
+        next.port = "993";
+        next.security = "ssl_tls";
+        next.auth_method = "password";
+      } else if (next.account_type === "smtp") {
+        next.host = "smtp.mail.me.com";
+        next.port = "587";
+        next.security = "starttls";
+        next.auth_method = "password";
+      }
+      return next;
     }
 
     function selectControl(options, value) {
@@ -1490,7 +1567,10 @@ function renderPage() {
 
     for (const button of document.querySelectorAll("[data-add-account]")) {
       button.addEventListener("click", () => {
-        state.accounts = [...collectAccounts(), defaultAccount(button.dataset.addAccount)];
+        state.accounts = [
+          ...collectAccounts(),
+          defaultAccount(button.dataset.addAccount, button.dataset.provider || ""),
+        ];
         renderAccounts(state.accounts);
         markDirty();
       });
