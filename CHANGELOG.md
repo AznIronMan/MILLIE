@@ -30,6 +30,8 @@ All notable changes to MILLIE will be documented in this file.
 - Added customer-facing settings documentation under `docs/`.
 - Added IMAP mailbox-copy mutation support for folder changes, `APPEND`, flag updates, copy/move, delete, and expunge.
 - Added a dry-run-first bulk PST import tool that separates archives under `Sources/PST/<archive name>/...`.
+- Added a duplicate-safe bulk IMAP importer for configured password and Microsoft OAuth accounts.
+- Added development autoconfig/autodiscover XML endpoints to the webmail listener, including Outlook-style POST support on `/autodiscover/autodiscover.xml`.
 
 ### Changed
 
@@ -43,3 +45,5 @@ All notable changes to MILLIE will be documented in this file.
 - Added configurable service mailbox domains in `millie.settings`, defaulting to `millie.cnbsk.cloud` with local `MILLIE` aliases for identities such as `geon@millie.cnbsk.cloud`.
 - Changed the temporary SMTP listener into a setup-only blackhole shim that accepts any or no SMTP authentication, discards submitted message data, and never relays, stores, queues, or delivers outbound mail from MILLIE.
 - Clarified that IMAP client edits mutate only MILLIE's copied mailbox facade and do not write back to original IMAP, Exchange, or PST sources.
+- Capped search-index text before PostgreSQL `to_tsvector` indexing so oversized HTML messages do not abort imports.
+- Cached mailbox folder and UID lookups during bulk PST imports to reduce repeated Postgres work.

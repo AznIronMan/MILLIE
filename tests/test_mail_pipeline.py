@@ -85,6 +85,46 @@ class MailPipelineTest(unittest.TestCase):
         self.assertIsNotNone(recalled)
         self.assertEqual(recalled["Message-ID"], "<message-1@example.test>")
 
+    def test_store_sanitizes_surrogate_text_without_touching_raw_mime(self) -> None:
+        message = EmailMessage()
+        message["From"] = "sender@example.test"
+        message["To"] = "recipient@example.test"
+        message["Subject"] = "Surrogate"
+        message.set_content("Body")
+        raw_bytes = message.as_bytes()
+        normalized = normalize_email(
+            raw_bytes,
+            source_message_id="uid-surrogate",
+            source_uri="imap://imap.example.test/INBOX",
+            folder="INBOX",
+        )
+        normalized.subject = "bad \udcff subject"
+        normalized.body_text = "bad \udcff body\x00"
+        normalized.headers[0].value = "bad \udcff header"
+
+        connection = sqlite3.connect(":memory:")
+        store = SQLiteMailStore(connection)
+        store.initialize()
+        source_id = store.upsert_source(
+            source_type="imap",
+            source_uri="imap://imap.example.test/INBOX",
+            display_name="Test IMAP",
+            auth_mode="password",
+        )
+        job_id = store.create_import_job(source_id=source_id, status="planned")
+        store.store_message(
+            source_id=source_id,
+            import_job_id=job_id,
+            message=normalized,
+            folder="INBOX",
+        )
+
+        subject = connection.execute("SELECT subject FROM mail_messages").fetchone()[0]
+        body_text = connection.execute("SELECT body_text FROM mail_messages").fetchone()[0]
+        self.assertEqual(subject, "bad ? subject")
+        self.assertEqual(body_text, "bad ? body")
+        self.assertEqual(store.get_raw_mime(normalized.id), raw_bytes)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -13,6 +13,7 @@ from typing import Any, Iterable
 
 import psycopg
 from psycopg import Connection
+from psycopg.pq import TransactionStatus
 from psycopg.types.json import Jsonb
 
 from millie.importing.models import NormalizedAddress, NormalizedMessage, stable_id
@@ -249,31 +250,44 @@ class PostgresMailStore:
         import_job_id: str | None = None,
         folder: str | None = None,
     ) -> None:
-        with self.connection.transaction():
-            self._replace_message(source_id, message, import_job_id)
-            if folder:
-                folder_id = self._upsert_folder(source_id, folder)
-                self.connection.execute(
-                    """
-                    INSERT INTO mail_message_folders (message_id, folder_id)
-                    VALUES (%s, %s)
-                    ON CONFLICT DO NOTHING
-                    """,
-                    (message.id, folder_id),
-                )
+        if self.connection.info.transaction_status == TransactionStatus.IDLE:
+            with self.connection.transaction():
+                self._store_message_records(source_id, message, import_job_id, folder)
+            return
+        self._store_message_records(source_id, message, import_job_id, folder)
+
+    def _store_message_records(
+        self,
+        source_id: str,
+        message: NormalizedMessage,
+        import_job_id: str | None,
+        folder: str | None,
+    ) -> None:
+        _sanitize_message_text(message)
+        self._replace_message(source_id, message, import_job_id)
+        if folder:
+            folder_id = self._upsert_folder(source_id, folder)
             self.connection.execute(
                 """
-                INSERT INTO mail_raw_mime (message_id, content_blob)
+                INSERT INTO mail_message_folders (message_id, folder_id)
                 VALUES (%s, %s)
-                ON CONFLICT(message_id) DO UPDATE SET content_blob = excluded.content_blob
+                ON CONFLICT DO NOTHING
                 """,
-                (message.id, message.raw_mime),
+                (message.id, folder_id),
             )
-            self._replace_addresses(message)
-            self._replace_headers(message)
-            self._replace_parts(message)
-            self._replace_metadata(message)
-            self._replace_search_document(message)
+        self.connection.execute(
+            """
+            INSERT INTO mail_raw_mime (message_id, content_blob)
+            VALUES (%s, %s)
+            ON CONFLICT(message_id) DO UPDATE SET content_blob = excluded.content_blob
+            """,
+            (message.id, message.raw_mime),
+        )
+        self._replace_addresses(message)
+        self._replace_headers(message)
+        self._replace_parts(message)
+        self._replace_metadata(message)
+        self._replace_search_document(message)
 
     def map_message_to_mailbox(
         self,
@@ -1372,6 +1386,7 @@ class PostgresMailStore:
             ]
             if value
         )
+        search_text = _truncate_search_text(search_text)
         self.connection.execute(
             """
             INSERT INTO mail_search_documents (
@@ -1414,6 +1429,73 @@ def _role_text(addresses: Iterable[NormalizedAddress]) -> dict[str, str]:
         role: " ".join(value for value in role_values if value)
         for role, role_values in values.items()
     }
+
+
+def _truncate_search_text(value: str, *, max_bytes: int = 800_000) -> str:
+    encoded = value.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return value
+    return encoded[:max_bytes].decode("utf-8", errors="ignore")
+
+
+def _sanitize_message_text(message: NormalizedMessage) -> None:
+    for attr in [
+        "source_message_id",
+        "internet_message_id",
+        "conversation_id",
+        "thread_id",
+        "subject",
+        "normalized_subject",
+        "sent_at",
+        "received_at",
+        "date_header",
+        "body_text",
+        "body_html",
+        "body_preview",
+    ]:
+        setattr(message, attr, _db_text(getattr(message, attr)))
+    for address in message.addresses:
+        address.display_name = _db_text(address.display_name)
+        address.email_address = _db_text(address.email_address)
+        address.raw_value = _db_text(address.raw_value)
+    for header in message.headers:
+        header.name = _db_text(header.name) or ""
+        header.value = _db_text(header.value) or ""
+    for part in message.parts:
+        for attr in [
+            "content_type",
+            "content_disposition",
+            "charset",
+            "filename",
+            "content_id",
+            "content_location",
+            "transfer_encoding",
+            "text_content",
+        ]:
+            setattr(part, attr, _db_text(getattr(part, attr)))
+        part.metadata = _sanitize_metadata(part.metadata)
+    message.metadata = _sanitize_metadata(message.metadata)
+
+
+def _sanitize_metadata(value: object) -> object:
+    if isinstance(value, str):
+        return _db_text(value) or ""
+    if isinstance(value, dict):
+        return {
+            str(_db_text(str(key)) or ""): _sanitize_metadata(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_sanitize_metadata(item) for item in value]
+    if isinstance(value, tuple):
+        return [_sanitize_metadata(item) for item in value]
+    return value
+
+
+def _db_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return value.replace("\x00", "").encode("utf-8", errors="replace").decode("utf-8")
 
 
 def format_address_value(
@@ -1489,5 +1571,5 @@ def message_flag_booleans(flags: Iterable[object]) -> dict[str, bool]:
 
 def _metadata_value(value: object) -> str:
     if isinstance(value, str):
-        return value
-    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+        return _db_text(value) or ""
+    return _db_text(json.dumps(_sanitize_metadata(value), sort_keys=True, separators=(",", ":"))) or ""

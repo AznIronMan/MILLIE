@@ -61,6 +61,9 @@ CREATE TABLE IF NOT EXISTS mail_messages (
     UNIQUE (source_id, source_message_id)
 );
 
+CREATE INDEX IF NOT EXISTS idx_mail_messages_raw_mime_sha256
+    ON mail_messages(raw_mime_sha256);
+
 CREATE TABLE IF NOT EXISTS mail_message_folders (
     message_id TEXT NOT NULL REFERENCES mail_messages(id) ON DELETE CASCADE,
     folder_id TEXT NOT NULL REFERENCES mail_folders(id) ON DELETE CASCADE,

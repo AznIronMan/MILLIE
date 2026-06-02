@@ -40,6 +40,71 @@ class ImportStats:
     failed: int = 0
 
 
+class MailboxMappingCache:
+    """Cache mailbox folder ids and next IMAP UIDs during large one-process imports."""
+
+    def __init__(self, store, mailbox_id: str) -> None:
+        self.store = store
+        self.mailbox_id = mailbox_id
+        self.folder_ids: dict[str, str] = {}
+        self.next_uids: dict[str, int] = {}
+
+    def ensure_folder(self, folder_path: str) -> str:
+        if folder_path not in self.folder_ids:
+            folder_id = self.store.ensure_mailbox_folder(self.mailbox_id, folder_path)
+            self.folder_ids[folder_path] = folder_id
+        return self.folder_ids[folder_path]
+
+    def map_message(self, *, folder_path: str, message_id: str) -> int:
+        folder_id = self.ensure_folder(folder_path)
+        row = self.store.connection.execute(
+            """
+            SELECT imap_uid
+            FROM millie_mailbox_messages
+            WHERE folder_id = %s AND message_id = %s
+            """,
+            (folder_id, message_id),
+        ).fetchone()
+        if row:
+            return int(row[0])
+        next_uid = self.next_uid(folder_id)
+        row_id = stable_id("millie_mailbox_message", self.mailbox_id, folder_id, message_id)
+        row = self.store.connection.execute(
+            """
+            INSERT INTO millie_mailbox_messages (
+                id, mailbox_id, folder_id, message_id, binding_id, imap_uid,
+                internal_date, flags, is_recent
+            )
+            SELECT
+                %s, %s, %s, m.id, NULL, %s,
+                coalesce(m.received_at, m.sent_at, now()), ARRAY[]::text[], TRUE
+            FROM mail_messages m
+            WHERE m.id = %s
+            ON CONFLICT(folder_id, message_id) DO UPDATE SET
+                updated_at = now()
+            RETURNING imap_uid
+            """,
+            (row_id, self.mailbox_id, folder_id, next_uid, message_id),
+        ).fetchone()
+        used_uid = int(row[0]) if row else next_uid
+        self.next_uids[folder_id] = max(self.next_uids.get(folder_id, 0), used_uid)
+        return used_uid
+
+    def next_uid(self, folder_id: str) -> int:
+        if folder_id not in self.next_uids:
+            current = self.store.connection.execute(
+                """
+                SELECT coalesce(max(imap_uid), 0)
+                FROM millie_mailbox_messages
+                WHERE folder_id = %s
+                """,
+                (folder_id,),
+            ).fetchone()[0]
+            self.next_uids[folder_id] = int(current)
+        self.next_uids[folder_id] += 1
+        return self.next_uids[folder_id]
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -62,6 +127,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--clean-extract", action="store_true", help="Remove existing ignored extraction output first.")
     parser.add_argument("--replace-existing", action="store_true", help="Replace existing source messages and remap UIDs.")
     parser.add_argument("--map-inbox", action="store_true", help="Also map imported PST messages into INBOX.")
+    parser.add_argument(
+        "--defer-mailbox-mapping",
+        action="store_true",
+        help="Import canonical messages first, then bulk-map source folders and All Mail at the end.",
+    )
     parser.add_argument("--stop-on-error", action="store_true", help="Stop instead of continuing when one PST fails.")
     parser.add_argument("--readpst-bin", default=shutil.which("readpst") or "readpst")
     return parser
@@ -187,8 +257,9 @@ def import_one_pst(
     plan: PstImportPlan,
     args: argparse.Namespace,
 ) -> ImportStats:
-    print(f"Importing {display_path(plan.path)} -> {plan.mailbox_root}")
-    store.ensure_mailbox_folder(mailbox_id, plan.mailbox_root)
+    print(f"Importing {display_path(plan.path)} -> {plan.mailbox_root}", flush=True)
+    mapper = MailboxMappingCache(store, mailbox_id)
+    mapper.ensure_folder(plan.mailbox_root)
     source_id = store.upsert_source(
         source_type="pst",
         source_uri=str(plan.path),
@@ -210,31 +281,33 @@ def import_one_pst(
         output_dir=plan.extract_dir,
         readpst_bin=args.readpst_bin,
     )
+    existing_source_message_ids = (
+        set() if args.replace_existing else load_existing_source_message_ids(store, source_id)
+    )
     stats = ImportStats()
     try:
-        iterator = source.iter_messages(clean=args.clean_extract)
-        for raw_message in iterator:
+        for message_path, relative_path in source.iter_message_paths(clean=args.clean_extract):
             stats.scanned += 1
             if args.limit_per_pst and stats.scanned > args.limit_per_pst:
                 break
+            source_message_id = str(relative_path)
             if (
                 not args.replace_existing
-                and store.source_message_exists(
-                    source_id=source_id,
-                    source_message_id=raw_message.source_message_id,
-                )
+                and source_message_id in existing_source_message_ids
             ):
                 stats.skipped_existing += 1
                 continue
-            target_folder = pst_target_folder(plan.mailbox_root, raw_message.folder)
-            store.ensure_mailbox_folder(mailbox_id, target_folder)
+            folder = str(relative_path.parent) if str(relative_path.parent) != "." else None
+            target_folder = pst_target_folder(plan.mailbox_root, folder)
+            raw_bytes = message_path.read_bytes()
+            mapper.ensure_folder(target_folder)
             normalized = normalize_email(
-                raw_message.raw_bytes,
-                source_message_id=raw_message.source_message_id,
+                raw_bytes,
+                source_message_id=source_message_id,
                 source_uri=str(plan.path),
-                folder=raw_message.folder,
+                folder=folder,
                 metadata={
-                    **raw_message.metadata,
+                    "pst_extract_path": source_message_id,
                     "pst_archive_label": plan.archive_label,
                     "millie_mailbox_folder": target_folder,
                 },
@@ -243,36 +316,143 @@ def import_one_pst(
                 source_id=source_id,
                 import_job_id=job_id,
                 message=normalized,
-                folder=raw_message.folder,
+                folder=folder,
             )
-            store.map_message_to_mailbox(
-                mailbox_id=mailbox_id,
-                folder_path=target_folder,
-                message_id=normalized.id,
-            )
-            store.map_message_to_mailbox(
-                mailbox_id=mailbox_id,
-                folder_path="All Mail",
-                message_id=normalized.id,
-            )
-            if args.map_inbox:
-                store.map_message_to_mailbox(
-                    mailbox_id=mailbox_id,
-                    folder_path="INBOX",
-                    message_id=normalized.id,
-                )
+            if not args.defer_mailbox_mapping:
+                mapper.map_message(folder_path=target_folder, message_id=normalized.id)
+                mapper.map_message(folder_path="All Mail", message_id=normalized.id)
+                if args.map_inbox:
+                    mapper.map_message(folder_path="INBOX", message_id=normalized.id)
             stats.imported += 1
+            existing_source_message_ids.add(source_message_id)
             if stats.imported % max(args.commit_every, 1) == 0:
                 store.connection.commit()
-                print(f"  imported={stats.imported} scanned={stats.scanned}")
+                print(f"  imported={stats.imported} scanned={stats.scanned}", flush=True)
     except ImportSourceError:
         raise
     print(
         "  done "
         f"scanned={stats.scanned} imported={stats.imported} "
-        f"skipped_existing={stats.skipped_existing}"
+        f"skipped_existing={stats.skipped_existing}",
+        flush=True,
     )
+    if args.defer_mailbox_mapping:
+        store.connection.commit()
+        bulk_map_pst_mailbox(store, mailbox_id=mailbox_id, plan=plan, source_id=source_id)
+        if args.map_inbox:
+            bulk_map_source_to_mailbox_folder(
+                store,
+                mailbox_id=mailbox_id,
+                source_id=source_id,
+                folder_path="INBOX",
+            )
+        store.connection.commit()
     return stats
+
+
+def load_existing_source_message_ids(store, source_id: str) -> set[str]:
+    rows = store.connection.execute(
+        """
+        SELECT source_message_id
+        FROM mail_messages
+        WHERE source_id = %s
+        """,
+        (source_id,),
+    ).fetchall()
+    return {str(row[0]) for row in rows}
+
+
+def bulk_map_pst_mailbox(store, *, mailbox_id: str, plan: PstImportPlan, source_id: str) -> None:
+    print(f"  bulk mapping mailbox folders for {plan.mailbox_root}", flush=True)
+    store.ensure_mailbox_folder(mailbox_id, plan.mailbox_root)
+    rows = store.connection.execute(
+        """
+        SELECT DISTINCT mf.folder_path
+        FROM mail_folders mf
+        WHERE mf.source_id = %s
+        ORDER BY mf.folder_path
+        """,
+        (source_id,),
+    ).fetchall()
+    for row in rows:
+        source_folder = str(row[0])
+        target_folder = pst_target_folder(plan.mailbox_root, source_folder)
+        store.ensure_mailbox_folder(mailbox_id, target_folder)
+        bulk_map_source_to_mailbox_folder(
+            store,
+            mailbox_id=mailbox_id,
+            source_id=source_id,
+            folder_path=target_folder,
+            source_folder=source_folder,
+        )
+    store.ensure_mailbox_folder(mailbox_id, "All Mail")
+    bulk_map_source_to_mailbox_folder(
+        store,
+        mailbox_id=mailbox_id,
+        source_id=source_id,
+        folder_path="All Mail",
+    )
+
+
+def bulk_map_source_to_mailbox_folder(
+    store,
+    *,
+    mailbox_id: str,
+    source_id: str,
+    folder_path: str,
+    source_folder: str | None = None,
+) -> None:
+    folder_id = store.folder_id(mailbox_id, folder_path)
+    if not folder_id:
+        raise ValueError(f"Mailbox folder not found: {folder_path}")
+    max_uid = store.connection.execute(
+        """
+        SELECT coalesce(max(imap_uid), 0)
+        FROM millie_mailbox_messages
+        WHERE folder_id = %s
+        """,
+        (folder_id,),
+    ).fetchone()[0]
+    if source_folder is None:
+        where_sql = "m.source_id = %s"
+        params = (folder_id, mailbox_id, folder_id, int(max_uid), source_id, folder_id)
+        join_sql = ""
+    else:
+        where_sql = "m.source_id = %s AND mf.folder_path = %s"
+        params = (folder_id, mailbox_id, folder_id, int(max_uid), source_id, source_folder, folder_id)
+        join_sql = """
+            JOIN mail_message_folders mmf ON mmf.message_id = m.id
+            JOIN mail_folders mf ON mf.id = mmf.folder_id
+        """
+    store.connection.execute(
+        f"""
+        INSERT INTO millie_mailbox_messages (
+            id, mailbox_id, folder_id, message_id, binding_id, imap_uid,
+            internal_date, flags, is_recent
+        )
+        SELECT
+            'bulk:' || %s || ':' || m.id,
+            %s,
+            %s,
+            m.id,
+            NULL,
+            %s + row_number() OVER (ORDER BY coalesce(m.received_at, m.sent_at, m.created_at), m.id),
+            coalesce(m.received_at, m.sent_at, now()),
+            ARRAY[]::text[],
+            TRUE
+        FROM mail_messages m
+        {join_sql}
+        WHERE {where_sql}
+          AND NOT EXISTS (
+              SELECT 1
+              FROM millie_mailbox_messages existing
+              WHERE existing.folder_id = %s
+                AND existing.message_id = m.id
+          )
+        ON CONFLICT DO NOTHING
+        """,
+        params,
+    )
 
 
 def pst_target_folder(mailbox_root: str, original_folder: str | None) -> str:

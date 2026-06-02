@@ -18,6 +18,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from xml.sax.saxutils import escape as xml_escape
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -31,6 +32,15 @@ DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 22001
 DEFAULT_PID_FILE = PROJECT_ROOT / ".private" / "local" / "millie_webmail_server.pid"
 DEFAULT_LOG_FILE = PROJECT_ROOT / ".private" / "local" / "millie_webmail_server.log"
+AUTODISCOVER_PATHS = {
+    "/autodiscover/autodiscover.xml",
+    "/autodiscover/autodiscovery.xml",
+}
+AUTOCONFIG_PATHS = {
+    "/mail/config-v1.1.xml",
+    "/autoconfig/mail/config-v1.1.xml",
+    "/.well-known/autoconfig/mail/config-v1.1.xml",
+}
 
 
 class MillieWebmailHandler(BaseHTTPRequestHandler):
@@ -51,7 +61,22 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/messages":
             self.send_json(self.message_payload(parsed))
             return
+        if parsed.path in AUTODISCOVER_PATHS:
+            self.send_xml(autodiscover_xml(self.server.settings, self.server.mailbox_address))
+            return
+        if parsed.path in AUTOCONFIG_PATHS:
+            self.send_xml(autoconfig_xml(self.server.settings, self.server.mailbox_address))
+            return
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+
+    def do_POST(self) -> None:
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path in AUTODISCOVER_PATHS:
+            body = self.read_request_body()
+            requested_email = autodiscover_request_email(body) or self.server.mailbox_address
+            self.send_xml(autodiscover_xml(self.server.settings, requested_email))
+            return
+        self.send_error(HTTPStatus.METHOD_NOT_ALLOWED, "Method not allowed")
 
     def log_message(self, format: str, *args: object) -> None:
         print(
@@ -143,6 +168,23 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
+
+    def send_xml(self, value: str) -> None:
+        payload = value.encode("utf-8")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/xml; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def read_request_body(self) -> bytes:
+        length_text = self.headers.get("Content-Length") or "0"
+        try:
+            length = int(length_text)
+        except ValueError:
+            length = 0
+        return self.rfile.read(max(length, 0)) if length else b""
 
     def send_error(self, code: int, message: str | None = None, explain: str | None = None) -> None:
         if self.path.startswith("/api/"):
@@ -256,6 +298,74 @@ def json_default(value: object) -> str:
     if isinstance(value, (datetime, date)):
         return value.isoformat()
     return str(value)
+
+
+def autodiscover_request_email(body: bytes) -> str | None:
+    text = body.decode("utf-8", errors="ignore")
+    match = re.search(r"<(?:[A-Za-z0-9_]+:)?E?MailAddress>\s*([^<]+?)\s*</", text, re.I)
+    if not match:
+        return None
+    value = match.group(1).strip()
+    return value if "@" in value else None
+
+
+def autodiscover_xml(settings: dict[str, str], login_name: str) -> str:
+    domain = settings.get("service_mail_domain") or "localhost"
+    login = login_name or default_service_login(settings, "geon")
+    return f"""<?xml version="1.0" encoding="utf-8"?>
+<Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/responseschema/2006">
+  <Response xmlns="http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a">
+    <Account>
+      <AccountType>email</AccountType>
+      <Action>settings</Action>
+      <Protocol>
+        <Type>IMAP</Type>
+        <Server>{xml_escape(domain)}</Server>
+        <Port>993</Port>
+        <LoginName>{xml_escape(login)}</LoginName>
+        <SSL>on</SSL>
+        <AuthRequired>on</AuthRequired>
+      </Protocol>
+      <Protocol>
+        <Type>SMTP</Type>
+        <Server>{xml_escape(domain)}</Server>
+        <Port>465</Port>
+        <LoginName>{xml_escape(login)}</LoginName>
+        <SSL>on</SSL>
+        <AuthRequired>on</AuthRequired>
+      </Protocol>
+    </Account>
+  </Response>
+</Autodiscover>
+"""
+
+
+def autoconfig_xml(settings: dict[str, str], login_name: str) -> str:
+    domain = settings.get("service_mail_domain") or "localhost"
+    login = login_name or default_service_login(settings, "geon")
+    return f"""<?xml version="1.0" encoding="utf-8"?>
+<clientConfig version="1.1">
+  <emailProvider id="{xml_escape(domain)}">
+    <domain>{xml_escape(domain)}</domain>
+    <displayName>MILLIE Mail</displayName>
+    <displayShortName>MILLIE</displayShortName>
+    <incomingServer type="imap">
+      <hostname>{xml_escape(domain)}</hostname>
+      <port>993</port>
+      <socketType>SSL</socketType>
+      <authentication>password-cleartext</authentication>
+      <username>{xml_escape(login)}</username>
+    </incomingServer>
+    <outgoingServer type="smtp">
+      <hostname>{xml_escape(domain)}</hostname>
+      <port>465</port>
+      <socketType>SSL</socketType>
+      <authentication>password-cleartext</authentication>
+      <username>{xml_escape(login)}</username>
+    </outgoingServer>
+  </emailProvider>
+</clientConfig>
+"""
 
 
 def build_parser() -> argparse.ArgumentParser:

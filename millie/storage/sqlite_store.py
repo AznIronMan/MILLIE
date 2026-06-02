@@ -90,6 +90,7 @@ class SQLiteMailStore:
     ) -> None:
         """Store a complete message graph in one transaction."""
 
+        _sanitize_message_text(message)
         with self.connection:
             self._replace_message(source_id, message, import_job_id)
             if folder:
@@ -306,6 +307,7 @@ class SQLiteMailStore:
             ]
             if value
         )
+        search_text = _truncate_search_text(search_text)
         self.connection.execute(
             """
             INSERT OR REPLACE INTO mail_search_documents (
@@ -368,11 +370,78 @@ def _role_text(addresses: Iterable[NormalizedAddress]) -> dict[str, str]:
     }
 
 
+def _truncate_search_text(value: str, *, max_bytes: int = 800_000) -> str:
+    encoded = value.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return value
+    return encoded[:max_bytes].decode("utf-8", errors="ignore")
+
+
+def _sanitize_message_text(message: NormalizedMessage) -> None:
+    for attr in [
+        "source_message_id",
+        "internet_message_id",
+        "conversation_id",
+        "thread_id",
+        "subject",
+        "normalized_subject",
+        "sent_at",
+        "received_at",
+        "date_header",
+        "body_text",
+        "body_html",
+        "body_preview",
+    ]:
+        setattr(message, attr, _db_text(getattr(message, attr)))
+    for address in message.addresses:
+        address.display_name = _db_text(address.display_name)
+        address.email_address = _db_text(address.email_address)
+        address.raw_value = _db_text(address.raw_value)
+    for header in message.headers:
+        header.name = _db_text(header.name) or ""
+        header.value = _db_text(header.value) or ""
+    for part in message.parts:
+        for attr in [
+            "content_type",
+            "content_disposition",
+            "charset",
+            "filename",
+            "content_id",
+            "content_location",
+            "transfer_encoding",
+            "text_content",
+        ]:
+            setattr(part, attr, _db_text(getattr(part, attr)))
+        part.metadata = _sanitize_metadata(part.metadata)
+    message.metadata = _sanitize_metadata(message.metadata)
+
+
+def _sanitize_metadata(value: object) -> object:
+    if isinstance(value, str):
+        return _db_text(value) or ""
+    if isinstance(value, dict):
+        return {
+            str(_db_text(str(key)) or ""): _sanitize_metadata(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_sanitize_metadata(item) for item in value]
+    if isinstance(value, tuple):
+        return [_sanitize_metadata(item) for item in value]
+    return value
+
+
+def _db_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return value.replace("\x00", "").encode("utf-8", errors="replace").decode("utf-8")
+
+
 def _json(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
 def _metadata_value(value: object) -> str:
     if isinstance(value, str):
-        return value
-    return _json(value)
+        return _db_text(value) or ""
+    return _db_text(_json(_sanitize_metadata(value))) or ""

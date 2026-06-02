@@ -16,6 +16,22 @@ assert SPEC.loader is not None
 sys.modules["millie_imap_listener"] = imap_listener
 SPEC.loader.exec_module(imap_listener)
 
+IMPORT_MODULE_PATH = Path(__file__).resolve().parents[1] / "tools" / "millie_imap_bulk_import.py"
+IMPORT_SPEC = importlib.util.spec_from_file_location("millie_imap_bulk_import", IMPORT_MODULE_PATH)
+assert IMPORT_SPEC is not None
+imap_bulk_import = importlib.util.module_from_spec(IMPORT_SPEC)
+assert IMPORT_SPEC.loader is not None
+sys.modules["millie_imap_bulk_import"] = imap_bulk_import
+IMPORT_SPEC.loader.exec_module(imap_bulk_import)
+
+WEBMAIL_MODULE_PATH = Path(__file__).resolve().parents[1] / "tools" / "millie_webmail_server.py"
+WEBMAIL_SPEC = importlib.util.spec_from_file_location("millie_webmail_server", WEBMAIL_MODULE_PATH)
+assert WEBMAIL_SPEC is not None
+webmail_server = importlib.util.module_from_spec(WEBMAIL_SPEC)
+assert WEBMAIL_SPEC.loader is not None
+sys.modules["millie_webmail_server"] = webmail_server
+WEBMAIL_SPEC.loader.exec_module(webmail_server)
+
 
 class ImapListenerTest(unittest.TestCase):
     @classmethod
@@ -63,6 +79,44 @@ class ImapListenerTest(unittest.TestCase):
         messages = [{"uid": 10}, {"uid": 11}, {"uid": 12}, {"uid": 13}]
 
         self.assertEqual(imap_listener.expunge_sequence_numbers(messages, [10, 12]), [1, 2])
+
+    def test_imap_bulk_import_parses_quoted_folder_names(self) -> None:
+        folder = imap_bulk_import.parse_list_response(
+            b'(\\HasNoChildren \\Sent) "/" "[Gmail]/Sent Mail"'
+        )
+
+        self.assertIsNotNone(folder)
+        self.assertEqual(folder.name, "[Gmail]/Sent Mail")
+        self.assertEqual(folder.delimiter, "/")
+        self.assertEqual(imap_bulk_import.special_mailbox_folders(folder, disabled=False), ["Sent"])
+
+    def test_imap_bulk_import_skips_default_non_mail_folders(self) -> None:
+        self.assertTrue(imap_bulk_import.is_default_non_mail_folder("Calendar/Birthdays"))
+        self.assertTrue(imap_bulk_import.is_default_non_mail_folder("Sync Issues/Conflicts"))
+        self.assertFalse(imap_bulk_import.is_default_non_mail_folder("INBOX/Clients"))
+
+    def test_imap_bulk_import_parses_batched_uid_fetch_data(self) -> None:
+        parsed = imap_bulk_import.parse_uid_fetch_messages(
+            [
+                (b'1 (UID 123 BODY[] {5}', b"first"),
+                b")",
+                (b'2 (FLAGS (\\Seen) UID 124 BODY[] {6}', b"second"),
+            ]
+        )
+
+        self.assertEqual(parsed, {"123": b"first", "124": b"second"})
+
+    def test_webmail_autodiscover_post_email_parser(self) -> None:
+        body = (
+            b"<?xml version='1.0'?><Autodiscover><Request>"
+            b"<EMailAddress>geon@millie.cnbsk.cloud</EMailAddress>"
+            b"</Request></Autodiscover>"
+        )
+
+        self.assertEqual(
+            webmail_server.autodiscover_request_email(body),
+            "geon@millie.cnbsk.cloud",
+        )
 
 
 if __name__ == "__main__":

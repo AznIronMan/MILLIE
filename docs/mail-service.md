@@ -97,6 +97,31 @@ kill "$(cat .private/local/millie_smtp_listener.pid)"
 
 This is a development listener, not a production mail server. It is intended to verify mailbox navigation and mailbox-copy edits from clients such as Apple Mail, Outlook, and iOS Mail.
 
+## Autodiscover And Autoconfig
+
+The temporary webmail listener on port `22001` serves mail-client discovery XML:
+
+- `GET/POST /autodiscover/autodiscover.xml`
+- `GET/POST /autodiscover/autodiscovery.xml`
+- `GET /mail/config-v1.1.xml`
+- `GET /autoconfig/mail/config-v1.1.xml`
+- `GET /.well-known/autoconfig/mail/config-v1.1.xml`
+
+The XML advertises IMAPS on `millie.cnbsk.cloud:993` and SMTP submissions on `millie.cnbsk.cloud:465`. SMTP remains a setup-only placeholder; MILLIE does not send outbound mail.
+
+For public Outlook auto-setup, nginx must forward POST requests for `/autodiscover/autodiscover.xml` to the webmail listener. If nginx serves that path from a static location, Outlook receives `405 Not Allowed` even though GET works. The required nginx shape is:
+
+```nginx
+location = /autodiscover/autodiscover.xml {
+    proxy_pass http://10.0.20.9:22001/autodiscover/autodiscover.xml;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+}
+```
+
+The same proxy rule can be duplicated for `/autodiscover/autodiscovery.xml` if clients or tests use that spelling.
+
 ## Mailbox Facade
 
 Mailbox state is stored in:

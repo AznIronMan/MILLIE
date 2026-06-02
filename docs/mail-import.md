@@ -1,6 +1,6 @@
 # Mail Import Pipeline
 
-MILLIE now has a dormant import pipeline design for turning mail sources into connected database records. Dormant means the code and schema are present, but no command currently auto-connects to mail accounts or writes imported mail into a live profile database.
+MILLIE has an import pipeline for turning mail sources into connected database records. Current live tools can copy PST files and configured IMAP accounts into the Postgres-backed MILLIE mailbox facade.
 
 ## Supported Source Shapes
 
@@ -8,7 +8,7 @@ MILLIE now has a dormant import pipeline design for turning mail sources into co
 - IMAP accounts with password authentication.
 - Exchange/Outlook IMAP with OAuth using XOAUTH2 access tokens.
 
-IMAP extraction is designed to use a read-only mailbox select and `BODY.PEEK[]` fetches by UID so messages are not marked read during import. Imported source messages are copied into MILLIE's canonical `mail_*` tables and can then be presented through the Postgres-backed `millie_*` mailbox facade.
+IMAP extraction uses read-only mailbox selection and `BODY.PEEK[]` fetches by UID so messages are not marked read during import. Imported source messages are copied into MILLIE's canonical `mail_*` tables and can then be presented through the Postgres-backed `millie_*` mailbox facade.
 
 ## PST Passwords
 
@@ -40,6 +40,26 @@ Run the actual import only when ready:
 ```sh
 .private/venv/bin/python tools/millie_pst_bulk_import.py "/Users/ironman/HomeDrive/Outlook Files" --apply
 ```
+
+The importer skips existing source messages by source URI plus source message ID unless `--replace-existing` is explicitly used. PostgreSQL search text is capped before indexing so oversized HTML messages still keep their raw MIME and normalized body fields while avoiding `tsvector` size failures.
+
+## Bulk IMAP Import
+
+Configured IMAP retrieval accounts live in `millie.settings`. The bulk IMAP importer supports password IMAP and Microsoft OAuth/XOAUTH2 accounts:
+
+```sh
+.private/venv/bin/python tools/millie_imap_bulk_import.py --apply
+```
+
+To import one configured account:
+
+```sh
+.private/venv/bin/python tools/millie_imap_bulk_import.py --apply --account geoff@clarktribe.com
+```
+
+The tool lists every selectable folder, fetches messages read-only, and preserves the source tree under `Sources/IMAP/<account>/...`. Messages also appear in `All Mail`; common source folders such as `INBOX`, Sent, Drafts, Trash, Junk, and Archive are also mapped to MILLIE's top-level special folders. Existing source UIDs are skipped, and already imported raw MIME hashes are mapped into the requested folders instead of creating duplicate canonical messages.
+
+By default, obvious non-mail folders exposed by some servers, such as Calendar, Contacts, Tasks, Journal, Notes, RSS Feeds, Outbox, and Sync Issues, are skipped. Use `--include-non-mail-folders` only when those folders should be copied as raw IMAP items too.
 
 ## Dry-Run Planning
 

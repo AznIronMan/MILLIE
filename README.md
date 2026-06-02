@@ -14,8 +14,8 @@ This repository has been reset for a fresh start. The prior version is archived 
 - Application structure: early dormant import, storage, identity, and mailbox service scaffolds
 - Settings store: local root `millie.settings` SQLite3 database, ignored by Git
 - Service mail domain: configured in `millie.settings`; current default is `millie.cnbsk.cloud` with local `MILLIE` aliases
-- PST import status: read-only probe and dry-run-first bulk importer available
-- Mail import status: dormant source/normalization/storage pipeline scaffolded
+- PST import status: read-only probe and duplicate-safe bulk importer available
+- Mail import status: duplicate-safe bulk PST and IMAP import tools available
 - Mail service status: dormant Postgres identity/mailbox facade scaffolded
 - Dev IMAP status: development listener available for local/LAN browse and mailbox-copy mutation testing
 - Dev SMTP status: optional setup-only blackhole listener; MILLIE never sends outbound SMTP
@@ -70,15 +70,21 @@ To plan a multi-PST import without extracting or writing data:
 
 When applied, each PST is mapped under its own mailbox root such as `Sources/PST/CSU_Archive`, with original PST folders nested below that root. Imported messages are also mapped into `All Mail` by default.
 
-## Dormant Mail Import Pipeline
+## Mail Import Pipeline
 
-The initial import pipeline code and database schemas are present but not activated for live imports.
+The import pipeline can copy PST files and configured IMAP accounts into the Postgres-backed MILLIE mailbox facade.
 
 ```sh
 python3 tools/mail_import_plan.py --source pst --database postgres --pst tmp/your-archive.pst
 ```
 
-The planned flow supports PST, IMAP password auth, and Exchange/Outlook OAuth IMAP sources. Normalized records have schema coverage for addresses, headers, dates, subjects, body projections, raw MIME, attachments, inline parts, embedded parts, metadata, folders, import jobs, and search indexes in SQLite or PostgreSQL.
+For configured IMAP accounts in `millie.settings`, the bulk importer lists every selectable folder and fetches messages read-only with `BODY.PEEK[]`:
+
+```sh
+.private/venv/bin/python tools/millie_imap_bulk_import.py --apply
+```
+
+The flow supports PST, IMAP password auth, and Exchange/Outlook OAuth IMAP sources. Normalized records have schema coverage for addresses, headers, dates, subjects, body projections, raw MIME, attachments, inline parts, embedded parts, metadata, folders, import jobs, and search indexes in SQLite or PostgreSQL.
 
 ## Dormant Mail Service Facade
 
@@ -122,3 +128,13 @@ Start the temporary no-auth webmail view:
 ```
 
 It opens the current `geon@millie.cnbsk.cloud` mailbox through the Postgres mailbox facade and provides Gmail, Outlook, and Microsoft 365-inspired theme options. The first pass is read-only and does not include SMTP or compose behavior.
+
+The webmail listener also serves development mail-client discovery XML:
+
+- `GET/POST /autodiscover/autodiscover.xml`
+- `GET/POST /autodiscover/autodiscovery.xml`
+- `GET /mail/config-v1.1.xml`
+- `GET /autoconfig/mail/config-v1.1.xml`
+- `GET /.well-known/autoconfig/mail/config-v1.1.xml`
+
+For public Outlook autodiscover, nginx must proxy POST requests for `/autodiscover/autodiscover.xml` to the webmail listener instead of serving a static GET-only file.

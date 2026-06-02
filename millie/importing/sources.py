@@ -70,12 +70,8 @@ class PstSource:
         return _message_root(self.output_dir)
 
     def iter_messages(self, *, clean: bool = False) -> Iterator[ExtractedMessage]:
-        message_root = self.extract(clean=clean)
         source_uri = str(self.pst_path)
-        for path in sorted(message_root.rglob("*")):
-            if not path.is_file():
-                continue
-            relative_path = path.relative_to(message_root)
+        for path, relative_path in self.iter_message_paths(clean=clean):
             yield ExtractedMessage(
                 source_type="pst",
                 source_uri=source_uri,
@@ -88,6 +84,12 @@ class PstSource:
                 raw_bytes=path.read_bytes(),
                 metadata={"pst_extract_path": str(relative_path)},
             )
+
+    def iter_message_paths(self, *, clean: bool = False) -> Iterator[tuple[Path, Path]]:
+        message_root = self.extract(clean=clean)
+        for path in sorted(message_root.rglob("*")):
+            if path.is_file():
+                yield path, path.relative_to(message_root)
 
 
 @dataclass(slots=True)
