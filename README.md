@@ -149,6 +149,8 @@ Start the temporary no-auth webmail view:
 
 It opens the current `geon@millie.cnbsk.cloud` mailbox through the Postgres mailbox facade and provides Gmail, Outlook, and Microsoft 365-inspired theme options. The first pass is read-only and does not include SMTP or compose behavior.
 
+The message list loads only the selected folder and supports `25`, `50`, `100`, `250`, `500`, or `All` messages at a time. The selected size is remembered in browser local storage, folder counts use cheap count queries, and the active list can be refreshed from the webmail toolbar.
+
 To have webmail check live IMAP/OAuth sources while the webmail process is running, add `--live-sync`. This does not install a macOS service:
 
 ```sh

@@ -798,10 +798,16 @@ class PostgresMailStore:
         *,
         mailbox_id: str,
         folder_path: str,
-        limit: int = 100,
+        limit: int | None = 100,
     ) -> list[dict[str, object]]:
+        limit_clause = "" if limit is None else "LIMIT %s"
+        params: tuple[object, ...] = (
+            (mailbox_id, folder_path)
+            if limit is None
+            else (mailbox_id, folder_path, limit)
+        )
         rows = self.connection.execute(
-            """
+            f"""
             SELECT
                 mm.imap_uid,
                 mm.flags,
@@ -848,9 +854,9 @@ class PostgresMailStore:
               AND mf.folder_path = %s
               AND mm.is_expunged = FALSE
             ORDER BY message_date DESC NULLS LAST, mm.imap_uid DESC
-            LIMIT %s
+            {limit_clause}
             """,
-            (mailbox_id, folder_path, limit),
+            params,
         ).fetchall()
         return [
             {
@@ -869,6 +875,37 @@ class PostgresMailStore:
             }
             for row in rows
         ]
+
+    def count_webmail_messages(self, *, mailbox_id: str, folder_path: str) -> int:
+        row = self.connection.execute(
+            """
+            SELECT count(*)
+            FROM millie_mailbox_messages mm
+            JOIN millie_mailbox_folders mf ON mf.id = mm.folder_id
+            WHERE mm.mailbox_id = %s
+              AND mf.folder_path = %s
+              AND mm.is_expunged = FALSE
+            """,
+            (mailbox_id, folder_path),
+        ).fetchone()
+        return int(row[0] or 0)
+
+    def webmail_folder_counts(self, *, mailbox_id: str) -> dict[str, int]:
+        rows = self.connection.execute(
+            """
+            SELECT mf.folder_path, count(mm.id)
+            FROM millie_mailbox_folders mf
+            LEFT JOIN millie_mailbox_messages mm
+              ON mm.folder_id = mf.id
+             AND mm.mailbox_id = mf.mailbox_id
+             AND mm.is_expunged = FALSE
+            WHERE mf.mailbox_id = %s
+              AND mf.selectable = TRUE
+            GROUP BY mf.folder_path
+            """,
+            (mailbox_id,),
+        ).fetchall()
+        return {str(row[0]): int(row[1] or 0) for row in rows}
 
     def get_webmail_message_by_uid(
         self,

@@ -12,6 +12,7 @@ All notable changes to MILLIE will be documented in this file.
 - Added incremental IMAP/OAuth live sync helpers that import only newer UIDs while a MILLIE process is running.
 - Added `--live-sync` support to the development webmail listener.
 - Added iCloud Mail presets/defaults for `icloud.com`, `me.com`, and `mac.com` IMAP retrieval accounts.
+- Added webmail per-folder message limits, browser-side list caching, refresh, and cheaper folder counts.
 
 ## [1.0.0] - 2026-05-31
 

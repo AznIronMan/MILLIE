@@ -42,6 +42,8 @@ AUTOCONFIG_PATHS = {
     "/autoconfig/mail/config-v1.1.xml",
     "/.well-known/autoconfig/mail/config-v1.1.xml",
 }
+MESSAGE_LIMIT_OPTIONS = {"25", "50", "100", "250", "500", "all"}
+DEFAULT_MESSAGE_LIMIT = "50"
 
 
 class MillieWebmailHandler(BaseHTTPRequestHandler):
@@ -87,33 +89,27 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
         )
 
     def bootstrap_payload(self, parsed: urllib.parse.ParseResult) -> dict[str, object]:
-        folder = urllib.parse.parse_qs(parsed.query).get("folder", ["INBOX"])[0]
+        query = urllib.parse.parse_qs(parsed.query)
+        folder = query.get("folder", ["INBOX"])[0]
+        requested_limit = parse_message_limit(query.get("limit", [DEFAULT_MESSAGE_LIMIT])[0])
         with self.store() as store:
             mailbox = store.mailbox_by_address(self.server.mailbox_address)
             if mailbox is None:
                 raise NotFoundError(f"Mailbox not found: {self.server.mailbox_address}")
             folders = store.list_folders(str(mailbox["id"]))
-            folder_counts = {
-                str(item["path"]): len(
-                    store.list_webmail_messages(
-                        mailbox_id=str(mailbox["id"]),
-                        folder_path=str(item["path"]),
-                        limit=1000,
-                    )
-                )
-                for item in folders
-                if item.get("selectable")
-            }
+            folder_counts = store.webmail_folder_counts(mailbox_id=str(mailbox["id"]))
             selected_folder = folder if folder in folder_counts else "INBOX"
             messages = store.list_webmail_messages(
                 mailbox_id=str(mailbox["id"]),
                 folder_path=selected_folder,
-                limit=100,
+                limit=None if requested_limit == "all" else int(requested_limit),
             )
         return {
             "mailbox": mailbox,
             "folders": [decorate_folder(folder, folder_counts) for folder in folders],
             "selected_folder": selected_folder,
+            "message_limit": requested_limit,
+            "folder_count": folder_counts.get(selected_folder, 0),
             "messages": messages,
         }
 
@@ -299,6 +295,11 @@ def json_default(value: object) -> str:
     if isinstance(value, (datetime, date)):
         return value.isoformat()
     return str(value)
+
+
+def parse_message_limit(value: str) -> str:
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in MESSAGE_LIMIT_OPTIONS else DEFAULT_MESSAGE_LIMIT
 
 
 def autodiscover_request_email(body: bytes) -> str | None:
@@ -634,16 +635,66 @@ INDEX_HTML = r"""<!doctype html>
       position: sticky;
       top: 0;
       z-index: 1;
-      display: flex;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
       align-items: center;
-      justify-content: space-between;
+      gap: 10px;
       height: 44px;
       padding: 0 14px;
       background: var(--surface);
       border-bottom: 1px solid var(--line);
       font-weight: 650;
     }
+    .list-title {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      min-width: 0;
+    }
+    #folderTitle {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
     .list-count { color: var(--muted); font-weight: 500; }
+    .list-controls {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .limit-label {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .limit-select {
+      width: 66px;
+      height: 30px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--text);
+      font: inherit;
+      font-size: 12px;
+    }
+    .refresh-button {
+      height: 30px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--text);
+      padding: 0 9px;
+      font: inherit;
+      font-size: 12px;
+      font-weight: 650;
+      cursor: pointer;
+    }
+    .refresh-button:hover { border-color: var(--accent); color: var(--accent); }
     .message-row {
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
@@ -744,6 +795,9 @@ INDEX_HTML = r"""<!doctype html>
       .folder { grid-template-columns: 1fr; justify-items: center; padding: 0 6px; }
       .folder .name { max-width: 54px; }
       .folder .count { display: none; }
+      .list-head { height: auto; min-height: 44px; align-items: stretch; padding: 8px 10px; }
+      .list-title { flex-direction: column; gap: 0; }
+      .list-controls { align-self: center; }
     }
   </style>
 </head>
@@ -762,14 +816,45 @@ INDEX_HTML = r"""<!doctype html>
     <main class="main">
       <nav class="folders" id="folders"></nav>
       <section class="messages">
-        <div class="list-head"><span id="folderTitle">INBOX</span><span class="list-count" id="messageCount">0</span></div>
+        <div class="list-head">
+          <div class="list-title">
+            <span id="folderTitle">INBOX</span>
+            <span class="list-count" id="messageCount">0</span>
+          </div>
+          <div class="list-controls">
+            <label class="limit-label">Show
+              <select id="messageLimit" class="limit-select">
+                <option value="25">25</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+                <option value="250">250</option>
+                <option value="500">500</option>
+                <option value="all">All</option>
+              </select>
+            </label>
+            <button id="refreshFolder" class="refresh-button" type="button">Refresh</button>
+          </div>
+        </div>
         <div id="messageList"></div>
       </section>
       <section class="reader" id="reader"><div class="empty">Loading</div></section>
     </main>
   </div>
   <script>
-    const state = { mailbox: null, folders: [], folder: "INBOX", messages: [], selectedUid: null, query: "" };
+    const limitStorageKey = "millie.webmail.messageLimit";
+    const validMessageLimits = new Set(["25", "50", "100", "250", "500", "all"]);
+    const savedLimit = localStorage.getItem(limitStorageKey) || "50";
+    const state = {
+      mailbox: null,
+      folders: [],
+      folder: "INBOX",
+      folderCount: 0,
+      messages: [],
+      selectedUid: null,
+      query: "",
+      limit: validMessageLimits.has(savedLimit) ? savedLimit : "50",
+      cache: new Map(),
+    };
     const $ = (id) => document.getElementById(id);
 
     function setTheme(theme) {
@@ -807,23 +892,47 @@ INDEX_HTML = r"""<!doctype html>
       return response.json();
     }
 
-    async function loadBootstrap(folder = "INBOX") {
-      const data = await api(`/api/bootstrap?folder=${encodeURIComponent(folder)}`);
+    function cacheKey(folder, limit = state.limit) {
+      return `${limit}::${folder}`;
+    }
+
+    function bootstrapUrl(folder) {
+      return `/api/bootstrap?folder=${encodeURIComponent(folder)}&limit=${encodeURIComponent(state.limit)}`;
+    }
+
+    function applyBootstrap(data) {
       state.mailbox = data.mailbox;
       state.folders = data.folders;
       state.folder = data.selected_folder;
+      state.folderCount = Number(data.folder_count || 0);
+      state.limit = data.message_limit || state.limit;
       state.messages = data.messages;
       state.selectedUid = state.messages[0]?.uid || null;
+    }
+
+    async function loadBootstrap(folder = "INBOX", options = {}) {
+      const data = await loadFolderData(folder, options);
+      applyBootstrap(data);
       render();
       if (state.selectedUid) await openMessage(state.selectedUid);
     }
 
-    async function loadFolder(folder) {
-      const data = await api(`/api/bootstrap?folder=${encodeURIComponent(folder)}`);
-      state.folder = data.selected_folder;
-      state.folders = data.folders;
-      state.messages = data.messages;
-      state.selectedUid = state.messages[0]?.uid || null;
+    async function loadFolderData(folder, options = {}) {
+      const key = cacheKey(folder);
+      if (!options.force && state.cache.has(key)) {
+        return state.cache.get(key);
+      }
+      const data = await api(bootstrapUrl(folder));
+      state.cache.set(key, data);
+      return data;
+    }
+
+    async function loadFolder(folder, options = {}) {
+      if (options.force) {
+        state.cache.delete(cacheKey(folder));
+      }
+      const data = await loadFolderData(folder, options);
+      applyBootstrap(data);
       render();
       if (state.selectedUid) {
         await openMessage(state.selectedUid);
@@ -841,6 +950,7 @@ INDEX_HTML = r"""<!doctype html>
 
     function render() {
       $("account").textContent = state.mailbox?.mailbox_address || "";
+      $("messageLimit").value = state.limit;
       renderFolders();
       renderMessages();
     }
@@ -871,7 +981,7 @@ INDEX_HTML = r"""<!doctype html>
     function renderMessages() {
       const messages = filteredMessages();
       $("folderTitle").textContent = state.folder;
-      $("messageCount").textContent = messages.length;
+      $("messageCount").textContent = messageCountText(messages.length);
       const list = $("messageList");
       list.innerHTML = "";
       if (!messages.length) {
@@ -895,6 +1005,18 @@ INDEX_HTML = r"""<!doctype html>
         row.addEventListener("click", () => openMessage(message.uid).catch(showError));
         list.appendChild(row);
       });
+    }
+
+    function messageCountText(filteredCount) {
+      const loaded = state.messages.length;
+      const total = state.folderCount || loaded;
+      if (state.query.trim()) {
+        return `${filteredCount} / ${loaded} loaded`;
+      }
+      if (loaded < total) {
+        return `${loaded} / ${total}`;
+      }
+      return String(total);
     }
 
     function renderReader(message) {
@@ -943,6 +1065,14 @@ INDEX_HTML = r"""<!doctype html>
     $("search").addEventListener("input", (event) => {
       state.query = event.target.value;
       renderMessages();
+    });
+    $("messageLimit").addEventListener("change", (event) => {
+      state.limit = validMessageLimits.has(event.target.value) ? event.target.value : "50";
+      localStorage.setItem(limitStorageKey, state.limit);
+      loadFolder(state.folder).catch(showError);
+    });
+    $("refreshFolder").addEventListener("click", () => {
+      loadFolder(state.folder, { force: true }).catch(showError);
     });
 
     setTheme(localStorage.getItem("millie.webmail.theme") || "gmail");

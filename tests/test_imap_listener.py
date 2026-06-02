@@ -126,6 +126,11 @@ class ImapListenerTest(unittest.TestCase):
             "geon@millie.cnbsk.cloud",
         )
 
+    def test_webmail_message_limit_parser(self) -> None:
+        self.assertEqual(webmail_server.parse_message_limit("25"), "25")
+        self.assertEqual(webmail_server.parse_message_limit("all"), "all")
+        self.assertEqual(webmail_server.parse_message_limit("1000"), "50")
+
 
 if __name__ == "__main__":
     unittest.main()
