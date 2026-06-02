@@ -54,6 +54,9 @@ CREATE TABLE IF NOT EXISTS mail_messages (
     body_preview TEXT,
     raw_mime_sha256 TEXT NOT NULL,
     raw_mime_size_bytes BIGINT NOT NULL,
+    normalized_body_sha256 TEXT,
+    attachment_set_sha256 TEXT,
+    normalized_message_fingerprint TEXT,
     has_attachments BOOLEAN NOT NULL DEFAULT FALSE,
     metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -61,13 +64,36 @@ CREATE TABLE IF NOT EXISTS mail_messages (
     UNIQUE (source_id, source_message_id)
 );
 
+ALTER TABLE mail_messages
+    ADD COLUMN IF NOT EXISTS normalized_body_sha256 TEXT;
+ALTER TABLE mail_messages
+    ADD COLUMN IF NOT EXISTS attachment_set_sha256 TEXT;
+ALTER TABLE mail_messages
+    ADD COLUMN IF NOT EXISTS normalized_message_fingerprint TEXT;
+
 CREATE INDEX IF NOT EXISTS idx_mail_messages_raw_mime_sha256
     ON mail_messages(raw_mime_sha256);
+CREATE INDEX IF NOT EXISTS idx_mail_messages_normalized_body_sha256
+    ON mail_messages(normalized_body_sha256);
+CREATE INDEX IF NOT EXISTS idx_mail_messages_attachment_set_sha256
+    ON mail_messages(attachment_set_sha256);
+CREATE INDEX IF NOT EXISTS idx_mail_messages_normalized_fingerprint
+    ON mail_messages(normalized_message_fingerprint);
 
 CREATE TABLE IF NOT EXISTS mail_message_folders (
     message_id TEXT NOT NULL REFERENCES mail_messages(id) ON DELETE CASCADE,
     folder_id TEXT NOT NULL REFERENCES mail_folders(id) ON DELETE CASCADE,
     PRIMARY KEY (message_id, folder_id)
+);
+
+CREATE TABLE IF NOT EXISTS mail_source_message_aliases (
+    source_id TEXT NOT NULL REFERENCES mail_sources(id) ON DELETE CASCADE,
+    source_message_id TEXT NOT NULL,
+    message_id TEXT NOT NULL REFERENCES mail_messages(id) ON DELETE CASCADE,
+    raw_mime_sha256 TEXT NOT NULL,
+    metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (source_id, source_message_id)
 );
 
 CREATE TABLE IF NOT EXISTS mail_message_addresses (
@@ -155,6 +181,10 @@ CREATE INDEX IF NOT EXISTS idx_mail_sources_type_uri
     ON mail_sources(source_type, source_uri);
 CREATE INDEX IF NOT EXISTS idx_mail_messages_source_message_id
     ON mail_messages(source_id, source_message_id);
+CREATE INDEX IF NOT EXISTS idx_mail_source_aliases_message
+    ON mail_source_message_aliases(message_id);
+CREATE INDEX IF NOT EXISTS idx_mail_source_aliases_raw_mime_sha256
+    ON mail_source_message_aliases(raw_mime_sha256);
 CREATE INDEX IF NOT EXISTS idx_mail_messages_internet_message_id
     ON mail_messages(internet_message_id);
 CREATE INDEX IF NOT EXISTS idx_mail_messages_sent_at

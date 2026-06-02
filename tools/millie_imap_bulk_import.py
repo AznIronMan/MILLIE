@@ -16,6 +16,8 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Iterable
 
+from psycopg.types.json import Jsonb
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -147,9 +149,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=25,
         help="Fetch this many IMAP messages per network round trip.",
     )
+    parser.add_argument("--imap-timeout", type=int, default=120, help="IMAP socket timeout in seconds.")
     parser.add_argument("--limit-per-folder", type=int, default=0, help="Import at most this many messages per folder.")
     parser.add_argument("--limit-total", type=int, default=0, help="Import at most this many messages per run.")
     parser.add_argument("--replace-existing", action="store_true", help="Replace existing source UID records.")
+    parser.add_argument(
+        "--newer-than-existing",
+        action="store_true",
+        help="Only search UIDs newer than the highest imported UID for each folder.",
+    )
     parser.add_argument(
         "--allow-raw-duplicates",
         action="store_true",
@@ -184,7 +192,7 @@ def main() -> int:
     totals = ImportStats()
     if not args.apply:
         for account in accounts:
-            folders = list_account_folders(account, settings)
+            folders = list_account_folders(account, settings, timeout=args.imap_timeout)
             folders = selected_folders(folders, args.folder, include_non_mail=args.include_non_mail_folders)
             print_account_plan(account, folders)
         print("Dry run only. Re-run with --apply to fetch IMAP messages and write to MILLIE.", flush=True)
@@ -199,7 +207,7 @@ def main() -> int:
         store.connection.commit()
 
         for account in accounts:
-            folders = list_account_folders(account, settings)
+            folders = list_account_folders(account, settings, timeout=args.imap_timeout)
             folders = selected_folders(folders, args.folder, include_non_mail=args.include_non_mail_folders)
             print_account_plan(account, folders)
             account_stats = import_account_folders(
@@ -266,8 +274,13 @@ def print_account_plan(account: dict[str, Any], folders: list[FolderInfo]) -> No
         print(f"  folder: {folder.name}", flush=True)
 
 
-def list_account_folders(account: dict[str, Any], settings: dict[str, str]) -> list[FolderInfo]:
-    connection = connect_account(account, settings)
+def list_account_folders(
+    account: dict[str, Any],
+    settings: dict[str, str],
+    *,
+    timeout: int,
+) -> list[FolderInfo]:
+    connection = connect_account(account, settings, timeout=timeout)
     try:
         status, data = connection.list()
         if status != "OK":
@@ -415,18 +428,19 @@ def import_folder(
     mailbox_mapper = MailboxMessageMapper(store=store, mailbox_id=mailbox_id)
 
     stats = ImportStats()
-    connection = connect_account(account, settings)
+    connection = connect_account(account, settings, timeout=args.imap_timeout)
     try:
         status, _ = connection.select(quote_imap_astring(folder.name), readonly=True)
         if status != "OK":
             raise ImportSourceError(f"Could not select IMAP folder: {folder.name}")
         uidvalidity = selected_uidvalidity(connection)
-        status, search_data = connection.uid("SEARCH", None, "ALL")
-        if status != "OK":
-            raise ImportSourceError(f"UID SEARCH failed for folder: {folder.name}")
-        uids = (search_data[0] or b"").split()
+        min_uid = None
+        if args.newer_than_existing and not args.replace_existing:
+            min_uid = next_uid_after_existing(existing_source_message_ids, uidvalidity)
+        uids = search_folder_uids(connection, folder.name, min_uid=min_uid)
         print(
-            f"Importing account={account_label(account)} folder={folder.name} messages={len(uids)}",
+            f"Importing account={account_label(account)} folder={folder.name} messages={len(uids)}"
+            f"{' min_uid=' + str(min_uid) if min_uid else ''}",
             flush=True,
         )
         pending_fetches: list[tuple[bytes, str, str]] = []
@@ -535,6 +549,20 @@ def process_pending_imap_fetches(
         if not args.allow_raw_duplicates:
             existing_id = existing_message_id_for_raw_hash(store, normalized.raw_mime_sha256)
         if existing_id and existing_id != normalized.id:
+            record_source_message_alias(
+                store,
+                source_id=source_id,
+                source_message_id=source_message_id,
+                message_id=existing_id,
+                raw_mime_sha256=normalized.raw_mime_sha256,
+                metadata={
+                    "imap_account": account_label(account),
+                    "imap_folder": folder.name,
+                    "imap_uid": uid,
+                    "imap_uidvalidity": uidvalidity,
+                    "dedupe": "raw_mime_sha256",
+                },
+            )
             map_existing_message_to_source_folder(
                 store,
                 source_id=source_id,
@@ -548,6 +576,7 @@ def process_pending_imap_fetches(
                 special_folders=special_mailbox_folders(folder, disabled=args.no_map_specials),
             )
             stats.deduped_existing += 1
+            existing_source_message_ids.add(source_message_id)
         else:
             store.store_message(
                 source_id=source_id,
@@ -578,20 +607,59 @@ def load_existing_source_message_ids(store: PostgresMailStore, source_id: str) -
         SELECT source_message_id
         FROM mail_messages
         WHERE source_id = %s
+        UNION
+        SELECT source_message_id
+        FROM mail_source_message_aliases
+        WHERE source_id = %s
         """,
-        (source_id,),
+        (source_id, source_id),
     ).fetchall()
     return {str(row[0]) for row in rows}
 
 
-def connect_account(account: dict[str, Any], settings: dict[str, str]) -> imaplib.IMAP4:
+def next_uid_after_existing(source_message_ids: Iterable[str], uidvalidity: str) -> int | None:
+    max_uid = 0
+    prefix = f"{uidvalidity}:" if uidvalidity else ""
+    for source_message_id in source_message_ids:
+        if prefix:
+            if not source_message_id.startswith(prefix):
+                continue
+            uid_text = source_message_id[len(prefix) :]
+        else:
+            uid_text = source_message_id.rsplit(":", 1)[-1]
+        if uid_text.isdigit():
+            max_uid = max(max_uid, int(uid_text))
+    return max_uid + 1 if max_uid else None
+
+
+def search_folder_uids(
+    connection: imaplib.IMAP4,
+    folder_name: str,
+    *,
+    min_uid: int | None = None,
+) -> list[bytes]:
+    if min_uid is None:
+        status, search_data = connection.uid("SEARCH", None, "ALL")
+    else:
+        status, search_data = connection.uid("SEARCH", None, "UID", f"{min_uid}:*")
+    if status != "OK":
+        raise ImportSourceError(f"UID SEARCH failed for folder: {folder_name}")
+    return (search_data[0] or b"").split()
+
+
+def connect_account(
+    account: dict[str, Any],
+    settings: dict[str, str],
+    *,
+    timeout: int,
+) -> imaplib.IMAP4:
     host = account["host"]
     port = int(account.get("port") or 993)
     security = account.get("security") or "ssl_tls"
     if security == "ssl_tls":
-        connection: imaplib.IMAP4 = imaplib.IMAP4_SSL(host, port)
+        connection: imaplib.IMAP4 = imaplib.IMAP4_SSL(host, port, timeout=timeout)
     else:
-        connection = imaplib.IMAP4(host, port)
+        connection = imaplib.IMAP4(host, port, timeout=timeout)
         if security == "starttls":
             connection.starttls()
 
@@ -782,6 +850,30 @@ def map_existing_message_to_source_folder(
         ON CONFLICT DO NOTHING
         """,
         (message_id, folder_id),
+    )
+
+
+def record_source_message_alias(
+    store: PostgresMailStore,
+    *,
+    source_id: str,
+    source_message_id: str,
+    message_id: str,
+    raw_mime_sha256: str,
+    metadata: dict[str, Any],
+) -> None:
+    store.connection.execute(
+        """
+        INSERT INTO mail_source_message_aliases (
+            source_id, source_message_id, message_id, raw_mime_sha256, metadata_json
+        )
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT(source_id, source_message_id) DO UPDATE SET
+            message_id = excluded.message_id,
+            raw_mime_sha256 = excluded.raw_mime_sha256,
+            metadata_json = excluded.metadata_json
+        """,
+        (source_id, source_message_id, message_id, raw_mime_sha256, Jsonb(metadata)),
     )
 
 

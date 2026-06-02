@@ -139,10 +139,11 @@ class SQLiteMailStore:
                 id, source_id, import_job_id, source_message_id, internet_message_id,
                 conversation_id, thread_id, subject, normalized_subject, sent_at,
                 received_at, date_header, timezone_offset_minutes, body_text, body_html,
-                body_preview, raw_mime_sha256, raw_mime_size_bytes, has_attachments,
-                metadata_json
+                body_preview, raw_mime_sha256, raw_mime_size_bytes,
+                normalized_body_sha256, attachment_set_sha256,
+                normalized_message_fingerprint, has_attachments, metadata_json
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 message.id,
@@ -163,6 +164,9 @@ class SQLiteMailStore:
                 message.body_preview,
                 message.raw_mime_sha256,
                 message.raw_mime_size_bytes,
+                message.normalized_body_sha256,
+                message.attachment_set_sha256,
+                message.normalized_message_fingerprint,
                 int(message.has_attachments),
                 _json(message.metadata),
             ),
@@ -391,6 +395,9 @@ def _sanitize_message_text(message: NormalizedMessage) -> None:
         "body_text",
         "body_html",
         "body_preview",
+        "normalized_body_sha256",
+        "attachment_set_sha256",
+        "normalized_message_fingerprint",
     ]:
         setattr(message, attr, _db_text(getattr(message, attr)))
     for address in message.addresses:

@@ -122,6 +122,22 @@ location = /autodiscover/autodiscover.xml {
 
 The same proxy rule can be duplicated for `/autodiscover/autodiscovery.xml` if clients or tests use that spelling.
 
+## Runtime Live Sync
+
+Live source checks run only while a MILLIE process is active. They are not installed as a macOS service.
+
+To start webmail and have it check configured IMAP/OAuth accounts while webmail is running:
+
+```sh
+.private/venv/bin/python tools/millie_webmail_server.py \
+  --host 0.0.0.0 \
+  --port 22001 \
+  --live-sync \
+  --sync-interval 900
+```
+
+`--sync-account` can be repeated to limit the runtime sync to specific configured accounts. Without it, all enabled IMAP accounts in `millie.settings` are checked. The sync path imports new UIDs into MILLIE and does not write back to the source accounts.
+
 ## Mailbox Facade
 
 Mailbox state is stored in:

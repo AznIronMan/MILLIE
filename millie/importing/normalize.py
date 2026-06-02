@@ -12,6 +12,7 @@ from email.utils import getaddresses, parsedate_to_datetime
 from html import unescape
 from typing import Any
 
+from .dedupe import dedupe_fields
 from .models import (
     NormalizedAddress,
     NormalizedHeader,
@@ -62,6 +63,20 @@ def normalize_email(
     subject = _header_text(message, "Subject")
     normalized_subject = _normalize_subject(subject)
     combined_preview = body_text or _html_to_text(body_html or "")
+    addresses = _normalize_addresses(message)
+    dedupe = dedupe_fields(
+        internet_message_id=internet_message_id,
+        normalized_subject=normalized_subject,
+        sent_at=sent_at,
+        body_text=body_text,
+        body_html=body_html,
+        addresses=((address.role, address.email_address) for address in addresses),
+        attachments=(
+            (part.filename, part.size_bytes, part.sha256)
+            for part in parts
+            if part.is_attachment
+        ),
+    )
 
     normalized = NormalizedMessage(
         id=message_id,
@@ -83,7 +98,10 @@ def normalize_email(
         raw_mime=raw_bytes,
         raw_mime_sha256=raw_hash,
         raw_mime_size_bytes=len(raw_bytes),
-        addresses=_normalize_addresses(message),
+        normalized_body_sha256=dedupe.normalized_body_sha256,
+        attachment_set_sha256=dedupe.attachment_set_sha256,
+        normalized_message_fingerprint=dedupe.normalized_message_fingerprint,
+        addresses=addresses,
         headers=_normalize_headers(message),
         parts=parts,
         metadata={

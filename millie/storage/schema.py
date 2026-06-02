@@ -23,3 +23,18 @@ def load_schema(dialect: str) -> str:
 
 def apply_sqlite_schema(connection: sqlite3.Connection) -> None:
     connection.executescript(load_schema("sqlite"))
+    apply_sqlite_migrations(connection)
+
+
+def apply_sqlite_migrations(connection: sqlite3.Connection) -> None:
+    columns = {
+        str(row[1])
+        for row in connection.execute("PRAGMA table_info(mail_messages)").fetchall()
+    }
+    for column in [
+        "normalized_body_sha256",
+        "attachment_set_sha256",
+        "normalized_message_fingerprint",
+    ]:
+        if column not in columns:
+            connection.execute(f"ALTER TABLE mail_messages ADD COLUMN {column} TEXT")

@@ -37,6 +37,9 @@ class MailPipelineTest(unittest.TestCase):
         self.assertEqual(normalized.internet_message_id, "message-1@example.test")
         self.assertEqual(normalized.normalized_subject, "Test message")
         self.assertTrue(normalized.has_attachments)
+        self.assertIsNotNone(normalized.normalized_body_sha256)
+        self.assertIsNotNone(normalized.attachment_set_sha256)
+        self.assertIsNotNone(normalized.normalized_message_fingerprint)
         self.assertIn("Plain body", normalized.body_text or "")
         self.assertTrue(any(address.role == "to" for address in normalized.addresses))
         self.assertTrue(any(part.filename == "example.bin" for part in normalized.parts))
@@ -80,6 +83,16 @@ class MailPipelineTest(unittest.TestCase):
             "SELECT search_text FROM mail_search_documents"
         ).fetchone()[0]
         self.assertIn("Plain body for search.", search_text)
+        stored_hashes = connection.execute(
+            """
+            SELECT normalized_body_sha256, attachment_set_sha256,
+                   normalized_message_fingerprint
+            FROM mail_messages
+            """
+        ).fetchone()
+        self.assertEqual(stored_hashes[0], normalized.normalized_body_sha256)
+        self.assertEqual(stored_hashes[1], normalized.attachment_set_sha256)
+        self.assertEqual(stored_hashes[2], normalized.normalized_message_fingerprint)
 
         recalled = store.get_email_message(normalized.id)
         self.assertIsNotNone(recalled)

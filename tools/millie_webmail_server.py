@@ -26,6 +26,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from millie.settings_loader import load_local_settings
 from millie.service.auth import default_service_login
 from millie.storage.postgres_store import PostgresMailStore
+from millie.sync.live_mail import LiveSyncConfig, start_live_sync_thread
 
 
 DEFAULT_HOST = "0.0.0.0"
@@ -380,6 +381,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--daemon", action="store_true", help="Detach into the background.")
     parser.add_argument("--pid-file", type=Path, default=DEFAULT_PID_FILE)
     parser.add_argument("--log-file", type=Path, default=DEFAULT_LOG_FILE)
+    parser.add_argument(
+        "--live-sync",
+        action="store_true",
+        help="Sync enabled IMAP/OAuth accounts while this webmail process is running.",
+    )
+    parser.add_argument(
+        "--sync-account",
+        action="append",
+        default=[],
+        help="Account email/id/display name to sync. May be repeated. Defaults to all enabled IMAP accounts.",
+    )
+    parser.add_argument("--sync-interval", type=int, default=900, help="Seconds between live sync passes.")
+    parser.add_argument("--sync-fetch-batch-size", type=int, default=10)
+    parser.add_argument("--sync-commit-every", type=int, default=50)
+    parser.add_argument("--sync-imap-timeout", type=int, default=120)
+    parser.add_argument(
+        "--no-sync-on-start",
+        action="store_true",
+        help="Wait one interval before the first live sync pass.",
+    )
     return parser
 
 
@@ -408,6 +429,21 @@ def daemonize(*, pid_file: Path, log_file: Path) -> None:
 def serve(args: argparse.Namespace) -> None:
     settings = load_local_settings()["settings"]
     mailbox_address = args.mailbox or default_service_login(settings, "geon")
+    sync_thread = None
+    sync_stop = None
+    if args.live_sync:
+        sync_config = LiveSyncConfig(
+            accounts=tuple(args.sync_account),
+            interval_seconds=args.sync_interval,
+            fetch_batch_size=args.sync_fetch_batch_size,
+            commit_every=args.sync_commit_every,
+            imap_timeout_seconds=args.sync_imap_timeout,
+        )
+        sync_thread, sync_stop = start_live_sync_thread(
+            sync_config,
+            run_immediately=not args.no_sync_on_start,
+            log=lambda value: print(value, flush=True),
+        )
     server = MillieWebmailServer(
         (args.host, args.port),
         MillieWebmailHandler,
@@ -419,6 +455,11 @@ def serve(args: argparse.Namespace) -> None:
         server.serve_forever()
     except KeyboardInterrupt:
         server.shutdown()
+    finally:
+        if sync_stop is not None:
+            sync_stop.set()
+        if sync_thread is not None:
+            sync_thread.join(timeout=5)
 
 
 INDEX_HTML = r"""<!doctype html>

@@ -16,6 +16,8 @@ This repository has been reset for a fresh start. The prior version is archived 
 - Service mail domain: configured in `millie.settings`; current default is `millie.cnbsk.cloud` with local `MILLIE` aliases
 - PST import status: read-only probe and duplicate-safe bulk importer available
 - Mail import status: duplicate-safe bulk PST and IMAP import tools available
+- Dedupe status: exact raw-message dedupe plus normalized duplicate fingerprints/reporting
+- Live sync status: runtime IMAP/OAuth checker available while MILLIE is running
 - Mail service status: dormant Postgres identity/mailbox facade scaffolded
 - Dev IMAP status: development listener available for local/LAN browse and mailbox-copy mutation testing
 - Dev SMTP status: optional setup-only blackhole listener; MILLIE never sends outbound SMTP
@@ -86,6 +88,24 @@ For configured IMAP accounts in `millie.settings`, the bulk importer lists every
 
 The flow supports PST, IMAP password auth, and Exchange/Outlook OAuth IMAP sources. Normalized records have schema coverage for addresses, headers, dates, subjects, body projections, raw MIME, attachments, inline parts, embedded parts, metadata, folders, import jobs, and search indexes in SQLite or PostgreSQL.
 
+After a full import, use the incremental live checker to import only newer IMAP UIDs:
+
+```sh
+.private/venv/bin/python tools/millie_live_sync.py --once
+```
+
+For a runtime loop that stops when the command stops:
+
+```sh
+.private/venv/bin/python tools/millie_live_sync.py --interval 900
+```
+
+Duplicate fingerprints can be backfilled and reported without merging or deleting messages:
+
+```sh
+.private/venv/bin/python tools/millie_dedupe_report.py --backfill
+```
+
 ## Dormant Mail Service Facade
 
 Postgres schema now includes a `millie_*` service layer for identities such as `geon@millie.cnbsk.cloud`, credentials, sessions, service mailboxes, IMAP/webmail folders, one-way source bindings, mailbox message flags, and webmail/IMAP query views. Local aliases such as `geon@MILLIE` are accepted when configured in `millie.settings`.
@@ -128,6 +148,15 @@ Start the temporary no-auth webmail view:
 ```
 
 It opens the current `geon@millie.cnbsk.cloud` mailbox through the Postgres mailbox facade and provides Gmail, Outlook, and Microsoft 365-inspired theme options. The first pass is read-only and does not include SMTP or compose behavior.
+
+To have webmail check live IMAP/OAuth sources while the webmail process is running, add `--live-sync`. This does not install a macOS service:
+
+```sh
+.private/venv/bin/python tools/millie_webmail_server.py \
+  --host 0.0.0.0 \
+  --port 22001 \
+  --live-sync
+```
 
 The webmail listener also serves development mail-client discovery XML:
 

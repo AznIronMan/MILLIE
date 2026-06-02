@@ -43,6 +43,17 @@ Run the actual import only when ready:
 
 The importer skips existing source messages by source URI plus source message ID unless `--replace-existing` is explicitly used. PostgreSQL search text is capped before indexing so oversized HTML messages still keep their raw MIME and normalized body fields while avoiding `tsvector` size failures.
 
+MILLIE stores duplicate fingerprints on each canonical message:
+
+- `raw_mime_sha256` for exact raw RFC822 duplicates.
+- `normalized_body_sha256` for whitespace/case-normalized body text.
+- `attachment_set_sha256` for the attachment filename/size/content-hash set.
+- `normalized_message_fingerprint` for conservative same-message candidate grouping across IDs, dates, addresses, subject, body, and attachments.
+
+These fingerprints are non-destructive. They support reporting and future review workflows without deleting raw MIME or merging messages automatically.
+
+When an exact raw duplicate is found from another source UID, MILLIE stores the source UID in `mail_source_message_aliases` and maps the existing canonical message into the relevant folders. That lets later incremental syncs skip the same source UID without storing a second raw email body.
+
 ## Bulk IMAP Import
 
 Configured IMAP retrieval accounts live in `millie.settings`. The bulk IMAP importer supports password IMAP and Microsoft OAuth/XOAUTH2 accounts:
@@ -60,6 +71,28 @@ To import one configured account:
 The tool lists every selectable folder, fetches messages read-only, and preserves the source tree under `Sources/IMAP/<account>/...`. Messages also appear in `All Mail`; common source folders such as `INBOX`, Sent, Drafts, Trash, Junk, and Archive are also mapped to MILLIE's top-level special folders. Existing source UIDs are skipped, and already imported raw MIME hashes are mapped into the requested folders instead of creating duplicate canonical messages.
 
 By default, obvious non-mail folders exposed by some servers, such as Calendar, Contacts, Tasks, Journal, Notes, RSS Feeds, Outbox, and Sync Issues, are skipped. Use `--include-non-mail-folders` only when those folders should be copied as raw IMAP items too.
+
+For routine live checks after a full import, use the incremental UID mode. It searches only UIDs newer than the highest already imported UID for each folder:
+
+```sh
+.private/venv/bin/python tools/millie_imap_bulk_import.py \
+  --apply \
+  --newer-than-existing
+```
+
+The runtime sync helper wraps that mode:
+
+```sh
+.private/venv/bin/python tools/millie_live_sync.py --once
+```
+
+To keep checking only while the command is running:
+
+```sh
+.private/venv/bin/python tools/millie_live_sync.py --interval 900
+```
+
+This is a foreground/runtime process, not a macOS service.
 
 ## Dry-Run Planning
 
@@ -95,6 +128,7 @@ The schema is organized around these tables:
 - `mail_sources`: PST, IMAP, and Exchange OAuth source definitions.
 - `mail_import_jobs`: import job status, mode, errors, and metadata.
 - `mail_folders` and `mail_message_folders`: source folder membership.
+- `mail_source_message_aliases`: deduped source UIDs that point to an existing canonical message.
 - `mail_messages`: subject, dates, body projections, IDs, hashes, and message-level metadata.
 - `mail_message_addresses`: `from`, `sender`, `reply_to`, `to`, `cc`, `bcc`, and resent address roles.
 - `mail_message_headers`: ordered raw headers.

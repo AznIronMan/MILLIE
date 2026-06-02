@@ -106,6 +106,14 @@ class ImapListenerTest(unittest.TestCase):
 
         self.assertEqual(parsed, {"123": b"first", "124": b"second"})
 
+    def test_imap_bulk_import_finds_next_uid_for_incremental_sync(self) -> None:
+        next_uid = imap_bulk_import.next_uid_after_existing(
+            {"12345:9", "12345:10", "54321:99", "not-a-uid"},
+            "12345",
+        )
+
+        self.assertEqual(next_uid, 11)
+
     def test_webmail_autodiscover_post_email_parser(self) -> None:
         body = (
             b"<?xml version='1.0'?><Autodiscover><Request>"

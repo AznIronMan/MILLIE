@@ -89,6 +89,9 @@ class NormalizedMessage:
     raw_mime: bytes
     raw_mime_sha256: str
     raw_mime_size_bytes: int
+    normalized_body_sha256: str | None
+    attachment_set_sha256: str | None
+    normalized_message_fingerprint: str | None
     addresses: list[NormalizedAddress] = field(default_factory=list)
     headers: list[NormalizedHeader] = field(default_factory=list)
     parts: list[NormalizedPart] = field(default_factory=list)
