@@ -137,6 +137,31 @@ When the audit reports zero missing provider UIDs, write the MILLIE-side manifes
 
 This creates `mail_remote_purge_manifests` and `mail_remote_purge_manifest_messages` rows and tags each protected canonical message in `mail_message_metadata` with `remote_purge_protected=true`, `millie_archive_tag=remote-provider-purge-prepared`, and the manifest id. It does not delete, move, expunge, or archive anything on Gmail, Exchange, iCloud, or other source providers.
 
+For a cleanup that should exclude anything arriving after a sync pass, create a DB snapshot manifest immediately after the sync completes:
+
+```sh
+.private/venv/bin/python tools/millie_remote_purge_snapshot.py \
+  --account geoff@clarktribe.com \
+  --account geoff@cnb.llc \
+  --account aznblusuazn@me.com \
+  --action delete
+```
+
+Then dry-run and execute provider-side cleanup from that exact manifest:
+
+```sh
+.private/venv/bin/python tools/millie_remote_provider_purge.py \
+  --manifest-id remote-purge-snapshot-YYYYMMDDTHHMMSSZ
+
+.private/venv/bin/python tools/millie_remote_provider_purge.py \
+  --execute \
+  --manifest-id remote-purge-snapshot-YYYYMMDDTHHMMSSZ
+```
+
+The executor sends IMAP `UID STORE +FLAGS.SILENT (\Deleted)` plus `UID EXPUNGE` only for source UIDs listed in the manifest. It requires UIDPLUS by default and checks each folder's UIDVALIDITY before deleting, which prevents the same numeric UID from being applied after a provider UID reset. It does not search for or delete provider mail that arrived after the snapshot.
+
+For Gmail `[Gmail]/All Mail`, the executor uses Gmail `UID MOVE` into `[Gmail]/Trash` and then performs a final Trash delete by `X-GM-MSGID`. That removes the manifest messages from Gmail's archive without selecting unrelated messages that may have arrived after the snapshot.
+
 ## Dry-Run Planning
 
 Use the planner to inspect how a source would flow through the dormant pipeline:

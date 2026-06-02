@@ -15,6 +15,7 @@ All notable changes to MILLIE will be documented in this file.
 - Added webmail per-folder message limits, browser-side list caching, refresh, and cheaper folder counts.
 - Added a remote provider cleanup preparation tool that audits live IMAP/OAuth UIDs and tags protected MILLIE copies before any destructive provider-side purge can be considered.
 - Added a Gmail label alias reconciliation tool using `X-GM-MSGID` to map label UIDs without fetching duplicate raw messages.
+- Added a sync-cutoff remote purge snapshot tool and a manifest-driven provider purge executor that deletes only exact manifest IMAP UIDs.
 
 ### Changed
 

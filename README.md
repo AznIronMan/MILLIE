@@ -127,6 +127,23 @@ Before any future provider-side cleanup, audit live provider UIDs against MILLIE
 
 The purge-prep command never deletes or moves provider mail. It writes a Postgres manifest plus message metadata tags only after every audited provider UID is already copied into MILLIE.
 
+For a sync-cutoff cleanup, create a manifest from source UIDs already copied into MILLIE, then execute provider-side UID deletion from that manifest:
+
+```sh
+.private/venv/bin/python tools/millie_remote_purge_snapshot.py \
+  --account geoff@example.com \
+  --action delete
+
+.private/venv/bin/python tools/millie_remote_provider_purge.py \
+  --manifest-id remote-purge-snapshot-YYYYMMDDTHHMMSSZ
+
+.private/venv/bin/python tools/millie_remote_provider_purge.py \
+  --execute \
+  --manifest-id remote-purge-snapshot-YYYYMMDDTHHMMSSZ
+```
+
+The provider purge executor only targets exact manifest UIDs and checks folder UIDVALIDITY before deletion, so mail arriving after the manifest snapshot is not selected.
+
 ## Dormant Mail Service Facade
 
 Postgres schema now includes a `millie_*` service layer for identities such as `geon@millie.cnbsk.cloud`, credentials, sessions, service mailboxes, IMAP/webmail folders, one-way source bindings, mailbox message flags, and webmail/IMAP query views. Local aliases such as `geon@MILLIE` are accepted when configured in `millie.settings`.
