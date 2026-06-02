@@ -86,6 +86,8 @@ For configured IMAP accounts in `millie.settings`, the bulk importer lists every
 .private/venv/bin/python tools/millie_imap_bulk_import.py --apply
 ```
 
+When exact `--folder` values are supplied, the importer trusts those folders and skips a broad provider folder listing. This is useful for targeted catch-up of one known folder.
+
 The flow supports PST, generic IMAP password auth, iCloud Mail/me.com/mac.com IMAP with Apple app-specific passwords, and Exchange/Outlook OAuth IMAP sources. Normalized records have schema coverage for addresses, headers, dates, subjects, body projections, raw MIME, attachments, inline parts, embedded parts, metadata, folders, import jobs, and search indexes in SQLite or PostgreSQL.
 
 After a full import, use the incremental live checker to import only newer IMAP UIDs:
@@ -105,6 +107,25 @@ Duplicate fingerprints can be backfilled and reported without merging or deletin
 ```sh
 .private/venv/bin/python tools/millie_dedupe_report.py --backfill
 ```
+
+Gmail label folders can be reconciled faster with Gmail's stable `X-GM-MSGID` before falling back to raw imports:
+
+```sh
+.private/venv/bin/python tools/millie_gmail_label_alias_sync.py \
+  --apply \
+  --account geoff@example.com \
+  --folder '[Gmail]/All Mail' \
+  --folder '[Gmail]/Important'
+```
+
+Before any future provider-side cleanup, audit live provider UIDs against MILLIE and tag the protected MILLIE copies:
+
+```sh
+.private/venv/bin/python tools/millie_remote_purge_prep.py
+.private/venv/bin/python tools/millie_remote_purge_prep.py --apply
+```
+
+The purge-prep command never deletes or moves provider mail. It writes a Postgres manifest plus message metadata tags only after every audited provider UID is already copied into MILLIE.
 
 ## Dormant Mail Service Facade
 

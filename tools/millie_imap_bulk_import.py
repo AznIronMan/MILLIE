@@ -192,8 +192,7 @@ def main() -> int:
     totals = ImportStats()
     if not args.apply:
         for account in accounts:
-            folders = list_account_folders(account, settings, timeout=args.imap_timeout)
-            folders = selected_folders(folders, args.folder, include_non_mail=args.include_non_mail_folders)
+            folders = folders_for_args(account, settings, args)
             print_account_plan(account, folders)
         print("Dry run only. Re-run with --apply to fetch IMAP messages and write to MILLIE.", flush=True)
         return 0
@@ -207,8 +206,7 @@ def main() -> int:
         store.connection.commit()
 
         for account in accounts:
-            folders = list_account_folders(account, settings, timeout=args.imap_timeout)
-            folders = selected_folders(folders, args.folder, include_non_mail=args.include_non_mail_folders)
+            folders = folders_for_args(account, settings, args)
             print_account_plan(account, folders)
             account_stats = import_account_folders(
                 store,
@@ -261,6 +259,29 @@ def selected_accounts(accounts: list[dict[str, Any]], selectors: list[str]) -> l
         if candidates & wanted:
             result.append(account)
     return result
+
+
+def folders_for_args(
+    account: dict[str, Any],
+    settings: dict[str, str],
+    args: argparse.Namespace,
+) -> list[FolderInfo]:
+    if args.folder:
+        folders: list[FolderInfo] = []
+        seen: set[str] = set()
+        for folder_name in args.folder:
+            key = folder_name.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            folders.append(FolderInfo(name=folder_name, delimiter="/", flags=()))
+        return folders
+    folders = list_account_folders(account, settings, timeout=args.imap_timeout)
+    return selected_folders(
+        folders,
+        args.folder,
+        include_non_mail=args.include_non_mail_folders,
+    )
 
 
 def print_account_plan(account: dict[str, Any], folders: list[FolderInfo]) -> None:

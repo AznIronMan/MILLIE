@@ -71,6 +71,16 @@ To import one configured account:
 
 The tool lists every selectable folder, fetches messages read-only, and preserves the source tree under `Sources/IMAP/<account>/...`. Messages also appear in `All Mail`; common source folders such as `INBOX`, Sent, Drafts, Trash, Junk, and Archive are also mapped to MILLIE's top-level special folders. Existing source UIDs are skipped, and already imported raw MIME hashes are mapped into the requested folders instead of creating duplicate canonical messages.
 
+When exact `--folder` values are supplied, the importer trusts those names and skips the broad provider `LIST` call. Use this for targeted catch-up when a known folder is incomplete or a provider-wide folder listing is slow:
+
+```sh
+.private/venv/bin/python tools/millie_imap_bulk_import.py \
+  --apply \
+  --account geoff@cnb.llc \
+  --folder INBOX \
+  --folder 'Deleted Items'
+```
+
 By default, obvious non-mail folders exposed by some servers, such as Calendar, Contacts, Tasks, Journal, Notes, RSS Feeds, Outbox, and Sync Issues, are skipped. Use `--include-non-mail-folders` only when those folders should be copied as raw IMAP items too.
 
 For routine live checks after a full import, use the incremental UID mode. It searches only UIDs newer than the highest already imported UID for each folder:
@@ -94,6 +104,38 @@ To keep checking only while the command is running:
 ```
 
 This is a foreground/runtime process, not a macOS service.
+
+### Gmail Label Alias Reconciliation
+
+Gmail labels such as `[Gmail]/All Mail` and `[Gmail]/Important` can expose the same message under different folder UIDs. To avoid fetching thousands of duplicate raw messages only to prove the same hash, use the Gmail label alias tool:
+
+```sh
+.private/venv/bin/python tools/millie_gmail_label_alias_sync.py \
+  --apply \
+  --account geoff@clarktribe.com \
+  --folder '[Gmail]/All Mail' \
+  --folder '[Gmail]/Important'
+```
+
+The tool reads Gmail's `X-GM-MSGID` values and creates `mail_source_message_aliases` rows only when Gmail proves a label UID is the same message as an already copied MILLIE canonical message. It never mutates Gmail. Any unmatched UID remains for the normal raw importer.
+
+## Provider Cleanup Preparation
+
+Provider-side deletion is a separate destructive workflow and should not run until copied messages are protected inside MILLIE. Use the remote purge prep tool first:
+
+```sh
+.private/venv/bin/python tools/millie_remote_purge_prep.py
+```
+
+The default mode is a dry-run audit. It connects to configured live IMAP/OAuth accounts, lists provider UIDs by folder, and checks those UIDs against canonical `mail_messages` plus deduped `mail_source_message_aliases`.
+
+When the audit reports zero missing provider UIDs, write the MILLIE-side manifest and tags:
+
+```sh
+.private/venv/bin/python tools/millie_remote_purge_prep.py --apply
+```
+
+This creates `mail_remote_purge_manifests` and `mail_remote_purge_manifest_messages` rows and tags each protected canonical message in `mail_message_metadata` with `remote_purge_protected=true`, `millie_archive_tag=remote-provider-purge-prepared`, and the manifest id. It does not delete, move, expunge, or archive anything on Gmail, Exchange, iCloud, or other source providers.
 
 ## Dry-Run Planning
 
@@ -137,6 +179,7 @@ The schema is organized around these tables:
 - `mail_message_parts`: MIME tree records, including body parts, attachments, inline content, embedded message parts, content IDs, filenames, hashes, text, and binary data.
 - `mail_message_metadata`: searchable key/value metadata.
 - `mail_source_cursors`: per-source UID/cursor checkpoints for future incremental imports.
+- `mail_remote_purge_manifests` and `mail_remote_purge_manifest_messages`: provider cleanup preparation manifests that prove copied source UIDs and tag protected MILLIE copies.
 - `mail_search_documents`: flattened search text.
 
 SQLite uses FTS5 through `mail_search_fts`. PostgreSQL uses a GIN index over `to_tsvector('simple', search_text)`.

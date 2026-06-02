@@ -9,6 +9,21 @@ from millie.storage.sqlite_store import SQLiteMailStore
 
 
 class MailPipelineTest(unittest.TestCase):
+    def test_sqlite_schema_includes_remote_purge_protection_tables(self) -> None:
+        connection = sqlite3.connect(":memory:")
+        store = SQLiteMailStore(connection)
+        store.initialize()
+
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+
+        self.assertIn("mail_remote_purge_manifests", tables)
+        self.assertIn("mail_remote_purge_manifest_messages", tables)
+
     def test_normalize_and_store_complete_message_graph(self) -> None:
         message = EmailMessage()
         message["From"] = "Sender Example <sender@example.test>"

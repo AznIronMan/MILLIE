@@ -164,6 +164,53 @@ CREATE TABLE IF NOT EXISTS mail_source_cursors (
     PRIMARY KEY (source_id, cursor_key)
 );
 
+CREATE TABLE IF NOT EXISTS mail_remote_purge_manifests (
+    id TEXT PRIMARY KEY,
+    status TEXT NOT NULL DEFAULT 'prepared' CHECK (
+        status IN (
+            'prepared', 'confirmed', 'provider_moved_to_trash',
+            'provider_purged', 'cancelled', 'failed'
+        )
+    ),
+    action TEXT NOT NULL DEFAULT 'move_to_trash' CHECK (
+        action IN ('move_to_trash', 'delete', 'hard_delete')
+    ),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    prepared_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    confirmed_at TIMESTAMPTZ,
+    executed_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    total_messages INTEGER NOT NULL DEFAULT 0,
+    total_source_uids INTEGER NOT NULL DEFAULT 0,
+    missing_source_uids INTEGER NOT NULL DEFAULT 0,
+    metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE TABLE IF NOT EXISTS mail_remote_purge_manifest_messages (
+    manifest_id TEXT NOT NULL REFERENCES mail_remote_purge_manifests(id) ON DELETE CASCADE,
+    message_id TEXT NOT NULL REFERENCES mail_messages(id) ON DELETE CASCADE,
+    source_id TEXT NOT NULL REFERENCES mail_sources(id) ON DELETE CASCADE,
+    source_message_id TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    source_uri TEXT NOT NULL,
+    source_account TEXT NOT NULL,
+    source_folder TEXT NOT NULL,
+    imap_uidvalidity TEXT,
+    imap_uid TEXT,
+    action TEXT NOT NULL DEFAULT 'move_to_trash',
+    protected_in_millie BOOLEAN NOT NULL DEFAULT TRUE,
+    metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (manifest_id, source_id, source_message_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_mail_remote_purge_messages_manifest
+    ON mail_remote_purge_manifest_messages(manifest_id);
+CREATE INDEX IF NOT EXISTS idx_mail_remote_purge_messages_message
+    ON mail_remote_purge_manifest_messages(message_id);
+CREATE INDEX IF NOT EXISTS idx_mail_remote_purge_messages_source
+    ON mail_remote_purge_manifest_messages(source_id, source_message_id);
+
 CREATE TABLE IF NOT EXISTS mail_search_documents (
     message_id TEXT PRIMARY KEY REFERENCES mail_messages(id) ON DELETE CASCADE,
     subject TEXT,
