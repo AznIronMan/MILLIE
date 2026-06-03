@@ -105,6 +105,8 @@ To keep checking only while the command is running:
 
 This is a foreground/runtime process, not a macOS service.
 
+Each live IMAP/OAuth folder sync records status, counts, UID state, and errors in Postgres so webmail Ops can show ok, stale, running, failed, or unknown health per account/folder.
+
 ### Gmail Label Alias Reconciliation
 
 Gmail labels such as `[Gmail]/All Mail` and `[Gmail]/Important` can expose the same message under different folder UIDs. To avoid fetching thousands of duplicate raw messages only to prove the same hash, use the Gmail label alias tool:

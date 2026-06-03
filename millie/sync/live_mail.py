@@ -17,6 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 @dataclass(frozen=True, slots=True)
 class LiveSyncConfig:
     accounts: tuple[str, ...] = field(default_factory=tuple)
+    folders: tuple[str, ...] = field(default_factory=tuple)
     interval_seconds: int = 900
     fetch_batch_size: int = 10
     commit_every: int = 50
@@ -47,6 +48,8 @@ def import_command(config: LiveSyncConfig) -> list[str]:
     ]
     for account in config.accounts:
         command.extend(["--account", account])
+    for folder in config.folders:
+        command.extend(["--folder", folder])
     if config.include_non_mail_folders:
         command.append("--include-non-mail-folders")
     if config.stop_on_error:

@@ -36,6 +36,7 @@ Starting the settings editor also migrates existing plaintext secret values to e
 - `logging_type`: `files`, `sqlite`, or `cnblogger`. File logging should append to `logs/YYYYMMDD.log`. SQLite logging should create `data/<instance_id>.logdb` when possible. `cnblogger` is reserved and disabled for now.
 - `automation_level`: maximum autonomous MILLIE automation level. Valid values are `observe`, `review`, `auto_internal`, and `provider_write`. The default is `observe`.
 - `automation_provider_write_enabled`: second switch for provider-side automation. Provider writes require this to be `true` and `automation_level` to be `provider_write`. Remote provider purge execution also requires an explicit manifest id and writes provider-write audit rows.
+- `sync_stale_after_hours`: number of hours after the last successful live folder sync before webmail Ops marks that folder stale. The default is `24`.
 
 ## Mail Accounts
 

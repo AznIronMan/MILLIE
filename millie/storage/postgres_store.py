@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
+import urllib.parse
 import uuid
 from datetime import datetime, timedelta, timezone
 from email import policy
@@ -2248,6 +2249,425 @@ class PostgresMailStore:
             "limit": max(1, min(limit, 500)),
         }
 
+    def ensure_sync_health_schema(self) -> None:
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS millie_sync_health (
+                id TEXT PRIMARY KEY,
+                account_key TEXT NOT NULL,
+                account_email TEXT,
+                account_display_name TEXT,
+                account_type TEXT,
+                auth_method TEXT,
+                host TEXT,
+                source_id TEXT,
+                source_type TEXT,
+                source_uri TEXT,
+                folder_path TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'unknown' CHECK (
+                    status IN ('unknown', 'running', 'ok', 'failed', 'skipped')
+                ),
+                started_at TIMESTAMPTZ,
+                completed_at TIMESTAMPTZ,
+                last_success_at TIMESTAMPTZ,
+                last_error_at TIMESTAMPTZ,
+                last_error_message TEXT,
+                remote_uid_count INTEGER NOT NULL DEFAULT 0 CHECK (remote_uid_count >= 0),
+                highest_uid TEXT,
+                uidvalidity TEXT,
+                min_uid TEXT,
+                scanned INTEGER NOT NULL DEFAULT 0 CHECK (scanned >= 0),
+                imported INTEGER NOT NULL DEFAULT 0 CHECK (imported >= 0),
+                skipped_existing INTEGER NOT NULL DEFAULT 0 CHECK (skipped_existing >= 0),
+                deduped_existing INTEGER NOT NULL DEFAULT 0 CHECK (deduped_existing >= 0),
+                metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                UNIQUE (account_key, folder_path)
+            )
+            """
+        )
+        self.connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_millie_sync_health_account
+                ON millie_sync_health(account_key, status, updated_at)
+            """
+        )
+        self.connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_millie_sync_health_source
+                ON millie_sync_health(source_id)
+            """
+        )
+        self.connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_millie_sync_health_status
+                ON millie_sync_health(status, last_success_at, last_error_at)
+            """
+        )
+
+    def record_sync_folder_start(
+        self,
+        *,
+        account: dict[str, Any],
+        folder_path: str,
+        source_id: str,
+        source_type: str,
+        source_uri: str,
+        metadata: dict[str, object] | None = None,
+    ) -> str:
+        self.ensure_sync_health_schema()
+        account_key = self._sync_account_key(account)
+        health_id = stable_id("millie_sync_health", account_key, folder_path)
+        self.connection.execute(
+            """
+            INSERT INTO millie_sync_health (
+                id, account_key, account_email, account_display_name, account_type,
+                auth_method, host, source_id, source_type, source_uri, folder_path,
+                status, started_at, completed_at, last_error_message, metadata_json
+            )
+            VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                'running', now(), NULL, NULL, %s
+            )
+            ON CONFLICT(account_key, folder_path) DO UPDATE SET
+                account_email = excluded.account_email,
+                account_display_name = excluded.account_display_name,
+                account_type = excluded.account_type,
+                auth_method = excluded.auth_method,
+                host = excluded.host,
+                source_id = excluded.source_id,
+                source_type = excluded.source_type,
+                source_uri = excluded.source_uri,
+                status = 'running',
+                started_at = now(),
+                completed_at = NULL,
+                last_error_message = NULL,
+                metadata_json = millie_sync_health.metadata_json || excluded.metadata_json,
+                updated_at = now()
+            """,
+            (
+                health_id,
+                account_key,
+                account.get("email_address") or "",
+                account.get("display_name") or "",
+                account.get("account_type") or "",
+                account.get("auth_method") or "",
+                account.get("host") or "",
+                source_id,
+                source_type,
+                source_uri,
+                folder_path,
+                Jsonb(metadata or {}),
+            ),
+        )
+        return health_id
+
+    def record_sync_folder_success(
+        self,
+        *,
+        account: dict[str, Any],
+        folder_path: str,
+        source_id: str,
+        source_type: str,
+        source_uri: str,
+        remote_uid_count: int,
+        highest_uid: str,
+        uidvalidity: str,
+        min_uid: str | int | None,
+        scanned: int,
+        imported: int,
+        skipped_existing: int,
+        deduped_existing: int,
+        metadata: dict[str, object] | None = None,
+    ) -> None:
+        self.ensure_sync_health_schema()
+        account_key = self._sync_account_key(account)
+        health_id = stable_id("millie_sync_health", account_key, folder_path)
+        self.connection.execute(
+            """
+            INSERT INTO millie_sync_health (
+                id, account_key, account_email, account_display_name, account_type,
+                auth_method, host, source_id, source_type, source_uri, folder_path,
+                status, started_at, metadata_json
+            )
+            VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                'running', now(), %s
+            )
+            ON CONFLICT(account_key, folder_path) DO NOTHING
+            """,
+            (
+                health_id,
+                account_key,
+                account.get("email_address") or "",
+                account.get("display_name") or "",
+                account.get("account_type") or "",
+                account.get("auth_method") or "",
+                account.get("host") or "",
+                source_id,
+                source_type,
+                source_uri,
+                folder_path,
+                Jsonb(metadata or {}),
+            ),
+        )
+        self.connection.execute(
+            """
+            UPDATE millie_sync_health
+            SET status = 'ok',
+                completed_at = now(),
+                last_success_at = now(),
+                last_error_message = NULL,
+                remote_uid_count = %s,
+                highest_uid = %s,
+                uidvalidity = %s,
+                min_uid = %s,
+                scanned = %s,
+                imported = %s,
+                skipped_existing = %s,
+                deduped_existing = %s,
+                metadata_json = metadata_json || %s,
+                updated_at = now()
+            WHERE account_key = %s
+              AND folder_path = %s
+            """,
+            (
+                max(remote_uid_count, 0),
+                highest_uid,
+                uidvalidity,
+                str(min_uid) if min_uid else "",
+                max(scanned, 0),
+                max(imported, 0),
+                max(skipped_existing, 0),
+                max(deduped_existing, 0),
+                Jsonb(metadata or {}),
+                account_key,
+                folder_path,
+            ),
+        )
+
+    def record_sync_folder_failure(
+        self,
+        *,
+        account: dict[str, Any],
+        folder_path: str,
+        source_id: str,
+        source_type: str,
+        source_uri: str,
+        error_message: str,
+        metadata: dict[str, object] | None = None,
+    ) -> None:
+        self.record_sync_folder_start(
+            account=account,
+            folder_path=folder_path,
+            source_id=source_id,
+            source_type=source_type,
+            source_uri=source_uri,
+            metadata=metadata,
+        )
+        account_key = self._sync_account_key(account)
+        self.connection.execute(
+            """
+            UPDATE millie_sync_health
+            SET status = 'failed',
+                completed_at = now(),
+                last_error_at = now(),
+                last_error_message = %s,
+                metadata_json = metadata_json || %s,
+                updated_at = now()
+            WHERE account_key = %s
+              AND folder_path = %s
+            """,
+            (
+                error_message[:2000],
+                Jsonb(metadata or {}),
+                account_key,
+                folder_path,
+            ),
+        )
+
+    def _sync_account_key(self, account: dict[str, Any]) -> str:
+        for key in ["email_address", "username", "id", "display_name"]:
+            value = str(account.get(key) or "").strip().lower()
+            if value:
+                return value
+        return "unknown"
+
+    def review_workbench_groups(
+        self,
+        *,
+        group_limit: int = 25,
+        sample_limit: int = 5,
+        candidate_limit: int = 1000,
+    ) -> list[dict[str, object]]:
+        rows = self.connection.execute(
+            """
+            WITH from_addresses AS (
+                SELECT
+                    message_id,
+                    string_agg(
+                        CASE
+                            WHEN coalesce(display_name, '') <> '' AND coalesce(email_address, '') <> ''
+                                THEN display_name || ' <' || email_address || '>'
+                            WHEN coalesce(email_address, '') <> '' THEN email_address
+                            ELSE coalesce(raw_value, '')
+                        END,
+                        ', ' ORDER BY ordinal
+                    ) AS from_text,
+                    min(lower(email_address)) FILTER (
+                        WHERE coalesce(email_address, '') <> ''
+                    ) AS from_email
+                FROM mail_message_addresses
+                WHERE role = 'from'
+                GROUP BY message_id
+            ),
+            candidates AS (
+                SELECT DISTINCT ON (c.id)
+                    c.id,
+                    c.message_id,
+                    c.classification_kind,
+                    c.classification_value,
+                    c.target_folder_path,
+                    c.target_tags,
+                    c.confidence,
+                    c.reason_text,
+                    c.created_at,
+                    coalesce(m.subject, '(no subject)') AS subject,
+                    coalesce(m.sent_at, m.received_at, v.internal_date) AS message_date,
+                    coalesce(fa.from_text, '') AS from_text,
+                    coalesce(fa.from_email, '') AS from_email,
+                    coalesce(v.folder_path, '') AS folder_path,
+                    v.imap_uid,
+                    coalesce(ms.display_name, ms.source_uri, '') AS source_name,
+                    ms.source_type
+                FROM millie_message_classifications c
+                JOIN mail_messages m ON m.id = c.message_id
+                LEFT JOIN millie_v_mailbox_messages v ON v.message_id = c.message_id
+                LEFT JOIN from_addresses fa ON fa.message_id = c.message_id
+                LEFT JOIN mail_sources ms ON ms.id = m.source_id
+                WHERE c.status = 'proposed'
+                ORDER BY
+                    c.id,
+                    CASE WHEN coalesce(v.folder_path, '') = 'All Mail' THEN 1 ELSE 0 END,
+                    c.confidence DESC,
+                    c.created_at DESC
+                LIMIT %s
+            )
+            SELECT *
+            FROM candidates
+            ORDER BY confidence DESC, created_at DESC
+            """,
+            (max(1, min(candidate_limit, 5000)),),
+        ).fetchall()
+        groups: dict[tuple[str, str, str, str], dict[str, object]] = {}
+        sample_limit = max(1, min(sample_limit, 12))
+        for row in rows:
+            message_date = row[10]
+            year = str(message_date.year) if message_date else "unknown"
+            target = row[4] or ",".join(row[5] or []) or f"{row[2]}:{row[3]}"
+            sender_domain = self._sender_domain(str(row[12] or ""), str(row[11] or ""))
+            folder_path = row[13] or "(unknown)"
+            key = (str(target), sender_domain, str(folder_path), year)
+            group = groups.setdefault(
+                key,
+                {
+                    "group_key": stable_id("sort_workbench_group", *key),
+                    "target": target,
+                    "sender_domain": sender_domain,
+                    "current_folder": folder_path,
+                    "message_year": year,
+                    "classification_ids": [],
+                    "count": 0,
+                    "confidence_total": 0.0,
+                    "samples": [],
+                },
+            )
+            classification_ids = group["classification_ids"]
+            if isinstance(classification_ids, list):
+                classification_ids.append(row[0])
+            group["count"] = int(group["count"]) + 1
+            group["confidence_total"] = float(group["confidence_total"]) + float(row[6] or 0)
+            samples = group["samples"]
+            if isinstance(samples, list) and len(samples) < sample_limit:
+                samples.append(
+                    {
+                        "classification_id": row[0],
+                        "message_id": row[1],
+                        "kind": row[2],
+                        "value": row[3],
+                        "target_folder_path": row[4],
+                        "target_tags": list(row[5] or []),
+                        "confidence": float(row[6] or 0),
+                        "reason": row[7] or "",
+                        "subject": row[9] or "(no subject)",
+                        "message_date": row[10],
+                        "from": row[11] or "",
+                        "folder_path": row[13],
+                        "uid": int(row[14]) if row[14] is not None else None,
+                        "source": row[15] or "",
+                        "source_type": row[16] or "",
+                    }
+                )
+        ordered = sorted(
+            groups.values(),
+            key=lambda item: (
+                -int(item["count"]),
+                -float(item["confidence_total"]) / max(int(item["count"]), 1),
+                str(item["target"]),
+            ),
+        )[: max(1, min(group_limit, 100))]
+        for group in ordered:
+            count = max(int(group["count"]), 1)
+            group["avg_confidence"] = round(float(group.pop("confidence_total")) / count, 4)
+        return ordered
+
+    def record_classification_batch_feedback(
+        self,
+        *,
+        classification_ids: list[str],
+        action: str,
+        identity_id: str | None = None,
+        feedback_source: str = "webmail",
+    ) -> dict[str, object]:
+        normalized = []
+        seen = set()
+        for classification_id in classification_ids:
+            value = str(classification_id or "").strip()
+            if value and value not in seen:
+                normalized.append(value)
+                seen.add(value)
+        if not normalized:
+            raise ValueError("At least one classification_id is required")
+        if len(normalized) > 250:
+            raise ValueError("Batch review is limited to 250 classifications")
+        results = [
+            self.record_classification_feedback(
+                classification_id=classification_id,
+                action=action,
+                identity_id=identity_id,
+                feedback_source=feedback_source,
+            )
+            for classification_id in normalized
+        ]
+        return {
+            "action": action,
+            "requested": len(normalized),
+            "updated": len(results),
+            "results": results,
+        }
+
+    def _sender_domain(self, from_email: str, from_text: str) -> str:
+        value = from_email.strip().lower()
+        if "@" not in value:
+            for token in from_text.replace("<", " ").replace(">", " ").replace(",", " ").split():
+                if "@" in token:
+                    value = token.strip().lower()
+                    break
+        if "@" not in value:
+            return "(unknown)"
+        return value.rsplit("@", 1)[-1].strip(" .>;") or "(unknown)"
+
     def operations_status(
         self,
         *,
@@ -2255,6 +2675,58 @@ class PostgresMailStore:
         accounts: list[dict[str, Any]] | None = None,
         run_limit: int = 10,
     ) -> dict[str, object]:
+        self.ensure_sync_health_schema()
+        stale_after_hours = self._sync_stale_after_hours()
+        health_rows = self.connection.execute(
+            """
+            SELECT
+                id,
+                account_key,
+                account_email,
+                account_display_name,
+                account_type,
+                auth_method,
+                host,
+                source_id,
+                source_type,
+                source_uri,
+                folder_path,
+                status,
+                started_at,
+                completed_at,
+                last_success_at,
+                last_error_at,
+                last_error_message,
+                remote_uid_count,
+                highest_uid,
+                uidvalidity,
+                min_uid,
+                scanned,
+                imported,
+                skipped_existing,
+                deduped_existing,
+                metadata_json,
+                updated_at
+            FROM millie_sync_health
+            ORDER BY
+                CASE status WHEN 'failed' THEN 0 WHEN 'running' THEN 1 ELSE 2 END,
+                coalesce(last_error_at, last_success_at, updated_at) DESC,
+                account_key,
+                folder_path
+            """
+        ).fetchall()
+        sync_health = [
+            self._sync_health_dict(row, stale_after_hours=stale_after_hours)
+            for row in health_rows
+        ]
+        health_by_source = {
+            str(item["source_id"]): item
+            for item in sync_health
+            if item.get("source_id")
+        }
+        health_by_account: dict[str, list[dict[str, object]]] = {}
+        for item in sync_health:
+            health_by_account.setdefault(str(item.get("account_key") or ""), []).append(item)
         source_rows = self.connection.execute(
             """
             SELECT
@@ -2337,13 +2809,18 @@ class PostgresMailStore:
                 "last_cursor_at": row[11],
                 "cursors": cursors_by_source.get(source_id, []),
             }
+            source["sync_health"] = health_by_source.get(source_id) or self._unknown_sync_health_for_source(source)
             source["_match_text"] = " ".join(
                 str(value or "").lower()
                 for value in [source["display_name"], source["source_uri"]]
             )
             sources.append(source)
 
-        configured_accounts = self._operations_accounts(accounts or [], sources)
+        configured_accounts = self._operations_accounts(
+            accounts or [],
+            sources,
+            health_by_account=health_by_account,
+        )
         matched_source_ids = {
             str(source["id"])
             for account in configured_accounts
@@ -2440,6 +2917,13 @@ class PostgresMailStore:
         ]
         total_messages = sum(int(source["message_count"] or 0) for source in exposed_sources)
         total_folders = sum(int(source["folder_count"] or 0) for source in exposed_sources)
+        health_counts: dict[str, int] = {}
+        for source in exposed_sources:
+            health = source.get("sync_health")
+            if not isinstance(health, dict):
+                continue
+            state = str(health.get("health_state") or "unknown")
+            health_counts[state] = health_counts.get(state, 0) + 1
         return {
             "summary": {
                 "source_count": len(exposed_sources),
@@ -2451,6 +2935,11 @@ class PostgresMailStore:
                 "folder_count": total_folders,
                 "mailbox_message_count": int(mailbox_row[0] or 0),
                 "mailbox_folder_count": int(mailbox_row[1] or 0),
+            },
+            "sync_health": {
+                "stale_after_hours": stale_after_hours,
+                "counts": health_counts,
+                "recent": sync_health[:50],
             },
             "accounts": configured_accounts,
             "sources": exposed_sources,
@@ -2470,8 +2959,11 @@ class PostgresMailStore:
         self,
         accounts: list[dict[str, Any]],
         sources: list[dict[str, object]],
+        *,
+        health_by_account: dict[str, list[dict[str, object]]] | None = None,
     ) -> list[dict[str, object]]:
         configured_accounts: list[dict[str, object]] = []
+        health_by_account = health_by_account or {}
         for account in accounts:
             keys = [
                 str(account.get("email_address") or "").strip().lower(),
@@ -2488,6 +2980,19 @@ class PostgresMailStore:
                     cleaned = dict(source)
                     cleaned.pop("_match_text", None)
                     matched_sources.append(cleaned)
+            account_key = self._sync_account_key(account)
+            account_health = list(health_by_account.get(account_key, []))
+            matched_source_ids = {str(source.get("id") or "") for source in matched_sources}
+            if matched_source_ids:
+                account_health.extend(
+                    source.get("sync_health")
+                    for source in matched_sources
+                    if isinstance(source.get("sync_health"), dict)
+                    and str(source.get("id") or "") in matched_source_ids
+                )
+            account_health = [
+                health for health in account_health if isinstance(health, dict)
+            ]
             configured_accounts.append(
                 {
                     "id": account.get("id") or "",
@@ -2501,11 +3006,96 @@ class PostgresMailStore:
                     "auth_method": account.get("auth_method") or "",
                     "enabled": bool(account.get("enabled")),
                     "credential_status": "configured" if account.get("password") else "missing",
+                    "health_state": self._aggregate_health_state(account_health),
+                    "sync_health": account_health[:20],
                     "source_count": len(matched_sources),
                     "sources": matched_sources,
                 }
             )
         return configured_accounts
+
+    def _sync_health_dict(self, row: object, *, stale_after_hours: int) -> dict[str, object]:
+        status = str(row[11] or "unknown")
+        last_success_at = row[14]
+        health_state = status
+        if status == "ok":
+            health_state = "ok"
+            if last_success_at:
+                now = datetime.now(timezone.utc)
+                success_at = last_success_at
+                if success_at.tzinfo is None:
+                    success_at = success_at.replace(tzinfo=timezone.utc)
+                if now - success_at > timedelta(hours=stale_after_hours):
+                    health_state = "stale"
+            else:
+                health_state = "unknown"
+        elif status not in {"running", "failed", "skipped"}:
+            health_state = "unknown"
+        return {
+            "id": row[0],
+            "account_key": row[1],
+            "account_email": row[2] or "",
+            "account_display_name": row[3] or "",
+            "account_type": row[4] or "",
+            "auth_method": row[5] or "",
+            "host": row[6] or "",
+            "source_id": row[7] or "",
+            "source_type": row[8] or "",
+            "source_uri": row[9] or "",
+            "folder_path": row[10] or "",
+            "status": status,
+            "health_state": health_state,
+            "started_at": row[12],
+            "completed_at": row[13],
+            "last_success_at": row[14],
+            "last_error_at": row[15],
+            "last_error_message": row[16] or "",
+            "remote_uid_count": int(row[17] or 0),
+            "highest_uid": row[18] or "",
+            "uidvalidity": row[19] or "",
+            "min_uid": row[20] or "",
+            "scanned": int(row[21] or 0),
+            "imported": int(row[22] or 0),
+            "skipped_existing": int(row[23] or 0),
+            "deduped_existing": int(row[24] or 0),
+            "metadata": row[25] or {},
+            "updated_at": row[26],
+        }
+
+    def _unknown_sync_health_for_source(self, source: dict[str, object]) -> dict[str, object] | None:
+        if source.get("source_type") not in {"imap", "exchange_imap_oauth"}:
+            return None
+        return {
+            "source_id": source.get("id") or "",
+            "source_type": source.get("source_type") or "",
+            "source_uri": source.get("source_uri") or "",
+            "folder_path": self._folder_from_source_uri(str(source.get("source_uri") or "")),
+            "status": "unknown",
+            "health_state": "unknown",
+            "last_error_message": "",
+        }
+
+    def _folder_from_source_uri(self, source_uri: str) -> str:
+        if "/" not in source_uri:
+            return ""
+        path = urllib.parse.urlparse(source_uri).path.lstrip("/")
+        return urllib.parse.unquote(path)
+
+    def _sync_stale_after_hours(self) -> int:
+        try:
+            value = int(str(self.settings.get("sync_stale_after_hours") or "24"))
+        except ValueError:
+            return 24
+        return max(1, min(value, 24 * 30))
+
+    def _aggregate_health_state(self, health_items: list[dict[str, object]]) -> str:
+        if not health_items:
+            return "unknown"
+        states = {str(item.get("health_state") or "unknown") for item in health_items}
+        for state in ["failed", "running", "stale", "unknown", "skipped", "ok"]:
+            if state in states:
+                return state
+        return "unknown"
 
     def record_unsubscribe_feedback(
         self,

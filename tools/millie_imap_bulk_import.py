@@ -400,6 +400,13 @@ def import_account_folders(
         except Exception as exc:  # noqa: BLE001 - keep large imports moving unless requested.
             store.connection.rollback()
             stats.failed_folders += 1
+            record_folder_sync_failure(
+                store,
+                account=account,
+                folder=folder,
+                error_message=f"{type(exc).__name__}: {exc}",
+            )
+            store.connection.commit()
             print(
                 f"FAILED account={account_label(account)} folder={folder.name}: "
                 f"{type(exc).__name__}: {exc}",
@@ -428,6 +435,17 @@ def import_folder(
         display_name=f"{account_label(account)} {folder.name}",
         auth_mode=account.get("auth_method") or "password",
         is_active=False,
+    )
+    store.record_sync_folder_start(
+        account=account,
+        folder_path=folder.name,
+        source_id=source_id,
+        source_type=source_type,
+        source_uri=source_uri,
+        metadata={
+            "mode": "imap_bulk_import",
+            "newer_than_existing": bool(args.newer_than_existing),
+        },
     )
     job_id = store.create_import_job(
         source_id=source_id,
@@ -459,6 +477,7 @@ def import_folder(
         if args.newer_than_existing and not args.replace_existing:
             min_uid = next_uid_after_existing(existing_source_message_ids, uidvalidity)
         uids = search_folder_uids(connection, folder.name, min_uid=min_uid)
+        highest_uid = uids[-1].decode("ascii", errors="replace") if uids else ""
         print(
             f"Importing account={account_label(account)} folder={folder.name} messages={len(uids)}"
             f"{' min_uid=' + str(min_uid) if min_uid else ''}",
@@ -516,6 +535,26 @@ def import_folder(
                 args=args,
             )
         store.connection.commit()
+        store.record_sync_folder_success(
+            account=account,
+            folder_path=folder.name,
+            source_id=source_id,
+            source_type=source_type,
+            source_uri=source_uri,
+            remote_uid_count=len(uids),
+            highest_uid=highest_uid,
+            uidvalidity=uidvalidity,
+            min_uid=min_uid,
+            scanned=stats.scanned,
+            imported=stats.imported,
+            skipped_existing=stats.skipped_existing,
+            deduped_existing=stats.deduped_existing,
+            metadata={
+                "mode": "imap_bulk_import",
+                "target_folder": target_folder,
+            },
+        )
+        store.connection.commit()
     finally:
         try:
             connection.close()
@@ -529,6 +568,27 @@ def import_folder(
         flush=True,
     )
     return stats
+
+
+def record_folder_sync_failure(
+    store: PostgresMailStore,
+    *,
+    account: dict[str, Any],
+    folder: FolderInfo,
+    error_message: str,
+) -> None:
+    source_type = "exchange_imap_oauth" if account.get("auth_method") == "oauth" else "imap"
+    source_uri = source_uri_for_account_folder(account, folder.name)
+    source_id = stable_id("source", source_type, source_uri)
+    store.record_sync_folder_failure(
+        account=account,
+        folder_path=folder.name,
+        source_id=source_id,
+        source_type=source_type,
+        source_uri=source_uri,
+        error_message=error_message,
+        metadata={"mode": "imap_bulk_import"},
+    )
 
 
 def process_pending_imap_fetches(

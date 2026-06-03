@@ -72,6 +72,8 @@ The webmail view includes a **Review** queue and message-level suggestion panels
 - **Always** marks it approved and creates active rule evidence.
 - **Never** marks it rejected and creates active block-rule evidence.
 
+The webmail **Workbench** groups proposed sorting suggestions by suggested target, sender domain, current folder, and message year. Batch actions use the same feedback and audit semantics as individual review actions, but apply them to the visible group so MILLIE can collect rule evidence faster. The workbench still only changes MILLIE review state and learned rule evidence; it does not move mail or write to source providers.
+
 Unsubscribe candidates can be approved or ignored. Approval does not click links, submit forms, send mail, or contact providers by itself.
 
 The webmail **Rules** panel lists learned brain rules and can activate, disable, retire, or lightly edit rule names and priorities. Rule changes write audit rows and do not apply mail movements by themselves.
@@ -204,4 +206,4 @@ For a runtime loop that stops when the command stops:
 
 Each upkeep pass records a `live_upkeep` automation run with step return codes and timings. This is runtime behavior only; it does not install a macOS service.
 
-The webmail **Ops** dashboard shows recent `live_upkeep` runs, live source cursor status, queue counts, and bounded one-off buttons for sync, upkeep, dedupe report, and dedupe backfill. The dashboard is for local MILLIE maintenance only and does not run remote provider purge.
+The webmail **Ops** dashboard shows recent `live_upkeep` runs, live source cursor status, per-account/folder sync health, queue counts, and bounded one-off buttons for sync, scoped account/folder sync, upkeep, dedupe report, and dedupe backfill. A folder becomes stale after `sync_stale_after_hours` in `millie.settings`, defaulting to 24 hours. The dashboard is for local MILLIE maintenance only and does not run remote provider purge.

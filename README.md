@@ -17,8 +17,8 @@ This repository has been reset for a fresh start. The prior version is archived 
 - PST import status: read-only probe and duplicate-safe bulk importer available
 - Mail import status: duplicate-safe bulk PST and IMAP import tools available
 - Dedupe status: exact raw-message dedupe plus normalized duplicate fingerprints/reporting
-- Live sync status: runtime IMAP/OAuth checker available while MILLIE is running
-- Automation status: Postgres brain schema foundation, observe-only sorter, and webmail review feedback available
+- Live sync status: runtime IMAP/OAuth checker with persisted per-folder sync health while MILLIE is running
+- Automation status: Postgres brain schema foundation, observe-only sorter, webmail review feedback, and grouped sorting workbench available
 - Mail service status: dormant Postgres identity/mailbox facade scaffolded
 - Dev IMAP status: development listener available for local/LAN browse and mailbox-copy mutation testing
 - Dev SMTP status: optional setup-only blackhole listener; MILLIE never sends outbound SMTP
@@ -268,9 +268,11 @@ It uses Postgres-backed MILLIE identity credentials and opens the signed-in mail
 
 The message list loads only the selected folder and supports `25`, `50`, `100`, `250`, `500`, or `All` messages at a time. The selected size is remembered in browser local storage, folder counts use cheap count queries, and the active list can be refreshed from the webmail toolbar.
 
-The webmail view can search copied mail, review MILLIE brain suggestions and retention-eligible hold messages, inspect/manage learned rules, manage retention policies, inspect operations status, and run dry-run/execute checks for approved internal apply commands. Apply controls are internal-only and still respect `automation_level=auto_internal`. These controls do not write back to source providers. Messages in hold folders show matching retention policy timing and eligibility in the reader.
+The webmail view can search copied mail, review MILLIE brain suggestions and retention-eligible hold messages, batch-review grouped sorting suggestions, inspect/manage learned rules, manage retention policies, inspect operations status, and run dry-run/execute checks for approved internal apply commands. Apply controls are internal-only and still respect `automation_level=auto_internal`. These controls do not write back to source providers. Messages in hold folders show matching retention policy timing and eligibility in the reader.
 
-The webmail **Ops** button shows configured mail account/source status, archive and service mailbox counts, review queue counts, recent automation runs, and safe one-off controls for live sync, live upkeep, dedupe reporting, and bounded dedupe backfill. The Ops dashboard does not run remote provider purge or any source-provider write command.
+The webmail **Workbench** button groups proposed sorting suggestions by target, sender domain, current folder, and year. Batch approve/reject/always/never actions write the same feedback and audit rows as individual review.
+
+The webmail **Ops** button shows configured mail account/source status, archive and service mailbox counts, review queue counts, recent automation runs, per-account/folder sync health, and safe one-off controls for live sync, scoped account/folder sync, live upkeep, dedupe reporting, and bounded dedupe backfill. The Ops dashboard does not run remote provider purge or any source-provider write command.
 
 To have webmail check live IMAP/OAuth sources while the webmail process is running, add `--live-sync`. This does not install a macOS service:
 

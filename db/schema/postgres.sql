@@ -164,6 +164,47 @@ CREATE TABLE IF NOT EXISTS mail_source_cursors (
     PRIMARY KEY (source_id, cursor_key)
 );
 
+CREATE TABLE IF NOT EXISTS millie_sync_health (
+    id TEXT PRIMARY KEY,
+    account_key TEXT NOT NULL,
+    account_email TEXT,
+    account_display_name TEXT,
+    account_type TEXT,
+    auth_method TEXT,
+    host TEXT,
+    source_id TEXT,
+    source_type TEXT,
+    source_uri TEXT,
+    folder_path TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'unknown' CHECK (
+        status IN ('unknown', 'running', 'ok', 'failed', 'skipped')
+    ),
+    started_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    last_success_at TIMESTAMPTZ,
+    last_error_at TIMESTAMPTZ,
+    last_error_message TEXT,
+    remote_uid_count INTEGER NOT NULL DEFAULT 0 CHECK (remote_uid_count >= 0),
+    highest_uid TEXT,
+    uidvalidity TEXT,
+    min_uid TEXT,
+    scanned INTEGER NOT NULL DEFAULT 0 CHECK (scanned >= 0),
+    imported INTEGER NOT NULL DEFAULT 0 CHECK (imported >= 0),
+    skipped_existing INTEGER NOT NULL DEFAULT 0 CHECK (skipped_existing >= 0),
+    deduped_existing INTEGER NOT NULL DEFAULT 0 CHECK (deduped_existing >= 0),
+    metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (account_key, folder_path)
+);
+
+CREATE INDEX IF NOT EXISTS idx_millie_sync_health_account
+    ON millie_sync_health(account_key, status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_millie_sync_health_source
+    ON millie_sync_health(source_id);
+CREATE INDEX IF NOT EXISTS idx_millie_sync_health_status
+    ON millie_sync_health(status, last_success_at, last_error_at);
+
 CREATE TABLE IF NOT EXISTS mail_remote_purge_manifests (
     id TEXT PRIMARY KEY,
     status TEXT NOT NULL DEFAULT 'prepared' CHECK (

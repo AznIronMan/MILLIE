@@ -88,6 +88,9 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/review":
             self.send_json(self.review_payload(parsed))
             return
+        if parsed.path == "/api/review/workbench":
+            self.send_json(self.review_workbench_payload(parsed))
+            return
         if parsed.path == "/api/unsubscribe":
             self.send_json(self.unsubscribe_payload(parsed))
             return
@@ -132,6 +135,9 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/classifications/action":
             self.send_json(self.classification_action_payload())
+            return
+        if parsed.path == "/api/review/workbench/action":
+            self.send_json(self.review_workbench_action_payload())
             return
         if parsed.path == "/api/unsubscribe/action":
             self.send_json(self.unsubscribe_action_payload())
@@ -347,6 +353,29 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
             )
         return {"suggestions": suggestions, "retention": retention, "limit": limit}
 
+    def review_workbench_payload(self, parsed: urllib.parse.ParseResult) -> dict[str, object]:
+        query = urllib.parse.parse_qs(parsed.query)
+        group_limit = parse_int_limit(query.get("group_limit", ["25"])[0], default=25, maximum=100)
+        sample_limit = parse_int_limit(query.get("sample_limit", ["5"])[0], default=5, maximum=12)
+        candidate_limit = parse_int_limit(
+            query.get("candidate_limit", ["1000"])[0],
+            default=1000,
+            maximum=5000,
+        )
+        with self.store() as store:
+            self.request_mailbox(store)
+            groups = store.review_workbench_groups(
+                group_limit=group_limit,
+                sample_limit=sample_limit,
+                candidate_limit=candidate_limit,
+            )
+        return {
+            "groups": groups,
+            "group_limit": group_limit,
+            "sample_limit": sample_limit,
+            "candidate_limit": candidate_limit,
+        }
+
     def unsubscribe_payload(self, parsed: urllib.parse.ParseResult) -> dict[str, object]:
         query = urllib.parse.parse_qs(parsed.query)
         limit_text = query.get("limit", ["100"])[0]
@@ -443,6 +472,7 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
                 accounts=self.server.accounts,
                 run_limit=run_limit,
             )
+            store.connection.commit()
         return {
             **status,
             "automation_level": automation_level(self.server.settings),
@@ -468,6 +498,31 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
                 raise NotFoundError(str(exc)) from exc
             store.connection.commit()
         return {"ok": True, "classification": result}
+
+    def review_workbench_action_payload(self) -> dict[str, object]:
+        payload = self.read_json_body()
+        classification_ids = payload.get("classification_ids") or []
+        action = str(payload.get("action") or "").strip().lower()
+        if action not in {"approve", "reject", "always", "never"}:
+            raise BadRequestError("valid action is required")
+        if not isinstance(classification_ids, list):
+            raise BadRequestError("classification_ids must be a list")
+        with self.store() as store:
+            mailbox = self.request_mailbox(store)
+            identity_id = str(mailbox["owner_identity_id"]) if mailbox else None
+            try:
+                result = store.record_classification_batch_feedback(
+                    classification_ids=[str(item) for item in classification_ids],
+                    action=action,
+                    identity_id=identity_id,
+                    feedback_source="webmail_workbench",
+                )
+            except KeyError as exc:
+                raise NotFoundError(str(exc)) from exc
+            except ValueError as exc:
+                raise BadRequestError(str(exc)) from exc
+            store.connection.commit()
+        return {"ok": True, "batch": result}
 
     def unsubscribe_action_payload(self) -> dict[str, object]:
         payload = self.read_json_body()
@@ -628,6 +683,8 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
         command: list[str]
         timeout = 600
         if action == "live_sync_once":
+            account_filter = str(payload.get("account") or "").strip()
+            folder_filter = str(payload.get("folder") or "").strip()
             command = [
                 sys.executable,
                 str(PROJECT_ROOT / "tools" / "millie_live_sync.py"),
@@ -639,6 +696,10 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
                 "--imap-timeout",
                 "120",
             ]
+            if account_filter:
+                command.extend(["--account", account_filter])
+            if folder_filter:
+                command.extend(["--folder", folder_filter])
             timeout = 900
         elif action == "live_upkeep_once":
             command = [
@@ -1265,7 +1326,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     .topbar {
       display: grid;
-      grid-template-columns: 220px minmax(160px, 1fr) repeat(8, auto) minmax(80px, 180px) auto;
+      grid-template-columns: 220px minmax(160px, 1fr) repeat(9, auto) minmax(80px, 180px) auto;
       align-items: center;
       gap: 14px;
       padding: 0 18px;
@@ -1502,6 +1563,11 @@ INDEX_HTML = r"""<!doctype html>
       font-size: 11px;
       font-weight: 700;
     }
+    .health-ok { background: #e7f4ea; color: #137333; }
+    .health-stale { background: #fef7e0; color: #8a5a00; }
+    .health-failed { background: #fce8e6; color: #c5221f; }
+    .health-running { background: #e8f0fe; color: #185abc; }
+    .health-unknown, .health-skipped { background: var(--surface-2); color: var(--muted); }
     .preview { grid-column: 1 / -1; color: var(--muted); }
     .reader {
       border-right: 0;
@@ -1703,6 +1769,18 @@ INDEX_HTML = r"""<!doctype html>
       font-size: 12px;
       overflow-wrap: anywhere;
     }
+    .source-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+      padding: 9px 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+    }
+    .source-row + .source-row { margin-top: 6px; }
+    .source-row .suggestion-meta { overflow-wrap: anywhere; }
     .json-box, .output-box {
       max-height: 170px;
       overflow: auto;
@@ -1753,6 +1831,7 @@ INDEX_HTML = r"""<!doctype html>
       <input id="search" class="search" type="search" placeholder="Search mail" autocomplete="off">
       <button id="searchButton" class="review-button" type="button">Search</button>
       <button id="reviewButton" class="review-button" type="button">Review</button>
+      <button id="workbenchButton" class="review-button" type="button">Workbench</button>
       <button id="unsubscribeButton" class="review-button" type="button">Unsub</button>
       <button id="policiesButton" class="review-button" type="button">Policies</button>
       <button id="rulesButton" class="review-button" type="button">Rules</button>
@@ -2180,6 +2259,14 @@ INDEX_HTML = r"""<!doctype html>
       if (state.selectedUid) await openMessage(state.selectedUid);
     }
 
+    async function applyWorkbenchAction(classificationIds, action) {
+      await postJson("/api/review/workbench/action", {
+        classification_ids: classificationIds,
+        action,
+      });
+      state.cache.clear();
+    }
+
     async function applyUnsubscribeAction(candidateId, action) {
       await postJson("/api/unsubscribe/action", { candidate_id: candidateId, action });
       if (state.selectedUid) await openMessage(state.selectedUid);
@@ -2196,6 +2283,11 @@ INDEX_HTML = r"""<!doctype html>
     async function openReview() {
       const data = await api("/api/review?limit=50");
       renderReviewList(data.suggestions || [], data.retention || []);
+    }
+
+    async function openWorkbench() {
+      const data = await api("/api/review/workbench?group_limit=25&sample_limit=5&candidate_limit=1000");
+      renderWorkbench(data.groups || []);
     }
 
     async function openUnsubscribeQueue() {
@@ -2364,6 +2456,85 @@ INDEX_HTML = r"""<!doctype html>
       if (!suggestions.length && !retentionItems.length) {
         list.innerHTML = `<div class="empty">No items waiting for review</div>`;
       }
+    }
+
+    function renderWorkbench(groups) {
+      $("reader").innerHTML = `
+        <div class="review-list">
+          <h1>Sort Workbench</h1>
+          <div class="suggestion-meta"></div>
+          <div data-list="workbench-groups"></div>
+        </div>
+      `;
+      $("reader").querySelector(".suggestion-meta").textContent =
+        `${groups.length} grouped suggestion sets · batch actions remain internal to MILLIE`;
+      const list = $("reader").querySelector('[data-list="workbench-groups"]');
+      if (!groups.length) {
+        list.innerHTML = `<div class="empty">No proposed sorting groups are waiting</div>`;
+        return;
+      }
+      groups.forEach((group) => {
+        const card = document.createElement("div");
+        card.className = "suggestion-card";
+        card.innerHTML = `
+          <div class="suggestion-top">
+            <div>
+              <div class="suggestion-title"></div>
+              <div class="suggestion-meta" data-field="group-meta"></div>
+            </div>
+            <span class="suggestion-badge"></span>
+          </div>
+          <div data-list="workbench-samples"></div>
+          <div class="suggestion-actions"></div>
+        `;
+        card.querySelector(".suggestion-title").textContent =
+          `${group.target} · ${group.sender_domain} · ${group.message_year}`;
+        card.querySelector('[data-field="group-meta"]').textContent =
+          `${group.current_folder} · avg confidence ${Number(group.avg_confidence || 0).toFixed(2)} · ${group.count} messages`;
+        card.querySelector(".suggestion-badge").textContent = String(group.count);
+        const samples = card.querySelector('[data-list="workbench-samples"]');
+        (group.samples || []).forEach((item) => {
+          const row = document.createElement("div");
+          row.className = "source-row";
+          row.innerHTML = `
+            <div>
+              <div class="suggestion-title"></div>
+              <div class="suggestion-meta"></div>
+            </div>
+            <button class="review-button" type="button">Open</button>
+          `;
+          row.querySelector(".suggestion-title").textContent = item.subject || "(no subject)";
+          row.querySelector(".suggestion-meta").textContent =
+            `${item.from || "(unknown)"} · ${formatDate(item.message_date)} · ${item.folder_path || ""}`;
+          const openButton = row.querySelector("button");
+          if (item.folder_path && item.uid) {
+            openButton.addEventListener("click", async () => {
+              await loadFolder(item.folder_path);
+              await openMessage(item.uid);
+            });
+          } else {
+            openButton.disabled = true;
+          }
+          samples.appendChild(row);
+        });
+        const actions = card.querySelector(".suggestion-actions");
+        [
+          ["approve", "Approve group"],
+          ["reject", "Reject group"],
+          ["always", "Always"],
+          ["never", "Never"],
+        ].forEach(([action, label]) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.textContent = label;
+          button.addEventListener("click", async () => {
+            await applyWorkbenchAction(group.classification_ids || [], action);
+            await openWorkbench();
+          });
+          actions.appendChild(button);
+        });
+        list.appendChild(card);
+      });
     }
 
     function renderSearchList(results, criteria = {}) {
@@ -2764,6 +2935,7 @@ INDEX_HTML = r"""<!doctype html>
       addMetric(metrics, "Service mailbox", summary.mailbox_message_count, `${formatCount(summary.mailbox_folder_count)} visible folders`);
       addMetric(metrics, "Review queue", queues.classifications?.proposed || 0, `approved ${formatCount(queues.classifications?.approved)}`);
       addMetric(metrics, "Internal apply", Number(internalApply.approved_suggestions_pending || 0) + Number(internalApply.retention_pending || 0), "pending internal changes");
+      addMetric(metrics, "Sync health", data.sync_health?.counts?.failed || 0, `${formatCount(data.sync_health?.counts?.stale)} stale · ${formatCount(data.sync_health?.counts?.ok)} ok`);
       renderOperationsAccounts(data.accounts || []);
       renderOperationsRuns(data.automation_runs || []);
       renderOperationsUnmatched(data.unmatched_sources || [], queues);
@@ -2815,16 +2987,35 @@ INDEX_HTML = r"""<!doctype html>
             </div>
             <span class="suggestion-badge"></span>
           </div>
-          <pre class="output-box"></pre>
+          <div class="suggestion-actions">
+            <button type="button" data-operation="sync-account">Sync account</button>
+          </div>
+          <div data-list="account-sources"></div>
         `;
         card.querySelector(".suggestion-title").textContent =
           `${text(account.display_name, account.email_address || account.id)} · ${text(account.account_type, "mail")}`;
         card.querySelector('[data-field="account-meta"]').textContent =
           `${account.host || "(no host)"}:${account.port || ""} · ${account.auth_method || "auth"} · credential ${account.credential_status}`;
-        card.querySelector(".suggestion-badge").textContent = account.enabled ? "enabled" : "disabled";
-        card.querySelector(".output-box").textContent = sources.length
-          ? sources.map(sourceLine).join("\n")
-          : "No imported source matched this account yet";
+        const badge = card.querySelector(".suggestion-badge");
+        badge.textContent = account.health_state || (account.enabled ? "enabled" : "disabled");
+        badge.className = `suggestion-badge ${healthClass(account.health_state)}`;
+        card.querySelector('[data-operation="sync-account"]').addEventListener("click", () => {
+          runOperation("live_sync_once", { account: account.email_address || account.username || account.id }).catch(showError);
+        });
+        const sourceList = card.querySelector('[data-list="account-sources"]');
+        if (sources.length) {
+          sources.slice(0, 12).forEach((source) => {
+            sourceList.appendChild(sourceRow(source, account));
+          });
+          if (sources.length > 12) {
+            const extra = document.createElement("div");
+            extra.className = "suggestion-meta";
+            extra.textContent = `${sources.length - 12} more source folders not shown`;
+            sourceList.appendChild(extra);
+          }
+        } else {
+          sourceList.innerHTML = `<div class="suggestion-meta">No imported source matched this account yet</div>`;
+        }
         list.appendChild(card);
       });
     }
@@ -2856,6 +3047,7 @@ INDEX_HTML = r"""<!doctype html>
         card.querySelector('[data-field="run-meta"]').textContent =
           `${run.trigger_source} · scanned ${formatCount(run.messages_scanned)} · suggestions ${formatCount(run.suggestions_created)} · actions ${formatCount(run.actions_applied)}${run.error_message ? " · " + run.error_message : ""}`;
         card.querySelector(".suggestion-badge").textContent = run.status;
+        card.querySelector(".suggestion-badge").className = `suggestion-badge ${healthClass(run.status === "failed" ? "failed" : run.status === "running" ? "running" : "ok")}`;
         card.querySelector(".json-box").textContent = JSON.stringify(run.metadata || {}, null, 2);
         list.appendChild(card);
       });
@@ -2883,12 +3075,62 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     function sourceLine(source) {
+      const health = source.sync_health || {};
       const cursor = source.last_cursor_at ? ` · cursor ${formatDate(source.last_cursor_at)}` : "";
       const newest = source.newest_message_at ? ` · newest ${formatDate(source.newest_message_at)}` : "";
-      return `${source.source_type} ${source.display_name || source.source_uri} · ${formatCount(source.message_count)} messages · ${formatCount(source.folder_count)} folders${newest}${cursor}`;
+      const sync = health.health_state ? ` · sync ${health.health_state}` : "";
+      return `${source.source_type} ${source.display_name || source.source_uri} · ${formatCount(source.message_count)} messages · ${formatCount(source.folder_count)} folders${newest}${cursor}${sync}`;
     }
 
-    async function runOperation(action) {
+    function sourceRow(source, account) {
+      const health = source.sync_health || {};
+      const row = document.createElement("div");
+      row.className = "source-row";
+      row.innerHTML = `
+        <div>
+          <div class="suggestion-title"></div>
+          <div class="suggestion-meta"></div>
+        </div>
+        <button class="review-button" type="button">Sync folder</button>
+      `;
+      row.querySelector(".suggestion-title").textContent = source.display_name || source.source_uri;
+      row.querySelector(".suggestion-meta").textContent =
+        `${source.source_type} · ${formatCount(source.message_count)} messages · ${formatCount(source.folder_count)} folders · ${healthText(health)}`;
+      const button = row.querySelector("button");
+      if (health.folder_path) {
+        button.addEventListener("click", () => {
+          runOperation("live_sync_once", {
+            account: account.email_address || account.username || account.id,
+            folder: health.folder_path,
+          }).catch(showError);
+        });
+      } else {
+        button.disabled = true;
+      }
+      return row;
+    }
+
+    function healthText(health) {
+      if (!health || !health.health_state) return "sync unknown";
+      const last = health.last_success_at || health.last_error_at || health.updated_at;
+      const suffix = last ? ` ${formatDate(last)}` : "";
+      const counts = health.scanned || health.imported || health.skipped_existing || health.deduped_existing
+        ? ` · scanned ${formatCount(health.scanned)} · imported ${formatCount(health.imported)} · skipped ${formatCount(health.skipped_existing)} · deduped ${formatCount(health.deduped_existing)}`
+        : "";
+      return `${health.health_state}${suffix}${health.last_error_message ? " · " + health.last_error_message : ""}${counts}`;
+    }
+
+    function healthClass(value) {
+      const state = String(value || "unknown").toLowerCase();
+      if (["ok", "completed"].includes(state)) return "health-ok";
+      if (state === "stale") return "health-stale";
+      if (state === "failed") return "health-failed";
+      if (state === "running") return "health-running";
+      if (state === "skipped") return "health-skipped";
+      return "health-unknown";
+    }
+
+    async function runOperation(action, extra = {}) {
       const list = $("reader").querySelector('[data-list="operation-output"]');
       list.innerHTML = `<div class="suggestion-card"><div class="suggestion-title">Running ${action}</div><div class="suggestion-meta">Waiting for command output</div></div>`;
       const result = await postJson("/api/operations/action", {
@@ -2896,6 +3138,7 @@ INDEX_HTML = r"""<!doctype html>
         limit: $("opsLimit").value,
         fetch_batch_size: $("opsBatch").value,
         commit_every: $("opsCommitEvery").value,
+        ...extra,
       });
       await openOperations();
       renderOperationResult(result);
@@ -3080,6 +3323,9 @@ INDEX_HTML = r"""<!doctype html>
     });
     $("reviewButton").addEventListener("click", () => {
       openReview().catch(showError);
+    });
+    $("workbenchButton").addEventListener("click", () => {
+      openWorkbench().catch(showError);
     });
     $("unsubscribeButton").addEventListener("click", () => {
       openUnsubscribeQueue().catch(showError);

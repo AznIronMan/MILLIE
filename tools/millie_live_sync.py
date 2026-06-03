@@ -24,6 +24,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="Account email/id/display name to sync. May be repeated. Defaults to all enabled IMAP accounts.",
     )
+    parser.add_argument(
+        "--folder",
+        action="append",
+        default=[],
+        help="Exact IMAP folder name to sync. May be repeated. Defaults to all selectable folders.",
+    )
     parser.add_argument("--once", action="store_true", help="Run one sync pass and exit.")
     parser.add_argument(
         "--interval",
@@ -43,6 +49,7 @@ def main() -> int:
     args = build_parser().parse_args()
     config = LiveSyncConfig(
         accounts=tuple(args.account),
+        folders=tuple(args.folder),
         interval_seconds=args.interval,
         fetch_batch_size=args.fetch_batch_size,
         commit_every=args.commit_every,

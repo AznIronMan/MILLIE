@@ -270,6 +270,13 @@ function buildSeedRows(instanceId) {
       options: optionList(["false", "true"]),
       secret: false,
     },
+    {
+      key: "sync_stale_after_hours",
+      value: "24",
+      description: "Hours after the last successful live folder sync before Ops marks that folder stale.",
+      options: "",
+      secret: false,
+    },
   ];
 
   return rows.map((row, index) => ({
@@ -555,6 +562,10 @@ function validateValue(row, value) {
 
   if (row.setting_key === "postgres_port" && value !== "" && !/^[0-9]+$/.test(value)) {
     throw httpError(400, "postgres_port must be numeric.");
+  }
+
+  if (row.setting_key === "sync_stale_after_hours" && value !== "" && !/^[0-9]+$/.test(value)) {
+    throw httpError(400, "sync_stale_after_hours must be numeric.");
   }
 
   if (row.setting_key === "service_mail_domain") {
