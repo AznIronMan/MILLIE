@@ -86,7 +86,21 @@ Execution requires `automation_level=auto_internal` or higher:
 
 The apply command creates missing MILLIE folders and maps approved messages into those folders. It does not expunge existing MILLIE folder mappings and does not write to source providers.
 
-Retention execution and unsubscribe execution are planned follow-up work.
+Reviewed retention decisions can be applied with a dry-run-first command:
+
+```sh
+.private/venv/bin/python tools/millie_apply_retention.py --limit 100
+```
+
+Execution requires `automation_level=auto_internal` or higher:
+
+```sh
+.private/venv/bin/python tools/millie_apply_retention.py --execute --limit 100
+```
+
+The retention apply command only considers acknowledged decisions for active policies. It supports `no_action` audit application and non-destructive `hide_from_default_views`, which marks matching `INBOX` and `All Mail` facade rows hidden while leaving hold/source folders and provider mail intact. `expire_internal_copy` and `delete_internal_copy` are not executed yet.
+
+Unsubscribe execution is planned follow-up work.
 
 ## Retention Holds
 

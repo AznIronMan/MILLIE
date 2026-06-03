@@ -870,6 +870,7 @@ class PostgresMailStore:
             WHERE mm.mailbox_id = %s
               AND mf.folder_path = %s
               AND mm.is_expunged = FALSE
+              AND mm.metadata_json->>'retention_hidden_from_default_views' IS DISTINCT FROM 'true'
             ORDER BY message_date DESC NULLS LAST, mm.imap_uid DESC
             {limit_clause}
             """,
@@ -903,6 +904,7 @@ class PostgresMailStore:
             WHERE mm.mailbox_id = %s
               AND mf.folder_path = %s
               AND mm.is_expunged = FALSE
+              AND mm.metadata_json->>'retention_hidden_from_default_views' IS DISTINCT FROM 'true'
             """,
             (mailbox_id, folder_path),
         ).fetchone()
@@ -914,9 +916,10 @@ class PostgresMailStore:
             SELECT mf.folder_path, count(mm.id)
             FROM millie_mailbox_folders mf
             LEFT JOIN millie_mailbox_messages mm
-              ON mm.folder_id = mf.id
+             ON mm.folder_id = mf.id
              AND mm.mailbox_id = mf.mailbox_id
              AND mm.is_expunged = FALSE
+             AND mm.metadata_json->>'retention_hidden_from_default_views' IS DISTINCT FROM 'true'
             WHERE mf.mailbox_id = %s
               AND mf.selectable = TRUE
             GROUP BY mf.folder_path
@@ -958,6 +961,7 @@ class PostgresMailStore:
               AND mf.folder_path = %s
               AND mm.imap_uid = %s
               AND mm.is_expunged = FALSE
+              AND mm.metadata_json->>'retention_hidden_from_default_views' IS DISTINCT FROM 'true'
             LIMIT 1
             """,
             (mailbox_id, folder_path, uid),
@@ -1835,6 +1839,7 @@ class PostgresMailStore:
             WHERE mm.mailbox_id = %s
               AND mf.folder_path = %s
               AND mm.is_expunged = FALSE
+              AND mm.metadata_json->>'retention_hidden_from_default_views' IS DISTINCT FROM 'true'
             ORDER BY mm.imap_uid
             """,
             (mailbox_id, folder_path),
@@ -1869,6 +1874,7 @@ class PostgresMailStore:
               AND mf.folder_path = %s
               AND mm.imap_uid = %s
               AND mm.is_expunged = FALSE
+              AND mm.metadata_json->>'retention_hidden_from_default_views' IS DISTINCT FROM 'true'
             """,
             (mailbox_id, folder_path, uid),
         ).fetchone()
@@ -1915,6 +1921,7 @@ class PostgresMailStore:
             WHERE mm.mailbox_id = %s
               AND mf.folder_path = %s
               AND mm.is_expunged = FALSE
+              AND mm.metadata_json->>'retention_hidden_from_default_views' IS DISTINCT FROM 'true'
               {uid_filter}
             ORDER BY mm.imap_uid
             """,

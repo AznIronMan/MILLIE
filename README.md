@@ -194,6 +194,14 @@ Retention hold policies can be seeded and scanned without deleting anything:
 
 Default policies are proposed, review-required, and `no_action`: `Hold/Trash` reviews after 30 days and `Hold/Spam` reviews after 14 days.
 
+Acknowledged retention decisions can be applied internally with a dry-run-first command:
+
+```sh
+.private/venv/bin/python tools/millie_apply_retention.py --limit 100
+```
+
+Execution requires `automation_level=auto_internal` or higher. The command only supports `no_action` audit application and non-destructive `hide_from_default_views`, which hides matching `INBOX` and `All Mail` facade rows while keeping hold/source folders and provider mail intact.
+
 ## Dev IMAP Listener
 
 After importing samples, start the temporary IMAP listener:

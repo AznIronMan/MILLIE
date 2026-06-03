@@ -24,6 +24,7 @@ All notable changes to MILLIE will be documented in this file.
 - Added proposed no-action retention defaults and a dry-run retention scanner for MILLIE hold folders.
 - Added webmail retention policy visibility for messages opened from hold folders.
 - Added retention-eligible hold messages to the webmail Review queue with acknowledge and seven-day snooze feedback actions.
+- Added a dry-run-first retention apply command for acknowledged active policies, including non-destructive internal hide-from-default-views support.
 
 ### Changed
 
