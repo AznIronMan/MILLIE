@@ -19,6 +19,7 @@ from psycopg import Connection
 from psycopg.pq import TransactionStatus
 from psycopg.types.json import Jsonb
 
+from millie.brain.proposals import compact_values, proposal_confidence, target_label
 from millie.brain.retention import (
     HeldMessage,
     RetentionPolicy,
@@ -2431,6 +2432,722 @@ class PostgresMailStore:
             "limit": limit,
         }
 
+    def rule_backtest_candidates(
+        self,
+        *,
+        limit: int = 25,
+        sample_limit: int = 5,
+        candidate_limit: int = 5000,
+        min_messages: int = 1,
+    ) -> list[dict[str, object]]:
+        rows = self.connection.execute(
+            """
+            WITH from_addresses AS (
+                SELECT
+                    message_id,
+                    string_agg(
+                        CASE
+                            WHEN coalesce(display_name, '') <> '' AND coalesce(email_address, '') <> ''
+                                THEN display_name || ' <' || email_address || '>'
+                            WHEN coalesce(email_address, '') <> '' THEN email_address
+                            ELSE coalesce(raw_value, '')
+                        END,
+                        ', ' ORDER BY ordinal
+                    ) AS from_text,
+                    min(lower(email_address)) FILTER (
+                        WHERE coalesce(email_address, '') <> ''
+                    ) AS from_email
+                FROM mail_message_addresses
+                WHERE role = 'from'
+                GROUP BY message_id
+            ),
+            candidates AS (
+                SELECT DISTINCT ON (c.id)
+                    c.id,
+                    c.message_id,
+                    c.classification_kind,
+                    c.classification_value,
+                    c.target_folder_path,
+                    c.target_tags,
+                    c.confidence,
+                    c.status,
+                    coalesce(m.subject, '(no subject)') AS subject,
+                    coalesce(m.sent_at, m.received_at, v.internal_date) AS message_date,
+                    coalesce(fa.from_text, '') AS from_text,
+                    coalesce(fa.from_email, '') AS from_email,
+                    coalesce(v.folder_path, '') AS folder_path,
+                    v.imap_uid
+                FROM millie_message_classifications c
+                JOIN mail_messages m ON m.id = c.message_id
+                LEFT JOIN millie_v_mailbox_messages v ON v.message_id = c.message_id
+                LEFT JOIN from_addresses fa ON fa.message_id = c.message_id
+                WHERE c.status IN ('proposed', 'approved', 'applied')
+                  AND c.classification_kind IN ('folder', 'tag', 'spam', 'trash')
+                ORDER BY
+                    c.id,
+                    CASE WHEN coalesce(v.folder_path, '') = 'All Mail' THEN 1 ELSE 0 END,
+                    c.confidence DESC,
+                    c.created_at DESC
+                LIMIT %s
+            )
+            SELECT *
+            FROM candidates
+            ORDER BY confidence DESC
+            """,
+            (max(1, min(candidate_limit, 20000)),),
+        ).fetchall()
+        groups: dict[tuple[object, ...], dict[str, object]] = {}
+        sample_limit = max(1, min(sample_limit, 12))
+        for row in rows:
+            message_date = row[9]
+            message_year = str(message_date.year) if message_date else ""
+            sender_domain = self._sender_domain(str(row[11] or ""), str(row[10] or ""))
+            target_tags = tuple(str(tag) for tag in row[5] or [])
+            key = (
+                row[2],
+                row[3],
+                row[4],
+                target_tags,
+                sender_domain,
+                row[12] or "",
+                message_year,
+            )
+            group = groups.setdefault(
+                key,
+                {
+                    "kind": row[2],
+                    "value": row[3],
+                    "target_folder_path": row[4],
+                    "target_tags": list(target_tags),
+                    "sender_domain": sender_domain,
+                    "folder_path": row[12] or "",
+                    "message_year": message_year,
+                    "evidence_count": 0,
+                    "confidence_total": 0.0,
+                    "classification_ids": [],
+                    "samples": [],
+                },
+            )
+            group["evidence_count"] = int(group["evidence_count"]) + 1
+            group["confidence_total"] = float(group["confidence_total"]) + float(row[6] or 0)
+            classification_ids = group["classification_ids"]
+            if isinstance(classification_ids, list):
+                classification_ids.append(row[0])
+            samples = group["samples"]
+            if isinstance(samples, list) and len(samples) < sample_limit:
+                samples.append(
+                    {
+                        "classification_id": row[0],
+                        "message_id": row[1],
+                        "subject": row[8],
+                        "message_date": row[9],
+                        "from": row[10] or "",
+                        "folder_path": row[12],
+                        "uid": int(row[13]) if row[13] is not None else None,
+                    }
+                )
+
+        candidates: list[dict[str, object]] = []
+        for group in groups.values():
+            evidence_count = int(group["evidence_count"] or 0)
+            if evidence_count < max(1, min_messages):
+                continue
+            avg_confidence = float(group.pop("confidence_total")) / max(evidence_count, 1)
+            candidate = self._rule_candidate_from_group(
+                group,
+                avg_confidence=avg_confidence,
+                sample_limit=sample_limit,
+            )
+            if candidate.get("existing_rule_status") in {"active", "retired"}:
+                continue
+            candidates.append(candidate)
+
+        candidates.sort(
+            key=lambda item: (
+                -int(item["evidence_count"]),
+                -float(item["confidence"]),
+                int(item["backtest"]["conflicting_suggestions"]),
+                str(item["target"]),
+            )
+        )
+        return candidates[: max(1, min(limit, 100))]
+
+    def _rule_candidate_from_group(
+        self,
+        group: dict[str, object],
+        *,
+        avg_confidence: float,
+        sample_limit: int,
+    ) -> dict[str, object]:
+        condition = {
+            "classification_kind": group["kind"],
+            "classification_value": group["value"],
+            "target_folder_path": group["target_folder_path"],
+            "target_tags": list(group["target_tags"] or []),
+        }
+        for key in ("sender_domain", "folder_path", "message_year"):
+            if group.get(key):
+                condition[key] = group[key]
+        rule_action = {
+            "action": "suggest",
+            "classification_kind": group["kind"],
+            "classification_value": group["value"],
+            "target_folder_path": group["target_folder_path"],
+            "target_tags": list(group["target_tags"] or []),
+        }
+        rule_id = self._rule_id_from_condition("always", condition)
+        target = target_label(
+            kind=str(group["kind"] or ""),
+            value=str(group["value"] or ""),
+            target_folder_path=str(group["target_folder_path"] or "") or None,
+            target_tags=list(group["target_tags"] or []),
+        )
+        confidence = proposal_confidence(avg_confidence, group["evidence_count"])
+        existing = self.load_brain_rule(rule_id)
+        backtest = {
+            "matched_messages": int(group["evidence_count"] or 0),
+            "existing_suggestions": int(group["evidence_count"] or 0),
+            "conflicting_suggestions": 0,
+            "samples": list(group.get("samples") or [])[:sample_limit],
+            "scope": "classification_evidence",
+        }
+        candidate_id = stable_id("millie_rule_candidate", rule_id)
+        return {
+            "id": candidate_id,
+            "rule_id": rule_id,
+            "rule_name": f"Propose {group['kind']}:{group['value']} for {target}",
+            "target": target,
+            "condition": condition,
+            "rule_action": rule_action,
+            "confidence": confidence,
+            "avg_confidence": round(avg_confidence, 4),
+            "evidence_count": int(group["evidence_count"] or 0),
+            "classification_ids": list(group.get("classification_ids") or []),
+            "samples": list(group.get("samples") or []),
+            "backtest": backtest,
+            "existing_rule_status": existing.get("status") if existing else "",
+            "metadata": {
+                "proposal_type": "classification_rule",
+                "source": "millie_rule_backtest",
+                "sender_domain": group.get("sender_domain") or "",
+                "folder_path": group.get("folder_path") or "",
+                "message_year": group.get("message_year") or "",
+            },
+        }
+
+    def backtest_rule_condition(
+        self,
+        *,
+        condition: dict[str, object],
+        rule_action: dict[str, object],
+        sample_limit: int = 5,
+    ) -> dict[str, object]:
+        where, params = self._rule_condition_where(condition)
+        context_sql = f"AND {' AND '.join(where)}" if where else ""
+        match_params = self._classification_match_params(rule_action)
+        aggregate = self.connection.execute(
+            f"""
+            WITH from_addresses AS (
+                SELECT
+                    message_id,
+                    string_agg(
+                        CASE
+                            WHEN coalesce(display_name, '') <> '' AND coalesce(email_address, '') <> ''
+                                THEN display_name || ' <' || email_address || '>'
+                            WHEN coalesce(email_address, '') <> '' THEN email_address
+                            ELSE coalesce(raw_value, '')
+                        END,
+                        ', ' ORDER BY ordinal
+                    ) AS from_text,
+                    min(lower(email_address)) FILTER (
+                        WHERE coalesce(email_address, '') <> ''
+                    ) AS from_email
+                FROM mail_message_addresses
+                WHERE role = 'from'
+                GROUP BY message_id
+            ),
+            matches AS (
+                SELECT
+                    m.id,
+                    c.classification_kind,
+                    c.classification_value,
+                    c.target_folder_path,
+                    c.target_tags,
+                    coalesce(m.sent_at, m.received_at, v.internal_date) AS message_date,
+                    coalesce(v.folder_path, '') AS folder_path,
+                    coalesce(fa.from_email, '') AS from_email,
+                    coalesce(fa.from_text, '') AS from_text
+                FROM millie_message_classifications c
+                JOIN mail_messages m ON m.id = c.message_id
+                LEFT JOIN millie_v_mailbox_messages v ON v.message_id = m.id
+                LEFT JOIN from_addresses fa ON fa.message_id = m.id
+                WHERE c.status IN ('proposed', 'approved', 'applied')
+                  AND c.classification_kind IN ('folder', 'tag', 'spam', 'trash')
+                  {context_sql}
+            ),
+            scored AS (
+                SELECT
+                    matches.id,
+                    bool_or(
+                        matches.classification_kind = %s
+                        AND matches.classification_value = %s
+                        AND coalesce(matches.target_folder_path, '') = %s
+                        AND matches.target_tags = %s
+                    ) AS has_matching_suggestion,
+                    bool_or(
+                        matches.classification_kind = %s
+                        AND NOT (
+                            matches.classification_kind = %s
+                            AND matches.classification_value = %s
+                            AND coalesce(matches.target_folder_path, '') = %s
+                            AND matches.target_tags = %s
+                        )
+                    ) AS has_conflicting_suggestion
+                FROM matches
+                GROUP BY matches.id
+            )
+            SELECT
+                count(*),
+                count(*) FILTER (WHERE has_matching_suggestion),
+                count(*) FILTER (WHERE has_conflicting_suggestion)
+            FROM scored
+            """,
+            tuple([
+                *params,
+                *match_params,
+                rule_action.get("classification_kind") or "",
+                *match_params,
+            ]),
+        ).fetchone()
+        sample_rows = self.connection.execute(
+            f"""
+            WITH from_addresses AS (
+                SELECT
+                    message_id,
+                    string_agg(
+                        CASE
+                            WHEN coalesce(display_name, '') <> '' AND coalesce(email_address, '') <> ''
+                                THEN display_name || ' <' || email_address || '>'
+                            WHEN coalesce(email_address, '') <> '' THEN email_address
+                            ELSE coalesce(raw_value, '')
+                        END,
+                        ', ' ORDER BY ordinal
+                    ) AS from_text,
+                    min(lower(email_address)) FILTER (
+                        WHERE coalesce(email_address, '') <> ''
+                    ) AS from_email
+                FROM mail_message_addresses
+                WHERE role = 'from'
+                GROUP BY message_id
+            )
+            SELECT DISTINCT ON (m.id)
+                m.id,
+                coalesce(m.subject, '(no subject)') AS subject,
+                coalesce(m.sent_at, m.received_at, v.internal_date) AS message_date,
+                coalesce(fa.from_text, '') AS from_text,
+                coalesce(v.folder_path, '') AS folder_path,
+                v.imap_uid
+            FROM millie_message_classifications c
+            JOIN mail_messages m ON m.id = c.message_id
+            LEFT JOIN millie_v_mailbox_messages v ON v.message_id = m.id
+            LEFT JOIN from_addresses fa ON fa.message_id = m.id
+            WHERE c.status IN ('proposed', 'approved', 'applied')
+              AND c.classification_kind IN ('folder', 'tag', 'spam', 'trash')
+              {context_sql}
+            ORDER BY
+                m.id,
+                CASE WHEN coalesce(v.folder_path, '') = 'All Mail' THEN 1 ELSE 0 END,
+                coalesce(m.received_at, m.sent_at, now()) DESC
+            LIMIT %s
+            """,
+            tuple([*params, max(1, min(sample_limit, 12))]),
+        ).fetchall()
+        return {
+            "matched_messages": int(aggregate[0] or 0) if aggregate else 0,
+            "existing_suggestions": int(aggregate[1] or 0) if aggregate else 0,
+            "conflicting_suggestions": int(aggregate[2] or 0) if aggregate else 0,
+            "samples": [
+                {
+                    "message_id": row[0],
+                    "subject": row[1],
+                    "message_date": row[2],
+                    "from": row[3] or "",
+                    "folder_path": row[4],
+                    "uid": int(row[5]) if row[5] is not None else None,
+                }
+                for row in sample_rows
+            ],
+        }
+
+    def record_rule_candidate_action(
+        self,
+        *,
+        candidate_id: str,
+        action: str,
+        identity_id: str | None = None,
+    ) -> dict[str, object]:
+        action = action.strip().lower()
+        if action not in {"seed", "dismiss"}:
+            raise ValueError(f"Unsupported rule candidate action: {action}")
+        candidate = self._load_rule_candidate(candidate_id)
+        if not candidate:
+            raise KeyError(f"Rule candidate not found: {candidate_id}")
+        status = "proposed" if action == "seed" else "retired"
+        rule = self._upsert_rule_proposal(
+            rule_id=str(candidate["rule_id"]),
+            rule_name=str(candidate["rule_name"]),
+            rule_type=str(candidate["condition"].get("classification_kind") or "custom"),
+            rule_source="heuristic",
+            status=status,
+            priority=80,
+            condition=dict(candidate["condition"]),
+            rule_action=dict(candidate["rule_action"]),
+            confidence=float(candidate["confidence"] or 0),
+            evidence_count=int(candidate["evidence_count"] or 0),
+            identity_id=identity_id,
+            metadata={
+                "proposal": {
+                    **candidate,
+                    "action": action,
+                }
+            },
+        )
+        self._insert_automation_audit(
+            action_type="create_rule" if action == "seed" else "disable_rule",
+            identity_id=identity_id,
+            rule_id=str(rule["id"]),
+            after_json={
+                "rule_candidate_action": action,
+                "candidate_id": candidate_id,
+                "rule": rule,
+            },
+        )
+        return {
+            "ok": True,
+            "action": action,
+            "candidate_id": candidate_id,
+            "rule": rule,
+        }
+
+    def _load_rule_candidate(self, candidate_id: str) -> dict[str, object]:
+        for candidate in self.rule_backtest_candidates(
+            limit=100,
+            sample_limit=5,
+            candidate_limit=20000,
+            min_messages=1,
+        ):
+            if candidate["id"] == candidate_id:
+                return candidate
+        return {}
+
+    def taxonomy_proposals(
+        self,
+        *,
+        limit: int = 20,
+        sample_limit: int = 5,
+    ) -> list[dict[str, object]]:
+        rows = self.connection.execute(
+            """
+            WITH from_addresses AS (
+                SELECT
+                    message_id,
+                    min(lower(email_address)) FILTER (
+                        WHERE coalesce(email_address, '') <> ''
+                    ) AS from_email
+                FROM mail_message_addresses
+                WHERE role = 'from'
+                GROUP BY message_id
+            ),
+            classified AS (
+                SELECT DISTINCT ON (c.id)
+                    c.id,
+                    c.message_id,
+                    c.classification_kind,
+                    c.classification_value,
+                    c.target_folder_path,
+                    c.target_tags,
+                    c.confidence,
+                    c.status,
+                    coalesce(m.sent_at, m.received_at, v.internal_date) AS message_date,
+                    coalesce(fa.from_email, '') AS from_email,
+                    coalesce(v.folder_path, '') AS folder_path
+                FROM millie_message_classifications c
+                JOIN mail_messages m ON m.id = c.message_id
+                LEFT JOIN millie_v_mailbox_messages v ON v.message_id = c.message_id
+                LEFT JOIN from_addresses fa ON fa.message_id = c.message_id
+                WHERE c.status IN ('proposed', 'approved', 'applied')
+                  AND (
+                    c.target_folder_path IS NOT NULL
+                    OR cardinality(c.target_tags) > 0
+                  )
+                ORDER BY
+                    c.id,
+                    CASE WHEN coalesce(v.folder_path, '') = 'All Mail' THEN 1 ELSE 0 END,
+                    c.confidence DESC,
+                    c.created_at DESC
+            )
+            SELECT
+                coalesce(target_folder_path, '') AS target_folder_path,
+                target_tags,
+                classification_kind,
+                classification_value,
+                count(*) AS evidence_count,
+                avg(confidence) AS avg_confidence,
+                array_agg(DISTINCT lower(split_part(from_email, '@', 2))) FILTER (
+                    WHERE from_email LIKE '%%@%%'
+                ) AS sender_domains,
+                array_agg(DISTINCT folder_path) FILTER (
+                    WHERE coalesce(folder_path, '') <> ''
+                ) AS source_folders,
+                array_agg(DISTINCT extract(year FROM message_date)::text) FILTER (
+                    WHERE message_date IS NOT NULL
+                ) AS message_years
+            FROM classified
+            GROUP BY
+                coalesce(target_folder_path, ''),
+                target_tags,
+                classification_kind,
+                classification_value
+            ORDER BY evidence_count DESC, avg_confidence DESC NULLS LAST
+            LIMIT %s
+            """,
+            (max(1, min(limit, 100)),),
+        ).fetchall()
+        proposals: list[dict[str, object]] = []
+        for row in rows:
+            target_folder_path = str(row[0] or "")
+            target_tags = list(row[1] or [])
+            target = target_label(
+                kind=str(row[2] or ""),
+                value=str(row[3] or ""),
+                target_folder_path=target_folder_path or None,
+                target_tags=target_tags,
+            )
+            evidence_count = int(row[4] or 0)
+            confidence = proposal_confidence(row[5], evidence_count)
+            sender_domains = compact_values(list(row[6] or []), limit=8)
+            source_folders = compact_values(list(row[7] or []), limit=8)
+            message_years = compact_values(list(row[8] or []), limit=8)
+            proposal_id = stable_id("millie_taxonomy_proposal", target, row[2], row[3])
+            rule_id = stable_id("millie_brain_rule", "taxonomy", target, row[2], row[3])
+            existing = self.load_brain_rule(rule_id)
+            if existing.get("status") in {"active", "retired"}:
+                continue
+            condition = {
+                "proposal_type": "taxonomy",
+                "target": target,
+                "classification_kind": row[2],
+                "classification_value": row[3],
+                "target_folder_path": target_folder_path or None,
+                "target_tags": target_tags,
+            }
+            rule_action = {
+                "action": "taxonomy_proposal",
+                "target": target,
+                "target_folder_path": target_folder_path or None,
+                "target_tags": target_tags,
+                "review_only": True,
+            }
+            proposals.append(
+                {
+                    "id": proposal_id,
+                    "rule_id": rule_id,
+                    "rule_name": f"Taxonomy proposal: {target}",
+                    "target": target,
+                    "condition": condition,
+                    "rule_action": rule_action,
+                    "confidence": confidence,
+                    "evidence_count": evidence_count,
+                    "sender_domains": sender_domains,
+                    "source_folders": source_folders,
+                    "message_years": message_years,
+                    "sample_limit": max(1, min(sample_limit, 12)),
+                    "existing_rule_status": existing.get("status") if existing else "",
+                    "llm_context": {
+                        "target": target,
+                        "evidence_count": evidence_count,
+                        "sender_domains": sender_domains,
+                        "source_folders": source_folders,
+                        "message_years": message_years,
+                        "instruction": (
+                            "Review this aggregate-only context and suggest whether the "
+                            "folder/tag taxonomy should be kept, renamed, merged, or split."
+                        ),
+                    },
+                }
+            )
+        return proposals
+
+    def record_taxonomy_proposal_action(
+        self,
+        *,
+        proposal_id: str,
+        action: str,
+        identity_id: str | None = None,
+    ) -> dict[str, object]:
+        action = action.strip().lower()
+        if action not in {"seed", "dismiss"}:
+            raise ValueError(f"Unsupported taxonomy proposal action: {action}")
+        proposal = self._load_taxonomy_proposal(proposal_id)
+        if not proposal:
+            raise KeyError(f"Taxonomy proposal not found: {proposal_id}")
+        status = "proposed" if action == "seed" else "retired"
+        rule = self._upsert_rule_proposal(
+            rule_id=str(proposal["rule_id"]),
+            rule_name=str(proposal["rule_name"]),
+            rule_type="custom",
+            rule_source="heuristic",
+            status=status,
+            priority=60,
+            condition=dict(proposal["condition"]),
+            rule_action=dict(proposal["rule_action"]),
+            confidence=float(proposal["confidence"] or 0),
+            evidence_count=int(proposal["evidence_count"] or 0),
+            identity_id=identity_id,
+            metadata={
+                "proposal": {
+                    **proposal,
+                    "action": action,
+                }
+            },
+        )
+        self._insert_automation_audit(
+            action_type="create_rule" if action == "seed" else "disable_rule",
+            identity_id=identity_id,
+            rule_id=str(rule["id"]),
+            after_json={
+                "taxonomy_proposal_action": action,
+                "proposal_id": proposal_id,
+                "rule": rule,
+            },
+        )
+        return {
+            "ok": True,
+            "action": action,
+            "proposal_id": proposal_id,
+            "rule": rule,
+        }
+
+    def _load_taxonomy_proposal(self, proposal_id: str) -> dict[str, object]:
+        for proposal in self.taxonomy_proposals(limit=100, sample_limit=5):
+            if proposal["id"] == proposal_id:
+                return proposal
+        return {}
+
+    def _upsert_rule_proposal(
+        self,
+        *,
+        rule_id: str,
+        rule_name: str,
+        rule_type: str,
+        rule_source: str,
+        status: str,
+        priority: int,
+        condition: dict[str, object],
+        rule_action: dict[str, object],
+        confidence: float,
+        evidence_count: int,
+        identity_id: str | None,
+        metadata: dict[str, object],
+    ) -> dict[str, object]:
+        self.connection.execute(
+            """
+            INSERT INTO millie_brain_rules (
+                id, rule_name, rule_type, rule_source, status, automation_level,
+                priority, condition_json, action_json, confidence, evidence_count,
+                created_by_identity_id, updated_at, metadata_json
+            )
+            VALUES (
+                %s, %s, %s, %s, %s, 'review',
+                %s, %s, %s, %s, %s, %s, now(), %s
+            )
+            ON CONFLICT(id) DO UPDATE SET
+                rule_name = excluded.rule_name,
+                status = CASE
+                    WHEN millie_brain_rules.status = 'active' THEN millie_brain_rules.status
+                    ELSE excluded.status
+                END,
+                confidence = greatest(millie_brain_rules.confidence, excluded.confidence),
+                evidence_count = greatest(millie_brain_rules.evidence_count, excluded.evidence_count),
+                priority = greatest(millie_brain_rules.priority, excluded.priority),
+                condition_json = excluded.condition_json,
+                action_json = excluded.action_json,
+                updated_at = now(),
+                metadata_json = millie_brain_rules.metadata_json || excluded.metadata_json
+            """,
+            (
+                rule_id,
+                rule_name,
+                self._safe_rule_type(rule_type),
+                rule_source,
+                status,
+                int(priority),
+                Jsonb(condition),
+                Jsonb(rule_action),
+                max(0.0, min(float(confidence or 0), 1.0)),
+                max(0, int(evidence_count or 0)),
+                identity_id,
+                Jsonb(_sanitize_metadata(metadata)),
+            ),
+        )
+        return self.load_brain_rule(rule_id)
+
+    def _rule_id_from_condition(self, action: str, condition: dict[str, object]) -> str:
+        return stable_id(
+            "millie_brain_rule",
+            action,
+            condition.get("classification_kind") or "",
+            condition.get("classification_value") or "",
+            condition.get("target_folder_path") or "",
+            ",".join(str(tag) for tag in condition.get("target_tags") or []),
+            condition.get("sender_domain") or "",
+            condition.get("folder_path") or "",
+            condition.get("message_year") or "",
+        )
+
+    def _rule_condition_where(self, condition: dict[str, object]) -> tuple[list[str], list[object]]:
+        where: list[str] = []
+        params: list[object] = []
+        sender_domain = str(condition.get("sender_domain") or "").strip().lower()
+        if sender_domain:
+            where.append(
+                "(lower(split_part(coalesce(fa.from_email, ''), '@', 2)) = %s "
+                "OR lower(coalesce(fa.from_text, '')) LIKE %s)"
+            )
+            params.extend([sender_domain, f"%@{sender_domain}%"])
+        folder_path = str(condition.get("folder_path") or "").strip()
+        if folder_path:
+            where.append("coalesce(v.folder_path, '') = %s")
+            params.append(folder_path)
+        message_year = str(condition.get("message_year") or "").strip()
+        if message_year:
+            where.append("extract(year FROM coalesce(m.sent_at, m.received_at, v.internal_date))::text = %s")
+            params.append(message_year)
+        return where, params
+
+    def _classification_match_params(self, rule_action: dict[str, object]) -> list[object]:
+        return [
+            rule_action.get("classification_kind") or "",
+            rule_action.get("classification_value") or "",
+            str(rule_action.get("target_folder_path") or ""),
+            list(rule_action.get("target_tags") or []),
+        ]
+
+    def _safe_rule_type(self, rule_type: str) -> str:
+        normalized = str(rule_type or "custom").strip().lower()
+        if normalized in {
+            "folder",
+            "tag",
+            "spam",
+            "trash",
+            "unsubscribe",
+            "retention",
+            "priority",
+            "custom",
+        }:
+            return normalized
+        return "custom"
+
     def internal_apply_status(self, *, mailbox_id: str, limit: int = 100) -> dict[str, object]:
         approved = self.connection.execute(
             """
@@ -3597,8 +4314,8 @@ class PostgresMailStore:
                 retention_policy_id,
                 unsubscribe_candidate_id,
                 action_type,
-                Jsonb(before_json or {}),
-                Jsonb(after_json or {}),
+                Jsonb(_sanitize_metadata(before_json or {})),
+                Jsonb(_sanitize_metadata(after_json or {})),
             ),
         )
 
@@ -3628,10 +4345,10 @@ class PostgresMailStore:
                 str(uuid.uuid4()),
                 action_type,
                 status,
-                Jsonb(before_json or {}),
-                Jsonb(after_json or {}),
+                Jsonb(_sanitize_metadata(before_json or {})),
+                Jsonb(_sanitize_metadata(after_json or {})),
                 error_message,
-                Jsonb(metadata_json or {}),
+                Jsonb(_sanitize_metadata(metadata_json or {})),
             ),
         )
 
@@ -4198,6 +4915,8 @@ def _sanitize_message_text(message: NormalizedMessage) -> None:
 
 
 def _sanitize_metadata(value: object) -> object:
+    if isinstance(value, datetime):
+        return value.isoformat()
     if isinstance(value, str):
         return _db_text(value) or ""
     if isinstance(value, dict):

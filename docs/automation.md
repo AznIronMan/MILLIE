@@ -82,6 +82,10 @@ The webmail **Rules** panel lists learned brain rules and can activate, disable,
 
 The webmail **Metrics** panel shows read-only learning health: proposed/approved/rejected suggestion counts, active and attention-needed rule counts, feedback event totals, target buckets, and top active rules. It does not run sorting, apply rules, or write to providers.
 
+Metrics also shows **Rule candidates** discovered from current classification evidence. Each candidate includes a bounded evidence preview, matching samples, and conflict counts from MILLIE's review data. **Seed proposal** stores the candidate as a proposed brain rule. **Dismiss** stores a retired rule marker so the same candidate does not keep returning. Neither action moves mail.
+
+Metrics shows **Taxonomy proposals** built from aggregate targets, sender domains, source folders, and message years. These proposals include LLM-ready aggregate context for review, but MILLIE does not send email content or metadata to an LLM from this panel. Seeding a taxonomy proposal creates a proposed custom brain rule for manual review.
+
 Reviewed unsubscribe candidates can be listed and prepared with a dry-run-first command:
 
 ```sh

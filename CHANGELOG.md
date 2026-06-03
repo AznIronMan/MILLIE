@@ -4,6 +4,10 @@ All notable changes to MILLIE will be documented in this file.
 
 ## Unreleased
 
+No unreleased changes.
+
+## [1.1.0] - 2026-06-03
+
 ### Added
 
 - Added normalized duplicate fingerprints for canonical mail messages.
@@ -38,6 +42,8 @@ All notable changes to MILLIE will be documented in this file.
 - Added a webmail sorting Workbench for grouped batch review of proposed classifications by target, sender domain, folder, and year.
 - Added active learned-rule matching to the observe sorter so approved rules can propose or suppress future internal suggestions.
 - Added a webmail learning Metrics dashboard for classification, feedback, target, and rule health.
+- Added review-only rule candidate discovery with bounded evidence previews and seed/dismiss controls.
+- Added review-only taxonomy proposals with aggregate LLM-ready context and seed/dismiss controls.
 - Added `sync_stale_after_hours` settings support for Ops stale sync thresholds.
 
 ### Changed

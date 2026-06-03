@@ -106,6 +106,12 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/learning/metrics":
             self.send_json(self.learning_metrics_payload(parsed))
             return
+        if parsed.path == "/api/rules/candidates":
+            self.send_json(self.rule_candidates_payload(parsed))
+            return
+        if parsed.path == "/api/taxonomy/proposals":
+            self.send_json(self.taxonomy_proposals_payload(parsed))
+            return
         if parsed.path == "/api/internal-apply":
             self.send_json(self.internal_apply_payload(parsed))
             return
@@ -150,6 +156,12 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/rules/action":
             self.send_json(self.rule_action_payload())
+            return
+        if parsed.path == "/api/rules/candidates/action":
+            self.send_json(self.rule_candidate_action_payload())
+            return
+        if parsed.path == "/api/taxonomy/proposals/action":
+            self.send_json(self.taxonomy_proposal_action_payload())
             return
         if parsed.path == "/api/internal-apply/action":
             self.send_json(self.internal_apply_action_payload())
@@ -461,6 +473,38 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
             metrics = store.learning_metrics(limit=limit)
         return metrics
 
+    def rule_candidates_payload(self, parsed: urllib.parse.ParseResult) -> dict[str, object]:
+        query = urllib.parse.parse_qs(parsed.query)
+        limit = parse_int_limit(query.get("limit", ["12"])[0], default=12, maximum=50)
+        sample_limit = parse_int_limit(query.get("sample_limit", ["4"])[0], default=4, maximum=12)
+        min_messages = parse_int_limit(query.get("min_messages", ["1"])[0], default=1, maximum=25)
+        with self.store() as store:
+            self.request_mailbox(store)
+            candidates = store.rule_backtest_candidates(
+                limit=limit,
+                sample_limit=sample_limit,
+                min_messages=min_messages,
+            )
+        return {
+            "candidates": candidates,
+            "limit": limit,
+            "sample_limit": sample_limit,
+            "min_messages": min_messages,
+        }
+
+    def taxonomy_proposals_payload(self, parsed: urllib.parse.ParseResult) -> dict[str, object]:
+        query = urllib.parse.parse_qs(parsed.query)
+        limit = parse_int_limit(query.get("limit", ["12"])[0], default=12, maximum=50)
+        sample_limit = parse_int_limit(query.get("sample_limit", ["4"])[0], default=4, maximum=12)
+        with self.store() as store:
+            self.request_mailbox(store)
+            proposals = store.taxonomy_proposals(limit=limit, sample_limit=sample_limit)
+        return {
+            "proposals": proposals,
+            "limit": limit,
+            "sample_limit": sample_limit,
+        }
+
     def internal_apply_payload(self, parsed: urllib.parse.ParseResult) -> dict[str, object]:
         query = urllib.parse.parse_qs(parsed.query)
         limit = parse_int_limit(query.get("limit", ["100"])[0], default=100, maximum=500)
@@ -651,6 +695,50 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
                 raise BadRequestError(str(exc)) from exc
             store.connection.commit()
         return {"ok": True, "rule": rule}
+
+    def rule_candidate_action_payload(self) -> dict[str, object]:
+        payload = self.read_json_body()
+        candidate_id = str(payload.get("candidate_id") or "")
+        action = str(payload.get("action") or "").strip().lower()
+        if not candidate_id or action not in {"seed", "dismiss"}:
+            raise BadRequestError("candidate_id and valid action are required")
+        with self.store() as store:
+            mailbox = self.request_mailbox(store)
+            identity_id = str(mailbox["owner_identity_id"]) if mailbox else None
+            try:
+                result = store.record_rule_candidate_action(
+                    candidate_id=candidate_id,
+                    action=action,
+                    identity_id=identity_id,
+                )
+            except KeyError as exc:
+                raise NotFoundError(str(exc)) from exc
+            except ValueError as exc:
+                raise BadRequestError(str(exc)) from exc
+            store.connection.commit()
+        return result
+
+    def taxonomy_proposal_action_payload(self) -> dict[str, object]:
+        payload = self.read_json_body()
+        proposal_id = str(payload.get("proposal_id") or "")
+        action = str(payload.get("action") or "").strip().lower()
+        if not proposal_id or action not in {"seed", "dismiss"}:
+            raise BadRequestError("proposal_id and valid action are required")
+        with self.store() as store:
+            mailbox = self.request_mailbox(store)
+            identity_id = str(mailbox["owner_identity_id"]) if mailbox else None
+            try:
+                result = store.record_taxonomy_proposal_action(
+                    proposal_id=proposal_id,
+                    action=action,
+                    identity_id=identity_id,
+                )
+            except KeyError as exc:
+                raise NotFoundError(str(exc)) from exc
+            except ValueError as exc:
+                raise BadRequestError(str(exc)) from exc
+            store.connection.commit()
+        return result
 
     def internal_apply_action_payload(self) -> dict[str, object]:
         payload = self.read_json_body()
@@ -2330,8 +2418,12 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     async function openLearningMetrics() {
-      const data = await api("/api/learning/metrics?limit=12");
-      renderLearningMetrics(data);
+      const [data, ruleCandidates, taxonomy] = await Promise.all([
+        api("/api/learning/metrics?limit=12"),
+        api("/api/rules/candidates?limit=12&sample_limit=4&min_messages=1"),
+        api("/api/taxonomy/proposals?limit=12&sample_limit=4"),
+      ]);
+      renderLearningMetrics(data, ruleCandidates.candidates || [], taxonomy.proposals || []);
     }
 
     async function openInternalApply() {
@@ -2833,13 +2925,15 @@ INDEX_HTML = r"""<!doctype html>
       });
     }
 
-    function renderLearningMetrics(data) {
+    function renderLearningMetrics(data, ruleCandidates = [], taxonomyProposals = []) {
       const summary = data.summary || {};
       $("reader").innerHTML = `
         <div class="review-list">
           <h1>Learning Metrics</h1>
           <div class="suggestion-meta"></div>
           <div class="metric-grid" data-list="learning-metrics"></div>
+          <div data-list="rule-candidates"></div>
+          <div data-list="taxonomy-proposals"></div>
           <div data-list="learning-targets"></div>
           <div data-list="learning-attention"></div>
           <div data-list="learning-top-rules"></div>
@@ -2852,9 +2946,161 @@ INDEX_HTML = r"""<!doctype html>
       addMetric(metrics, "Active rules", summary.active_rules || 0, `${formatCount(summary.rule_total)} total rules`);
       addMetric(metrics, "Rule attention", summary.attention_rules || 0, "negative, weak, or never matched");
       addMetric(metrics, "Feedback", summary.feedback_total || 0, "review events recorded");
+      renderRuleCandidates(ruleCandidates);
+      renderTaxonomyProposals(taxonomyProposals);
       renderLearningTargets(data.target_breakdown || []);
       renderLearningRules("learning-attention", "Rules Needing Attention", data.attention_rules || []);
       renderLearningRules("learning-top-rules", "Top Active Rules", data.top_rules || []);
+    }
+
+    async function applyRuleCandidateAction(candidateId, action) {
+      await postJson("/api/rules/candidates/action", { candidate_id: candidateId, action });
+      await openLearningMetrics();
+    }
+
+    async function applyTaxonomyProposalAction(proposalId, action) {
+      await postJson("/api/taxonomy/proposals/action", { proposal_id: proposalId, action });
+      await openLearningMetrics();
+    }
+
+    function renderRuleCandidates(candidates) {
+      const list = $("reader").querySelector('[data-list="rule-candidates"]');
+      const header = document.createElement("div");
+      header.className = "suggestion-meta";
+      header.textContent = `Rule candidates: ${candidates.length}`;
+      list.appendChild(header);
+      if (!candidates.length) {
+        list.innerHTML += `<div class="empty">No rule candidates found from current classification evidence</div>`;
+        return;
+      }
+      candidates.forEach((item) => {
+        const backtest = item.backtest || {};
+        const card = document.createElement("div");
+        card.className = "suggestion-card";
+        card.innerHTML = `
+          <div class="suggestion-top">
+            <div>
+              <div class="suggestion-title"></div>
+              <div class="suggestion-meta" data-field="candidate-meta"></div>
+            </div>
+            <span class="suggestion-badge"></span>
+          </div>
+          <div data-list="candidate-samples"></div>
+          <div class="suggestion-actions"></div>
+          <pre class="json-box"></pre>
+        `;
+        card.querySelector(".suggestion-title").textContent = item.rule_name || item.id;
+        card.querySelector('[data-field="candidate-meta"]').textContent =
+          `evidence ${formatCount(item.evidence_count)} · matches ${formatCount(backtest.matched_messages)} · existing ${formatCount(backtest.existing_suggestions)} · conflicts ${formatCount(backtest.conflicting_suggestions)}`;
+        card.querySelector(".suggestion-badge").textContent = Number(item.confidence || 0).toFixed(2);
+        const samples = card.querySelector('[data-list="candidate-samples"]');
+        (backtest.samples || item.samples || []).forEach((sample) => {
+          const row = document.createElement("div");
+          row.className = "source-row";
+          row.innerHTML = `
+            <div>
+              <div class="suggestion-title"></div>
+              <div class="suggestion-meta"></div>
+            </div>
+            <button class="review-button" type="button">Open</button>
+          `;
+          row.querySelector(".suggestion-title").textContent = sample.subject || "(no subject)";
+          row.querySelector(".suggestion-meta").textContent =
+            `${sample.from || "(unknown)"} · ${formatDate(sample.message_date)} · ${sample.folder_path || ""}`;
+          const openButton = row.querySelector("button");
+          if (sample.folder_path && sample.uid) {
+            openButton.addEventListener("click", async () => {
+              await loadFolder(sample.folder_path);
+              await openMessage(sample.uid);
+            });
+          } else {
+            openButton.disabled = true;
+          }
+          samples.appendChild(row);
+        });
+        const actions = card.querySelector(".suggestion-actions");
+        const seedButton = document.createElement("button");
+        seedButton.type = "button";
+        seedButton.textContent = item.existing_rule_status ? "Refresh proposal" : "Seed proposal";
+        seedButton.addEventListener("click", () => applyRuleCandidateAction(item.id, "seed").catch(showError));
+        actions.appendChild(seedButton);
+        const dismissButton = document.createElement("button");
+        dismissButton.type = "button";
+        dismissButton.textContent = "Dismiss";
+        dismissButton.addEventListener("click", () => applyRuleCandidateAction(item.id, "dismiss").catch(showError));
+        actions.appendChild(dismissButton);
+        if (item.existing_rule_status && item.existing_rule_status !== "active") {
+          const activateButton = document.createElement("button");
+          activateButton.type = "button";
+          activateButton.textContent = "Activate rule";
+          activateButton.addEventListener("click", async () => {
+            await applyRuleAction(item.rule_id, "activate");
+            await openLearningMetrics();
+          });
+          actions.appendChild(activateButton);
+        }
+        card.querySelector(".json-box").textContent =
+          JSON.stringify({ condition: item.condition, action: item.rule_action }, null, 2);
+        list.appendChild(card);
+      });
+    }
+
+    function renderTaxonomyProposals(proposals) {
+      const list = $("reader").querySelector('[data-list="taxonomy-proposals"]');
+      const header = document.createElement("div");
+      header.className = "suggestion-meta";
+      header.textContent = `Taxonomy proposals: ${proposals.length}`;
+      list.appendChild(header);
+      if (!proposals.length) {
+        list.innerHTML += `<div class="empty">No taxonomy proposals found from current evidence</div>`;
+        return;
+      }
+      proposals.forEach((item) => {
+        const card = document.createElement("div");
+        card.className = "suggestion-card";
+        card.innerHTML = `
+          <div class="suggestion-top">
+            <div>
+              <div class="suggestion-title"></div>
+              <div class="suggestion-meta" data-field="taxonomy-meta"></div>
+            </div>
+            <span class="suggestion-badge"></span>
+          </div>
+          <div class="suggestion-meta" data-field="taxonomy-context"></div>
+          <div class="suggestion-actions"></div>
+          <pre class="json-box"></pre>
+        `;
+        card.querySelector(".suggestion-title").textContent = item.rule_name || item.target;
+        card.querySelector('[data-field="taxonomy-meta"]').textContent =
+          `evidence ${formatCount(item.evidence_count)} · senders ${(item.sender_domains || []).join(", ") || "unknown"}`;
+        card.querySelector('[data-field="taxonomy-context"]').textContent =
+          `sources ${(item.source_folders || []).join(", ") || "unknown"} · years ${(item.message_years || []).join(", ") || "unknown"}`;
+        card.querySelector(".suggestion-badge").textContent = Number(item.confidence || 0).toFixed(2);
+        const actions = card.querySelector(".suggestion-actions");
+        const seedButton = document.createElement("button");
+        seedButton.type = "button";
+        seedButton.textContent = item.existing_rule_status ? "Refresh proposal" : "Seed proposal";
+        seedButton.addEventListener("click", () => applyTaxonomyProposalAction(item.id, "seed").catch(showError));
+        actions.appendChild(seedButton);
+        const dismissButton = document.createElement("button");
+        dismissButton.type = "button";
+        dismissButton.textContent = "Dismiss";
+        dismissButton.addEventListener("click", () => applyTaxonomyProposalAction(item.id, "dismiss").catch(showError));
+        actions.appendChild(dismissButton);
+        if (item.existing_rule_status && item.existing_rule_status !== "active") {
+          const activateButton = document.createElement("button");
+          activateButton.type = "button";
+          activateButton.textContent = "Activate rule";
+          activateButton.addEventListener("click", async () => {
+            await applyRuleAction(item.rule_id, "activate");
+            await openLearningMetrics();
+          });
+          actions.appendChild(activateButton);
+        }
+        card.querySelector(".json-box").textContent =
+          JSON.stringify({ llm_context: item.llm_context, action: item.rule_action }, null, 2);
+        list.appendChild(card);
+      });
     }
 
     function renderLearningTargets(targets) {
