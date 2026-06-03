@@ -1,6 +1,6 @@
 # MILLIE
 
-Version: 1.2.0
+Version: 1.3.0
 
 MILLIE stands for Mail Ingestion, Library, Lookup, Indexing, and Exchange.
 
@@ -8,7 +8,7 @@ This repository has been reset for a fresh start. The prior version is archived 
 
 ## Status
 
-- Current baseline: `1.2.0`
+- Current baseline: `1.3.0`
 - Reset date: 2026-05-31
 - Runtime setup: not defined yet beyond temporary tools and dormant scaffolds
 - Application structure: early dormant import, storage, identity, and mailbox service scaffolds
@@ -18,7 +18,7 @@ This repository has been reset for a fresh start. The prior version is archived 
 - Mail import status: duplicate-safe bulk PST and IMAP import tools available
 - Dedupe status: exact raw-message dedupe plus normalized duplicate fingerprints/reporting
 - Live sync status: runtime IMAP/OAuth checker with persisted per-folder sync health while MILLIE is running
-- Automation status: Postgres brain schema foundation, observe-only sorter, active learned-rule matching, rule proposal seeding, taxonomy proposals, proposal review activation, webmail review feedback, grouped sorting workbench, and learning metrics available
+- Automation status: Postgres brain schema foundation, observe-only sorter, active learned-rule matching, rule proposal seeding, taxonomy proposals, manual aggregate-only LLM taxonomy assistance, proposal review activation, webmail review feedback, grouped sorting workbench, and learning metrics available
 - Mail service status: dormant Postgres identity/mailbox facade scaffolded
 - Dev IMAP status: development listener available for local/LAN browse and mailbox-copy mutation testing
 - Dev SMTP status: optional setup-only blackhole listener; MILLIE never sends outbound SMTP
@@ -171,7 +171,7 @@ To persist suggestions without moving or deleting anything:
 .private/venv/bin/python tools/millie_sort_mail.py --observe --apply --limit 250
 ```
 
-The sorter supports `--account`, `--folder`, `--message-id`, `--since`, and `--until` filters. Active learned rules can propose or suppress future sorting suggestions in observe mode. Webmail shows pending suggestion badges, message-level suggestion panels, a Review queue, grouped Workbench, Proposal Review, Rules, and Metrics. Metrics includes rule candidates with bounded evidence previews and review-only taxonomy proposals. Proposal Review lists saved proposal rules with status counts, filters, single-row actions, bulk activate/disable/retire controls, and an observe dry-run preview. Review actions write feedback, learned rule evidence, proposed rules, and audit rows only.
+The sorter supports `--account`, `--folder`, `--message-id`, `--since`, and `--until` filters. Active learned rules can propose or suppress future sorting suggestions in observe mode. Webmail shows pending suggestion badges, message-level suggestion panels, a Review queue, grouped Workbench, Proposal Review, Rules, and Metrics. Metrics includes rule candidates with bounded evidence previews, review-only taxonomy proposals, and a manual **Ask LLM** taxonomy assistant. The assistant sends aggregate proposal data only and returns advisory JSON; it does not apply changes. Proposal Review lists saved proposal rules with status counts, filters, single-row actions, bulk activate/disable/retire controls, and an observe dry-run preview. Review actions write feedback, learned rule evidence, proposed rules, and audit rows only.
 
 Automation guardrails live in `millie.settings` as `automation_level` and `automation_provider_write_enabled`. Provider writes require both `automation_level=provider_write` and `automation_provider_write_enabled=true`. Remote provider purge execution also requires an explicit manifest id and writes provider-write audit rows; dry-runs remain available without provider-write settings.
 

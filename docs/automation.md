@@ -84,7 +84,9 @@ The webmail **Metrics** panel shows read-only learning health: proposed/approved
 
 Metrics also shows **Rule candidates** discovered from current classification evidence. Each candidate includes a bounded evidence preview, matching samples, and conflict counts from MILLIE's review data. **Seed proposal** stores the candidate as a proposed brain rule. **Dismiss** stores a retired rule marker so the same candidate does not keep returning. Neither action moves mail.
 
-Metrics shows **Taxonomy proposals** built from aggregate targets, sender domains, source folders, and message years. These proposals include LLM-ready aggregate context for review, but MILLIE does not send email content or metadata to an LLM from this panel. Seeding a taxonomy proposal creates a proposed custom brain rule for manual review.
+Metrics shows **Taxonomy proposals** built from aggregate targets, sender domains, source folders, and message years. These proposals include LLM-ready aggregate context for review. Seeding a taxonomy proposal creates a proposed custom brain rule for manual review.
+
+The **Ask LLM** control in the Metrics taxonomy section is a manual-only assistant. It sends aggregate proposal context only: target names, classification kinds/values, evidence counts, confidence, sender domains, source folders, and years. It does not send raw email bodies, full addresses, attachments, or message samples. The current implemented provider path is OpenAI via the configured provider tier in `millie.settings`; other provider settings are rejected until their APIs are implemented deliberately. LLM output is advisory JSON displayed in webmail only and does not activate rules or apply mail changes.
 
 The webmail **Proposals** panel reviews saved proposals from rule candidates and taxonomy proposals. It shows proposal status counts, filters by open/proposed/active/disabled/retired/all, supports checkbox selection, and can activate, disable, or retire one or many proposals. These actions only update `millie_brain_rules` status and write audit rows. They do not move messages, apply retention, unsubscribe, or write to source providers.
 

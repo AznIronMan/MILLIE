@@ -26,6 +26,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from millie.brain.automation import automation_level, automation_level_allows
+from millie.brain.llm_taxonomy import LLMProviderError, run_taxonomy_assistant
 from millie.settings_loader import load_local_settings
 from millie.service.auth import default_service_login
 from millie.storage.postgres_store import PostgresMailStore
@@ -165,6 +166,9 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/taxonomy/proposals/action":
             self.send_json(self.taxonomy_proposal_action_payload())
+            return
+        if parsed.path == "/api/taxonomy/assistant":
+            self.send_json(self.taxonomy_assistant_payload())
             return
         if parsed.path == "/api/proposals/action":
             self.send_json(self.proposal_action_payload())
@@ -762,6 +766,36 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
                 raise BadRequestError(str(exc)) from exc
             store.connection.commit()
         return result
+
+    def taxonomy_assistant_payload(self) -> dict[str, object]:
+        payload = self.read_json_body()
+        tier = str(payload.get("tier") or "main").strip().lower()
+        limit = parse_int_limit(str(payload.get("limit") or "12"), default=12, maximum=50)
+        if tier not in {"main", "second", "third"}:
+            raise BadRequestError("tier must be main, second, or third")
+        with self.store() as store:
+            self.request_mailbox(store)
+            proposals = store.taxonomy_proposals(limit=limit, sample_limit=5)
+        if not proposals:
+            return {
+                "ok": False,
+                "tier": tier,
+                "proposal_count": 0,
+                "assistant": {
+                    "summary": "No taxonomy proposals are available for LLM review.",
+                    "recommendations": [],
+                    "safety_notes": ["No provider call was made."],
+                },
+            }
+        try:
+            return run_taxonomy_assistant(
+                self.server.settings,
+                proposals,
+                tier=tier,
+                timeout=60,
+            )
+        except LLMProviderError as exc:
+            raise BadRequestError(str(exc)) from exc
 
     def proposal_action_payload(self) -> dict[str, object]:
         payload = self.read_json_body()
@@ -3225,6 +3259,31 @@ INDEX_HTML = r"""<!doctype html>
       await openLearningMetrics();
     }
 
+    async function runTaxonomyAssistant() {
+      const box = $("taxonomyAssistantOutput");
+      box.hidden = false;
+      box.textContent = "Requesting aggregate-only taxonomy review...";
+      const data = await postJson("/api/taxonomy/assistant", {
+        tier: $("taxonomyAssistantTier").value,
+        limit: $("taxonomyAssistantLimit").value,
+      });
+      const assistant = data.assistant || {};
+      const recommendations = assistant.recommendations || [];
+      const lines = [
+        `provider ${data.provider || "none"} · tier ${data.tier || "main"} · model ${data.model || "n/a"} · proposals ${formatCount(data.proposal_count)}`,
+        "",
+        assistant.summary || "(no summary)",
+        "",
+        ...recommendations.map((item) => {
+          const risks = (item.risks || []).length ? ` · risks ${(item.risks || []).join("; ")}` : "";
+          return `${item.recommendation}: ${item.target} -> ${item.suggested_target} · confidence ${Number(item.confidence || 0).toFixed(2)} · ${item.rationale}${risks}`;
+        }),
+        "",
+        ...((assistant.safety_notes || []).map((note) => `safety: ${note}`)),
+      ];
+      box.textContent = lines.filter((line) => line !== undefined).join("\\n");
+    }
+
     function renderRuleCandidates(candidates) {
       const list = $("reader").querySelector('[data-list="rule-candidates"]');
       const header = document.createElement("div");
@@ -3313,8 +3372,43 @@ INDEX_HTML = r"""<!doctype html>
       header.className = "suggestion-meta";
       header.textContent = `Taxonomy proposals: ${proposals.length}`;
       list.appendChild(header);
+      const controls = document.createElement("div");
+      controls.className = "proposal-controls";
+      controls.innerHTML = `
+        <label>Provider
+          <select id="taxonomyAssistantTier">
+            <option value="main">main</option>
+            <option value="second">second</option>
+            <option value="third">third</option>
+          </select>
+        </label>
+        <label>Limit
+          <select id="taxonomyAssistantLimit">
+            <option value="12">12</option>
+            <option value="25">25</option>
+            <option value="50">50</option>
+          </select>
+        </label>
+        <button id="taxonomyAssistantRun" class="review-button" type="button">Ask LLM</button>
+      `;
+      list.appendChild(controls);
+      const output = document.createElement("pre");
+      output.id = "taxonomyAssistantOutput";
+      output.className = "output-box";
+      output.hidden = true;
+      list.appendChild(output);
+      $("taxonomyAssistantRun").addEventListener("click", () => {
+        runTaxonomyAssistant().catch((error) => {
+          const box = $("taxonomyAssistantOutput");
+          box.hidden = false;
+          box.textContent = error.message || String(error);
+        });
+      });
       if (!proposals.length) {
-        list.innerHTML += `<div class="empty">No taxonomy proposals found from current evidence</div>`;
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "No taxonomy proposals found from current evidence";
+        list.appendChild(empty);
         return;
       }
       proposals.forEach((item) => {

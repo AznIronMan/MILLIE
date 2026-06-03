@@ -26,6 +26,7 @@ Starting the settings editor also migrates existing plaintext secret values to e
 - `main_api_key`, `second_api_key`, `third_api_key`: provider API keys. Leave empty for local models. Values are hidden in the editor and encrypted at rest.
 - `main_api_model`, `second_api_model`, `third_api_model`: provider model identifier, or a local LLM path when the provider is `local`.
 - `main_api_thinking`, `second_api_thinking`, `third_api_thinking`: `low`, `med`, `high`, `xhigh`, or blank for the default behavior.
+- Manual taxonomy LLM assistance currently implements the `openai` provider only. Other provider tiers can remain configured for future support, but the taxonomy assistant rejects them until their APIs are added deliberately.
 - `microsoft_oauth_tenant`: Microsoft OAuth tenant value. Use `organizations` for work or school accounts, `common` for mixed account support, or a tenant ID/domain.
 - `microsoft_oauth_client_id`: Microsoft Entra application client ID.
 - `microsoft_oauth_client_secret`: optional Microsoft Entra client secret value used for token exchange. This must be the secret **Value**, not the secret ID. Leave blank for public/native local flows. Encrypted at rest if used.

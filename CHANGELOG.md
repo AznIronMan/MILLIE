@@ -6,6 +6,18 @@ All notable changes to MILLIE will be documented in this file.
 
 No unreleased changes.
 
+## [1.3.0] - 2026-06-03
+
+### Added
+
+- Added an aggregate-only manual LLM taxonomy assistant for webmail Metrics.
+- Added OpenAI Responses API structured-output support for taxonomy advice using configured `millie.settings` provider tiers.
+- Added tests for taxonomy assistant privacy filtering, request shape, response parsing, and unsupported provider handling.
+
+### Security
+
+- Limited taxonomy assistant prompts to aggregate target names, classification fields, evidence counts, confidence, sender domains, source folders, and years; raw bodies, full addresses, attachments, and message samples are not sent.
+
 ## [1.2.0] - 2026-06-03
 
 ### Added
