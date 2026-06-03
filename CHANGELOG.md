@@ -20,6 +20,7 @@ All notable changes to MILLIE will be documented in this file.
 - Added an observe-only sorter CLI that proposes categories and unsubscribe candidates without moving, deleting, unsubscribing, or writing to source providers.
 - Added webmail review controls for MILLIE brain classification suggestions and unsubscribe candidates.
 - Added automation-level guardrail settings and helper checks, including a separate provider-write switch.
+- Added a dry-run-first approved-suggestion apply tool for internal MILLIE folder mappings.
 
 ### Changed
 

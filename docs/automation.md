@@ -68,4 +68,18 @@ The webmail view includes a **Review** queue and message-level suggestion panels
 
 Unsubscribe candidates can be approved or ignored, but approval does not execute an unsubscribe yet.
 
-The applied observe and review modes only write to the brain tables. Automatic internal moves/tags, retention execution, and unsubscribe execution are planned follow-up work.
+Approved folder/spam/trash suggestions can be applied to the internal MILLIE mailbox facade with a dry-run-first command:
+
+```sh
+.private/venv/bin/python tools/millie_apply_suggestions.py --limit 100
+```
+
+Execution requires `automation_level=auto_internal` or higher:
+
+```sh
+.private/venv/bin/python tools/millie_apply_suggestions.py --execute --limit 100
+```
+
+The apply command creates missing MILLIE folders and maps approved messages into those folders. It does not expunge existing MILLIE folder mappings and does not write to source providers.
+
+Retention execution and unsubscribe execution are planned follow-up work.

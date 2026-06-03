@@ -175,7 +175,15 @@ The sorter supports `--account`, `--folder`, `--message-id`, `--since`, and `--u
 
 Automation guardrails live in `millie.settings` as `automation_level` and `automation_provider_write_enabled`. Provider writes require both `automation_level=provider_write` and `automation_provider_write_enabled=true`; manifest-driven purge tools remain separate.
 
-Internal move/tag automation, retention execution, and unsubscribe execution are planned follow-up work. Provider-side cleanup remains separate and must use the manifest-driven purge flow.
+Approved suggestions can be applied inside MILLIE with a dry-run-first command:
+
+```sh
+.private/venv/bin/python tools/millie_apply_suggestions.py --limit 100
+```
+
+Execution requires `automation_level=auto_internal` or higher. It creates missing MILLIE folders and maps approved messages into those folders without expunging existing mappings or writing to source providers.
+
+Retention execution and unsubscribe execution are planned follow-up work. Provider-side cleanup remains separate and must use the manifest-driven purge flow.
 
 ## Dev IMAP Listener
 
