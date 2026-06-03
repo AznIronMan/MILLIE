@@ -70,6 +70,8 @@ Unsubscribe candidates can be approved or ignored, but approval does not execute
 
 Messages opened from hold folders with matching retention policies show a read-only retention panel in webmail. The panel shows the policy status, hold duration, target action, review requirement, copied date, and eligibility date. It does not hide, expire, delete, or otherwise change messages.
 
+Retention-eligible hold-folder messages also appear in the webmail **Review** queue. **Acknowledge** records that the item was reviewed. **Snooze 7d** records a short deferral before it appears in the queue again. Both actions write `retention_override` feedback and `retention_evaluate` audit rows only; they do not perform the policy action.
+
 Approved folder/spam/trash suggestions can be applied to the internal MILLIE mailbox facade with a dry-run-first command:
 
 ```sh

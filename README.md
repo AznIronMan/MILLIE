@@ -229,7 +229,7 @@ It opens the current `geon@millie.cnbsk.cloud` mailbox through the Postgres mail
 
 The message list loads only the selected folder and supports `25`, `50`, `100`, `250`, `500`, or `All` messages at a time. The selected size is remembered in browser local storage, folder counts use cheap count queries, and the active list can be refreshed from the webmail toolbar.
 
-The webmail view can review MILLIE brain suggestions. Approve/reject/always/never controls persist review decisions and learned rule evidence, but they do not move mail or write back to source providers. Messages in hold folders show matching retention policy timing and eligibility in the reader.
+The webmail view can review MILLIE brain suggestions and retention-eligible hold messages. Approve/reject/always/never controls persist classification decisions and learned rule evidence. Acknowledge/snooze controls persist retention review decisions. These controls do not move mail, expire mail, delete mail, or write back to source providers. Messages in hold folders show matching retention policy timing and eligibility in the reader.
 
 To have webmail check live IMAP/OAuth sources while the webmail process is running, add `--live-sync`. This does not install a macOS service:
 

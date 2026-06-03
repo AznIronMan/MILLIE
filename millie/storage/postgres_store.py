@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email import policy
 from email.message import EmailMessage
 from email.parser import BytesParser
@@ -36,6 +36,9 @@ from millie.service.auth import (
 from millie.service.mailbox import default_mailbox_folders
 
 from .schema import load_schema
+
+
+RETENTION_REVIEW_DEFER_DURATION = timedelta(days=7)
 
 
 class PostgresMailStore:
@@ -1223,6 +1226,105 @@ class PostgresMailStore:
             for row in rows
         ]
 
+    def list_retention_review_items(self, *, mailbox_id: str, limit: int = 50) -> list[dict[str, object]]:
+        rows = self.connection.execute(
+            """
+            WITH from_addresses AS (
+                SELECT
+                    message_id,
+                    string_agg(
+                        CASE
+                            WHEN coalesce(display_name, '') <> '' AND coalesce(email_address, '') <> ''
+                                THEN display_name || ' <' || email_address || '>'
+                            WHEN coalesce(email_address, '') <> '' THEN email_address
+                            ELSE coalesce(raw_value, '')
+                        END,
+                        ', ' ORDER BY ordinal
+                    ) AS from_text
+                FROM mail_message_addresses
+                WHERE role = 'from'
+                GROUP BY message_id
+            )
+            SELECT
+                p.id,
+                p.policy_name,
+                p.status,
+                p.target_value,
+                p.hold_duration,
+                p.action,
+                p.requires_review,
+                mm.id,
+                mm.message_id,
+                mf.folder_path,
+                mm.imap_uid,
+                mm.copied_at,
+                mm.copied_at + p.hold_duration AS eligible_at,
+                coalesce(m.subject, '(no subject)') AS subject,
+                coalesce(m.sent_at, m.received_at, mm.internal_date) AS message_date,
+                coalesce(fa.from_text, '') AS from_text,
+                latest_feedback.created_at AS latest_feedback_at,
+                latest_feedback.new_value_json AS latest_feedback_json
+            FROM millie_retention_policies p
+            JOIN millie_mailbox_folders mf
+              ON p.target_kind = 'folder'
+             AND p.target_value = mf.folder_path
+            JOIN millie_mailbox_messages mm
+              ON mm.folder_id = mf.id
+             AND mm.mailbox_id = mf.mailbox_id
+             AND mm.is_expunged = FALSE
+            JOIN mail_messages m ON m.id = mm.message_id
+            LEFT JOIN from_addresses fa ON fa.message_id = m.id
+            LEFT JOIN LATERAL (
+                SELECT e.created_at, e.new_value_json
+                FROM millie_user_feedback_events e
+                WHERE e.message_id = m.id
+                  AND e.feedback_type = 'retention_override'
+                  AND e.metadata_json->>'retention_policy_id' = p.id
+                  AND e.metadata_json->>'mailbox_message_id' = mm.id
+                ORDER BY e.created_at DESC
+                LIMIT 1
+            ) latest_feedback ON TRUE
+            WHERE mf.mailbox_id = %s
+              AND p.status IN ('proposed', 'active')
+              AND p.hold_duration IS NOT NULL
+              AND mm.copied_at + p.hold_duration <= now()
+              AND (
+                latest_feedback.created_at IS NULL
+                OR (
+                    latest_feedback.new_value_json->>'action' = 'defer'
+                    AND (latest_feedback.new_value_json->>'review_after')::timestamptz <= now()
+                )
+              )
+            ORDER BY mm.copied_at + p.hold_duration, mf.folder_path, mm.imap_uid
+            LIMIT %s
+            """,
+            (mailbox_id, limit),
+        ).fetchall()
+        return [
+            {
+                "policy_id": row[0],
+                "policy_name": row[1],
+                "policy_status": row[2],
+                "target_value": row[3],
+                "hold_duration_text": human_duration(row[4]),
+                "hold_duration_seconds": int(row[4].total_seconds()) if row[4] is not None else None,
+                "policy_action": row[5],
+                "requires_review": bool(row[6]),
+                "mailbox_message_id": row[7],
+                "message_id": row[8],
+                "folder_path": row[9],
+                "uid": int(row[10]),
+                "copied_at": row[11],
+                "eligible_at": row[12],
+                "subject": row[13],
+                "message_date": row[14],
+                "from": row[15],
+                "latest_feedback_at": row[16],
+                "latest_feedback": row[17] or {},
+            }
+            for row in rows
+        ]
+
     def record_classification_feedback(
         self,
         *,
@@ -1488,6 +1590,155 @@ class PostgresMailStore:
             "action": action,
         }
 
+    def record_retention_feedback(
+        self,
+        *,
+        mailbox_id: str,
+        policy_id: str,
+        mailbox_message_id: str,
+        action: str,
+        identity_id: str | None = None,
+        feedback_source: str = "webmail",
+    ) -> dict[str, object]:
+        if action not in {"acknowledge", "defer"}:
+            raise ValueError(f"Unsupported retention action: {action}")
+        row = self.connection.execute(
+            """
+            SELECT
+                p.id,
+                p.policy_name,
+                p.status,
+                p.target_kind,
+                p.target_value,
+                p.hold_duration,
+                p.action,
+                p.requires_review,
+                mm.id,
+                mm.message_id,
+                mf.folder_path,
+                mm.imap_uid,
+                mm.copied_at,
+                coalesce(m.subject, '(no subject)') AS subject
+            FROM millie_retention_policies p
+            JOIN millie_mailbox_messages mm ON mm.id = %s
+            JOIN millie_mailbox_folders mf ON mf.id = mm.folder_id
+            JOIN mail_messages m ON m.id = mm.message_id
+            WHERE p.id = %s
+              AND mm.mailbox_id = %s
+              AND mm.is_expunged = FALSE
+            LIMIT 1
+            """,
+            (mailbox_message_id, policy_id, mailbox_id),
+        ).fetchone()
+        if not row:
+            raise KeyError("Retention review item not found")
+        policy = RetentionPolicy(
+            id=str(row[0]),
+            name=str(row[1]),
+            status=str(row[2]),
+            target_kind=str(row[3]),
+            target_value=str(row[4]),
+            hold_duration=row[5],
+            action=str(row[6]),
+            requires_review=bool(row[7]),
+        )
+        message = HeldMessage(
+            mailbox_message_id=str(row[8]),
+            message_id=str(row[9]),
+            folder_path=str(row[10]),
+            imap_uid=int(row[11]),
+            copied_at=row[12],
+            subject=str(row[13]),
+        )
+        status = retention_status(policy, message)
+        if status is None:
+            raise KeyError("Retention policy does not match this message")
+        if not status.is_eligible:
+            raise ValueError("Retention item is not eligible for review yet")
+
+        review_after = (
+            datetime.now(timezone.utc).replace(microsecond=0) + RETENTION_REVIEW_DEFER_DURATION
+            if action == "defer"
+            else None
+        )
+        previous = self.connection.execute(
+            """
+            SELECT id, new_value_json, created_at
+            FROM millie_user_feedback_events
+            WHERE message_id = %s
+              AND feedback_type = 'retention_override'
+              AND metadata_json->>'retention_policy_id' = %s
+              AND metadata_json->>'mailbox_message_id' = %s
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (message.message_id, policy.id, message.mailbox_message_id),
+        ).fetchone()
+        new_value = {
+            "action": action,
+            "policy_action": policy.action,
+            "policy_status": policy.status,
+            "eligible_at": status.eligible_at.isoformat() if status.eligible_at else None,
+            "is_eligible": status.is_eligible,
+        }
+        if review_after is not None:
+            new_value["review_after"] = review_after.isoformat()
+        metadata = {
+            "retention_policy_id": policy.id,
+            "mailbox_message_id": message.mailbox_message_id,
+            "folder_path": message.folder_path,
+            "imap_uid": message.imap_uid,
+        }
+        self.connection.execute(
+            """
+            INSERT INTO millie_user_feedback_events (
+                id, identity_id, message_id, feedback_type, feedback_source,
+                previous_value_json, new_value_json, metadata_json
+            )
+            VALUES (%s, %s, %s, 'retention_override', %s, %s, %s, %s)
+            """,
+            (
+                str(uuid.uuid4()),
+                identity_id,
+                message.message_id,
+                feedback_source,
+                Jsonb(
+                    {
+                        "latest_feedback_id": previous[0] if previous else None,
+                        "latest_feedback": previous[1] if previous else {},
+                        "latest_feedback_at": previous[2].isoformat() if previous else None,
+                    }
+                ),
+                Jsonb(new_value),
+                Jsonb(metadata),
+            ),
+        )
+        self._insert_automation_audit(
+            action_type="retention_evaluate",
+            identity_id=identity_id,
+            message_id=message.message_id,
+            retention_policy_id=policy.id,
+            before_json={
+                "latest_feedback_id": previous[0] if previous else None,
+                "latest_feedback": previous[1] if previous else {},
+            },
+            after_json={
+                **new_value,
+                **metadata,
+                "policy_name": policy.name,
+            },
+        )
+        return {
+            "policy_id": policy.id,
+            "policy_name": policy.name,
+            "mailbox_message_id": message.mailbox_message_id,
+            "message_id": message.message_id,
+            "folder_path": message.folder_path,
+            "uid": message.imap_uid,
+            "action": action,
+            "review_after": review_after,
+        }
+
     def _insert_automation_audit(
         self,
         *,
@@ -1496,17 +1747,19 @@ class PostgresMailStore:
         message_id: str | None = None,
         classification_id: str | None = None,
         rule_id: str | None = None,
+        retention_policy_id: str | None = None,
         unsubscribe_candidate_id: str | None = None,
+        before_json: dict[str, object] | None = None,
         after_json: dict[str, object] | None = None,
     ) -> None:
         self.connection.execute(
             """
             INSERT INTO millie_automation_audit_log (
                 id, identity_id, message_id, classification_id, rule_id,
-                unsubscribe_candidate_id, action_type, automation_level,
-                status, after_json
+                retention_policy_id, unsubscribe_candidate_id, action_type,
+                automation_level, status, before_json, after_json
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, 'review', 'recorded', %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'review', 'recorded', %s, %s)
             """,
             (
                 str(uuid.uuid4()),
@@ -1514,8 +1767,10 @@ class PostgresMailStore:
                 message_id,
                 classification_id,
                 rule_id,
+                retention_policy_id,
                 unsubscribe_candidate_id,
                 action_type,
+                Jsonb(before_json or {}),
                 Jsonb(after_json or {}),
             ),
         )

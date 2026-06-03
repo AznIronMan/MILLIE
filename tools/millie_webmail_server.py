@@ -88,6 +88,9 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/unsubscribe/action":
             self.send_json(self.unsubscribe_action_payload())
             return
+        if parsed.path == "/api/retention/action":
+            self.send_json(self.retention_action_payload())
+            return
         self.send_error(HTTPStatus.METHOD_NOT_ALLOWED, "Method not allowed")
 
     def log_message(self, format: str, *args: object) -> None:
@@ -166,8 +169,15 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
         except ValueError:
             limit = 50
         with self.store() as store:
+            mailbox = store.mailbox_by_address(self.server.mailbox_address)
+            if mailbox is None:
+                raise NotFoundError(f"Mailbox not found: {self.server.mailbox_address}")
             suggestions = store.list_review_suggestions(limit=limit)
-        return {"suggestions": suggestions, "limit": limit}
+            retention = store.list_retention_review_items(
+                mailbox_id=str(mailbox["id"]),
+                limit=limit,
+            )
+        return {"suggestions": suggestions, "retention": retention, "limit": limit}
 
     def classification_action_payload(self) -> dict[str, object]:
         payload = self.read_json_body()
@@ -208,6 +218,33 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
                 raise NotFoundError(str(exc)) from exc
             store.connection.commit()
         return {"ok": True, "unsubscribe_candidate": result}
+
+    def retention_action_payload(self) -> dict[str, object]:
+        payload = self.read_json_body()
+        policy_id = str(payload.get("policy_id") or "")
+        mailbox_message_id = str(payload.get("mailbox_message_id") or "")
+        action = str(payload.get("action") or "")
+        if not policy_id or not mailbox_message_id or action not in {"acknowledge", "defer"}:
+            raise BadRequestError("policy_id, mailbox_message_id, and valid action are required")
+        with self.store() as store:
+            mailbox = store.mailbox_by_address(self.server.mailbox_address)
+            if mailbox is None:
+                raise NotFoundError(f"Mailbox not found: {self.server.mailbox_address}")
+            identity_id = str(mailbox["owner_identity_id"])
+            try:
+                result = store.record_retention_feedback(
+                    mailbox_id=str(mailbox["id"]),
+                    policy_id=policy_id,
+                    mailbox_message_id=mailbox_message_id,
+                    action=action,
+                    identity_id=identity_id,
+                )
+            except KeyError as exc:
+                raise NotFoundError(str(exc)) from exc
+            except ValueError as exc:
+                raise BadRequestError(str(exc)) from exc
+            store.connection.commit()
+        return {"ok": True, "retention": result}
 
     def store(self) -> PostgresMailStore:
         return PostgresMailStore.connect(self.server.settings)
@@ -1381,25 +1418,32 @@ INDEX_HTML = r"""<!doctype html>
       if (state.selectedUid) await openMessage(state.selectedUid);
     }
 
-    async function openReview() {
-      const data = await api("/api/review?limit=50");
-      renderReviewList(data.suggestions || []);
+    async function applyRetentionAction(policyId, mailboxMessageId, action) {
+      await postJson("/api/retention/action", {
+        policy_id: policyId,
+        mailbox_message_id: mailboxMessageId,
+        action,
+      });
     }
 
-    function renderReviewList(suggestions) {
+    async function openReview() {
+      const data = await api("/api/review?limit=50");
+      renderReviewList(data.suggestions || [], data.retention || []);
+    }
+
+    function renderReviewList(suggestions, retentionItems) {
       $("reader").innerHTML = `
         <div class="review-list">
-          <h1>Review Suggestions</h1>
+          <h1>Review Queue</h1>
           <div class="suggestion-meta"></div>
-          <div data-list="review"></div>
+          <div data-list="review-classifications"></div>
+          <div data-list="review-retention"></div>
         </div>
       `;
-      $("reader").querySelector(".suggestion-meta").textContent = `${suggestions.length} proposed classifications`;
-      const list = $("reader").querySelector('[data-list="review"]');
-      if (!suggestions.length) {
-        list.innerHTML = `<div class="empty">No suggestions waiting for review</div>`;
-        return;
-      }
+      $("reader").querySelector(".suggestion-meta").textContent =
+        `${suggestions.length} proposed classifications · ${retentionItems.length} retention items`;
+      const list = $("reader").querySelector('[data-list="review-classifications"]');
+      const retentionList = $("reader").querySelector('[data-list="review-retention"]');
       suggestions.forEach((item) => {
         const card = document.createElement("div");
         card.className = "suggestion-card";
@@ -1447,6 +1491,56 @@ INDEX_HTML = r"""<!doctype html>
         }
         list.appendChild(card);
       });
+      retentionItems.forEach((item) => {
+        const card = document.createElement("div");
+        card.className = "suggestion-card";
+        const review = item.requires_review ? "review required" : "review optional";
+        card.innerHTML = `
+          <div class="suggestion-top">
+            <div>
+              <div class="suggestion-title"></div>
+              <div class="suggestion-meta"></div>
+            </div>
+            <span class="suggestion-badge"></span>
+          </div>
+          <div class="suggestion-meta" data-field="retention"></div>
+          <div class="suggestion-actions"></div>
+        `;
+        card.querySelector(".suggestion-title").textContent = `${item.subject} · ${item.policy_name}`;
+        card.querySelector(".suggestion-meta").textContent =
+          `${item.from || "(unknown)"} · ${formatDate(item.message_date)}`;
+        card.querySelector(".suggestion-badge").textContent = "retention";
+        card.querySelector('[data-field="retention"]').textContent =
+          `${item.folder_path} · ${item.hold_duration_text} hold · ${item.policy_action} · ${review} · eligible ${formatDate(item.eligible_at)}`;
+        const actions = card.querySelector(".suggestion-actions");
+        [
+          ["acknowledge", "Acknowledge"],
+          ["defer", "Snooze 7d"],
+        ].forEach(([action, label]) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.textContent = label;
+          button.addEventListener("click", async () => {
+            await applyRetentionAction(item.policy_id, item.mailbox_message_id, action);
+            await openReview();
+          });
+          actions.appendChild(button);
+        });
+        if (item.folder_path && item.uid) {
+          const openButton = document.createElement("button");
+          openButton.type = "button";
+          openButton.textContent = "Open";
+          openButton.addEventListener("click", async () => {
+            await loadFolder(item.folder_path);
+            await openMessage(item.uid);
+          });
+          actions.appendChild(openButton);
+        }
+        retentionList.appendChild(card);
+      });
+      if (!suggestions.length && !retentionItems.length) {
+        list.innerHTML = `<div class="empty">No items waiting for review</div>`;
+      }
     }
 
     function showError(error) {
