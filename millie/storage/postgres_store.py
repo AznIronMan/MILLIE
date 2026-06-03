@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 from email import policy
@@ -49,6 +51,8 @@ RETENTION_POLICY_ACTIONS = {
 RETENTION_POLICY_WEB_ACTIONS = {"activate", "disable", "update"}
 PROVIDER_WRITE_AUDIT_ACTIONS = {"provider_purge_manifest", "block_provider_write"}
 PROVIDER_WRITE_AUDIT_STATUSES = {"recorded", "blocked", "applied", "failed"}
+BRAIN_RULE_STATUSES = {"proposed", "active", "disabled", "superseded", "retired"}
+BRAIN_RULE_ACTIONS = {"activate", "disable", "retire", "update"}
 
 
 class PostgresMailStore:
@@ -739,6 +743,113 @@ class PostgresMailStore:
                     return identity_id
         return None
 
+    def create_web_session(
+        self,
+        *,
+        login: str,
+        password: str,
+        remote_address: str,
+        user_agent: str,
+        duration: timedelta = timedelta(hours=12),
+    ) -> dict[str, object] | None:
+        identity_id = self.authenticate(login, password)
+        if not identity_id:
+            return None
+        mailbox = self.mailbox_by_identity(identity_id)
+        if mailbox is None:
+            return None
+        token = secrets.token_urlsafe(32)
+        expires_at = datetime.now(timezone.utc).replace(microsecond=0) + duration
+        session_id = str(uuid.uuid4())
+        self.connection.execute(
+            """
+            INSERT INTO millie_auth_sessions (
+                id, identity_id, session_type, token_hash, client_name,
+                remote_address, user_agent, expires_at, last_seen_at
+            )
+            VALUES (%s, %s, 'web', %s, 'millie_webmail', %s, %s, %s, now())
+            """,
+            (
+                session_id,
+                identity_id,
+                web_session_token_hash(token),
+                remote_address,
+                user_agent[:500],
+                expires_at,
+            ),
+        )
+        return {
+            "token": token,
+            "session_id": session_id,
+            "expires_at": expires_at,
+            "identity_id": identity_id,
+            "mailbox": mailbox,
+        }
+
+    def web_session(self, token: str) -> dict[str, object] | None:
+        if not token:
+            return None
+        row = self.connection.execute(
+            """
+            SELECT
+                s.id,
+                s.identity_id,
+                s.expires_at,
+                i.login_address,
+                i.display_name,
+                mb.id,
+                mb.mailbox_address,
+                mb.display_name
+            FROM millie_auth_sessions s
+            JOIN millie_identities i ON i.id = s.identity_id
+            LEFT JOIN millie_mailboxes mb
+              ON mb.owner_identity_id = i.id
+             AND mb.is_primary = TRUE
+            WHERE s.session_type = 'web'
+              AND s.token_hash = %s
+              AND s.revoked_at IS NULL
+              AND s.expires_at > now()
+              AND i.status = 'active'
+            LIMIT 1
+            """,
+            (web_session_token_hash(token),),
+        ).fetchone()
+        if not row:
+            return None
+        self.connection.execute(
+            "UPDATE millie_auth_sessions SET last_seen_at = now() WHERE id = %s",
+            (row[0],),
+        )
+        return {
+            "session_id": row[0],
+            "identity_id": row[1],
+            "expires_at": row[2],
+            "login_address": row[3],
+            "display_name": row[4],
+            "mailbox": {
+                "id": row[5],
+                "mailbox_address": row[6],
+                "display_name": row[7],
+                "owner_identity_id": row[1],
+            }
+            if row[5]
+            else None,
+        }
+
+    def revoke_web_session(self, token: str) -> None:
+        if not token:
+            return
+        self.connection.execute(
+            """
+            UPDATE millie_auth_sessions
+            SET revoked_at = now()
+            WHERE session_type = 'web'
+              AND token_hash = %s
+              AND revoked_at IS NULL
+            """,
+            (web_session_token_hash(token),),
+        )
+
     def primary_mailbox_for_identity(self, identity_id: str) -> str | None:
         row = self.connection.execute(
             """
@@ -751,6 +862,26 @@ class PostgresMailStore:
             (identity_id,),
         ).fetchone()
         return row[0] if row else None
+
+    def mailbox_by_identity(self, identity_id: str) -> dict[str, object] | None:
+        row = self.connection.execute(
+            """
+            SELECT id, mailbox_address, display_name, owner_identity_id
+            FROM millie_mailboxes
+            WHERE owner_identity_id = %s AND is_primary = TRUE
+            ORDER BY created_at
+            LIMIT 1
+            """,
+            (identity_id,),
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0],
+            "mailbox_address": row[1],
+            "display_name": row[2],
+            "owner_identity_id": row[3],
+        }
 
     def list_folders(self, mailbox_id: str) -> list[dict[str, object]]:
         rows = self.connection.execute(
@@ -904,6 +1035,162 @@ class PostgresMailStore:
             }
             for row in rows
         ]
+
+    def search_webmail_messages(
+        self,
+        *,
+        mailbox_id: str,
+        query: str = "",
+        folder_path: str = "",
+        source_type: str = "",
+        source: str = "",
+        sender: str = "",
+        since: str = "",
+        until: str = "",
+        has_attachments: bool | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, object]]:
+        where = [
+            "mm.mailbox_id = %s",
+            "mm.is_expunged = FALSE",
+            "mm.metadata_json->>'retention_hidden_from_default_views' IS DISTINCT FROM 'true'",
+        ]
+        params: list[object] = [mailbox_id]
+        rank_sql = "0::real"
+        if query.strip():
+            where.append(
+                "to_tsvector('simple', coalesce(sd.search_text, '')) @@ websearch_to_tsquery('simple', %s)"
+            )
+            params.append(query.strip())
+            rank_sql = "ts_rank(to_tsvector('simple', coalesce(sd.search_text, '')), websearch_to_tsquery('simple', %s))"
+        if folder_path:
+            where.append("mf.folder_path = %s")
+            params.append(folder_path)
+        if source_type:
+            where.append("ms.source_type = %s")
+            params.append(source_type)
+        if source:
+            where.append("(ms.source_uri ILIKE %s OR ms.display_name ILIKE %s)")
+            params.extend([f"%{source}%", f"%{source}%"])
+        if sender:
+            where.append(
+                """
+                EXISTS (
+                    SELECT 1
+                    FROM mail_message_addresses a
+                    WHERE a.message_id = m.id
+                      AND a.role = 'from'
+                      AND (
+                        a.email_address ILIKE %s
+                        OR a.display_name ILIKE %s
+                        OR a.raw_value ILIKE %s
+                      )
+                )
+                """
+            )
+            like_sender = f"%{sender}%"
+            params.extend([like_sender, like_sender, like_sender])
+        if since:
+            where.append("coalesce(m.sent_at, m.received_at, mm.internal_date) >= %s::date")
+            params.append(since)
+        if until:
+            where.append("coalesce(m.sent_at, m.received_at, mm.internal_date) < (%s::date + interval '1 day')")
+            params.append(until)
+        if has_attachments is not None:
+            where.append("m.has_attachments = %s")
+            params.append(has_attachments)
+
+        rank_params: list[object] = [query.strip()] if query.strip() else []
+        rows = self.connection.execute(
+            f"""
+            SELECT DISTINCT ON (m.id, mf.folder_path)
+                {rank_sql} AS rank,
+                mf.folder_path,
+                mm.imap_uid,
+                mm.flags,
+                mm.internal_date,
+                m.id,
+                m.internet_message_id,
+                m.subject,
+                coalesce(m.sent_at, m.received_at, mm.internal_date) AS message_date,
+                m.body_preview,
+                m.has_attachments,
+                m.raw_mime_size_bytes,
+                ms.source_type,
+                ms.source_uri,
+                from_addr.value AS from_text,
+                to_addr.value AS to_text,
+                review_counts.proposed_count
+            FROM millie_mailbox_messages mm
+            JOIN millie_mailbox_folders mf ON mf.id = mm.folder_id
+            JOIN mail_messages m ON m.id = mm.message_id
+            JOIN mail_sources ms ON ms.id = m.source_id
+            LEFT JOIN mail_search_documents sd ON sd.message_id = m.id
+            LEFT JOIN LATERAL (
+                SELECT string_agg(
+                    CASE
+                        WHEN coalesce(display_name, '') <> '' AND coalesce(email_address, '') <> ''
+                            THEN display_name || ' <' || email_address || '>'
+                        WHEN coalesce(email_address, '') <> '' THEN email_address
+                        ELSE coalesce(raw_value, '')
+                    END,
+                    ', ' ORDER BY ordinal
+                ) AS value
+                FROM mail_message_addresses a
+                WHERE a.message_id = m.id AND a.role = 'from'
+            ) from_addr ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT string_agg(
+                    CASE
+                        WHEN coalesce(display_name, '') <> '' AND coalesce(email_address, '') <> ''
+                            THEN display_name || ' <' || email_address || '>'
+                        WHEN coalesce(email_address, '') <> '' THEN email_address
+                        ELSE coalesce(raw_value, '')
+                    END,
+                    ', ' ORDER BY ordinal
+                ) AS value
+                FROM mail_message_addresses a
+                WHERE a.message_id = m.id AND a.role = 'to'
+            ) to_addr ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT count(*) AS proposed_count
+                FROM millie_message_classifications c
+                WHERE c.message_id = m.id
+                  AND c.status = 'proposed'
+            ) review_counts ON TRUE
+            WHERE {" AND ".join(where)}
+            ORDER BY m.id, mf.folder_path, rank DESC, message_date DESC NULLS LAST, mm.imap_uid DESC
+            LIMIT %s
+            """,
+            tuple([*rank_params, *params, max(1, min(limit, 500))]),
+        ).fetchall()
+        results = [
+            {
+                "rank": float(row[0] or 0),
+                "folder_path": row[1],
+                "uid": int(row[2]),
+                "flags": list(row[3] or []),
+                "internal_date": row[4],
+                "message_id": row[5],
+                "internet_message_id": row[6],
+                "subject": row[7],
+                "message_date": row[8],
+                "body_preview": row[9],
+                "has_attachments": bool(row[10]),
+                "size": int(row[11] or 0),
+                "source_type": row[12],
+                "source": row[13],
+                "from": row[14] or "",
+                "to": row[15] or "",
+                "proposed_classifications": int(row[16] or 0),
+            }
+            for row in rows
+        ]
+        return sorted(
+            results,
+            key=lambda item: (item["rank"], item["message_date"] or datetime.min.replace(tzinfo=timezone.utc)),
+            reverse=True,
+        )
 
     def count_webmail_messages(self, *, mailbox_id: str, folder_path: str) -> int:
         row = self.connection.execute(
@@ -1760,6 +2047,206 @@ class PostgresMailStore:
             ),
         )
         return rule_id
+
+    def list_brain_rules(
+        self,
+        *,
+        statuses: list[str] | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, object]]:
+        status_filter = ""
+        params: list[object] = []
+        if statuses:
+            normalized = [
+                str(status).strip().lower()
+                for status in statuses
+                if str(status).strip().lower() in BRAIN_RULE_STATUSES
+            ]
+            if not normalized:
+                return []
+            status_filter = f"WHERE status IN ({placeholders(normalized)})"
+            params.extend(normalized)
+        rows = self.connection.execute(
+            f"""
+            SELECT
+                id, rule_name, rule_type, rule_source, status, automation_level,
+                priority, condition_json, action_json, confidence, evidence_count,
+                positive_feedback_count, negative_feedback_count,
+                last_matched_at, created_at, updated_at, metadata_json
+            FROM millie_brain_rules
+            {status_filter}
+            ORDER BY
+                CASE status
+                    WHEN 'active' THEN 0
+                    WHEN 'proposed' THEN 1
+                    WHEN 'disabled' THEN 2
+                    ELSE 3
+                END,
+                priority DESC,
+                evidence_count DESC,
+                updated_at DESC
+            LIMIT %s
+            """,
+            tuple([*params, max(1, min(limit, 500))]),
+        ).fetchall()
+        return [self._brain_rule_dict(row) for row in rows]
+
+    def record_brain_rule_action(
+        self,
+        *,
+        rule_id: str,
+        action: str,
+        updates: dict[str, object] | None = None,
+        identity_id: str | None = None,
+    ) -> dict[str, object]:
+        action = action.strip().lower()
+        if action not in BRAIN_RULE_ACTIONS:
+            raise ValueError(f"Unsupported rule action: {action}")
+        before = self.load_brain_rule(rule_id)
+        if not before:
+            raise KeyError(f"Brain rule not found: {rule_id}")
+        values = dict(updates or {})
+        changes: dict[str, object] = {}
+        if action == "activate":
+            changes["status"] = "active"
+        elif action == "disable":
+            changes["status"] = "disabled"
+        elif action == "retire":
+            changes["status"] = "retired"
+        elif action == "update":
+            if "rule_name" in values:
+                name = str(values["rule_name"] or "").strip()
+                if not name:
+                    raise ValueError("rule_name cannot be blank")
+                changes["rule_name"] = name
+            if "status" in values:
+                status = str(values["status"] or "").strip().lower()
+                if status not in BRAIN_RULE_STATUSES:
+                    raise ValueError(f"Unsupported rule status: {status}")
+                changes["status"] = status
+            if "priority" in values:
+                changes["priority"] = int(values["priority"])
+        if not changes:
+            return before
+        assignments = [f"{column} = %s" for column in changes]
+        self.connection.execute(
+            f"""
+            UPDATE millie_brain_rules
+            SET {", ".join(assignments)},
+                updated_at = now(),
+                metadata_json = metadata_json || %s
+            WHERE id = %s
+            """,
+            tuple([*changes.values(), Jsonb({"managed_by": "millie_webmail"}), rule_id]),
+        )
+        after = self.load_brain_rule(rule_id)
+        self._insert_automation_audit(
+            action_type="custom",
+            identity_id=identity_id,
+            rule_id=rule_id,
+            before_json=before,
+            after_json={
+                "rule_change": action,
+                "rule_id": rule_id,
+                "rule": after,
+            },
+        )
+        return after
+
+    def load_brain_rule(self, rule_id: str) -> dict[str, object]:
+        row = self.connection.execute(
+            """
+            SELECT
+                id, rule_name, rule_type, rule_source, status, automation_level,
+                priority, condition_json, action_json, confidence, evidence_count,
+                positive_feedback_count, negative_feedback_count,
+                last_matched_at, created_at, updated_at, metadata_json
+            FROM millie_brain_rules
+            WHERE id = %s
+            """,
+            (rule_id,),
+        ).fetchone()
+        return self._brain_rule_dict(row) if row else {}
+
+    def _brain_rule_dict(self, row: object) -> dict[str, object]:
+        return {
+            "id": row[0],
+            "rule_name": row[1],
+            "rule_type": row[2],
+            "rule_source": row[3],
+            "status": row[4],
+            "automation_level": row[5],
+            "priority": int(row[6] or 0),
+            "condition": row[7] or {},
+            "rule_action": row[8] or {},
+            "confidence": float(row[9] or 0),
+            "evidence_count": int(row[10] or 0),
+            "positive_feedback_count": int(row[11] or 0),
+            "negative_feedback_count": int(row[12] or 0),
+            "last_matched_at": row[13],
+            "created_at": row[14],
+            "updated_at": row[15],
+            "metadata": row[16] or {},
+        }
+
+    def internal_apply_status(self, *, mailbox_id: str, limit: int = 100) -> dict[str, object]:
+        approved = self.connection.execute(
+            """
+            SELECT count(*)
+            FROM millie_message_classifications c
+            WHERE c.status = 'approved'
+              AND c.target_folder_path IS NOT NULL
+              AND NOT EXISTS (
+                SELECT 1
+                FROM millie_automation_audit_log applied
+                WHERE applied.classification_id = c.id
+                  AND applied.action_type = 'apply_internal_tag'
+                  AND applied.status = 'applied'
+              )
+            """
+        ).fetchone()
+        retention = self.connection.execute(
+            """
+            SELECT count(*)
+            FROM millie_retention_policies p
+            JOIN millie_mailbox_folders mf
+              ON p.target_kind = 'folder'
+             AND p.target_value = mf.folder_path
+            JOIN millie_mailbox_messages mm ON mm.folder_id = mf.id
+            JOIN LATERAL (
+                SELECT e.id, e.new_value_json
+                FROM millie_user_feedback_events e
+                WHERE e.message_id = mm.message_id
+                  AND e.feedback_type = 'retention_override'
+                  AND e.metadata_json->>'retention_policy_id' = p.id
+                  AND e.metadata_json->>'mailbox_message_id' = mm.id
+                ORDER BY e.created_at DESC
+                LIMIT 1
+            ) latest_feedback ON TRUE
+            WHERE mm.mailbox_id = %s
+              AND latest_feedback.new_value_json->>'action' = 'acknowledge'
+              AND mm.is_expunged = FALSE
+              AND p.status = 'active'
+              AND p.hold_duration IS NOT NULL
+              AND p.action IN ('no_action', 'hide_from_default_views')
+              AND mm.copied_at + p.hold_duration <= now()
+              AND NOT EXISTS (
+                SELECT 1
+                FROM millie_automation_audit_log applied
+                WHERE applied.message_id = mm.message_id
+                  AND applied.retention_policy_id = p.id
+                  AND applied.action_type = 'retention_apply'
+                  AND applied.status = 'applied'
+                  AND applied.after_json->>'mailbox_message_id' = mm.id
+              )
+            """,
+            (mailbox_id,),
+        ).fetchone()
+        return {
+            "approved_suggestions_pending": int(approved[0] or 0),
+            "retention_pending": int(retention[0] or 0),
+            "limit": max(1, min(limit, 500)),
+        }
 
     def record_unsubscribe_feedback(
         self,
@@ -2658,6 +3145,10 @@ def placeholders(values: Iterable[object]) -> str:
     if not values:
         raise ValueError("At least one value is required.")
     return ", ".join(["%s"] * len(values))
+
+
+def web_session_token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def normalize_mailbox_path(value: str) -> str:

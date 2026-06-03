@@ -31,6 +31,8 @@ All notable changes to MILLIE will be documented in this file.
 - Added a webmail unsubscribe queue for global candidate review.
 - Added webmail retention policy controls for listing, activating, disabling, and editing hold durations/actions with audit rows.
 - Added provider-write guardrails that block remote provider purge execution unless explicit provider-write settings and a manifest id are present.
+- Added Postgres-backed webmail login sessions with an explicit `--no-auth` development override.
+- Added webmail global search, brain rule management, and internal apply dry-run/execute controls.
 
 ### Changed
 

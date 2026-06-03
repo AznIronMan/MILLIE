@@ -7,12 +7,14 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 import urllib.parse
 from datetime import date, datetime
 from email import policy
 from email.message import EmailMessage
 from email.parser import BytesParser
+from http.cookies import SimpleCookie
 from html.parser import HTMLParser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -23,6 +25,7 @@ from xml.sax.saxutils import escape as xml_escape
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from millie.brain.automation import automation_level, automation_level_allows
 from millie.settings_loader import load_local_settings
 from millie.service.auth import default_service_login
 from millie.storage.postgres_store import PostgresMailStore
@@ -44,6 +47,9 @@ AUTOCONFIG_PATHS = {
 }
 MESSAGE_LIMIT_OPTIONS = {"25", "50", "100", "250", "500", "all"}
 DEFAULT_MESSAGE_LIMIT = "50"
+SESSION_COOKIE_NAME = "millie_session"
+PUBLIC_GET_PATHS = {"/login", "/favicon.ico", *AUTODISCOVER_PATHS, *AUTOCONFIG_PATHS}
+PUBLIC_POST_PATHS = {"/api/login", *AUTODISCOVER_PATHS}
 
 
 class MillieWebmailHandler(BaseHTTPRequestHandler):
@@ -51,12 +57,27 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
+        if self.auth_required(parsed, "GET") and not self.session_context():
+            if parsed.path.startswith("/api/"):
+                self.send_json({"error": "Authentication required"}, status=HTTPStatus.UNAUTHORIZED)
+            else:
+                self.send_html(LOGIN_HTML)
+            return
         if parsed.path == "/":
             self.send_html(INDEX_HTML)
+            return
+        if parsed.path == "/login":
+            if self.server.auth_required and self.session_context():
+                self.send_redirect("/")
+            else:
+                self.send_html(LOGIN_HTML)
             return
         if parsed.path == "/favicon.ico":
             self.send_response(HTTPStatus.NO_CONTENT)
             self.end_headers()
+            return
+        if parsed.path == "/api/session":
+            self.send_json(self.session_payload())
             return
         if parsed.path == "/api/bootstrap":
             self.send_json(self.bootstrap_payload(parsed))
@@ -73,6 +94,15 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/retention/policies":
             self.send_json(self.retention_policies_payload(parsed))
             return
+        if parsed.path == "/api/search":
+            self.send_json(self.search_payload(parsed))
+            return
+        if parsed.path == "/api/rules":
+            self.send_json(self.rules_payload(parsed))
+            return
+        if parsed.path == "/api/internal-apply":
+            self.send_json(self.internal_apply_payload(parsed))
+            return
         if parsed.path in AUTODISCOVER_PATHS:
             self.send_xml(autodiscover_xml(self.server.settings, self.server.mailbox_address))
             return
@@ -83,10 +113,19 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/api/login":
+            self.send_login_response()
+            return
+        if self.auth_required(parsed, "POST") and not self.session_context():
+            self.send_json({"error": "Authentication required"}, status=HTTPStatus.UNAUTHORIZED)
+            return
         if parsed.path in AUTODISCOVER_PATHS:
             body = self.read_request_body()
             requested_email = autodiscover_request_email(body) or self.server.mailbox_address
             self.send_xml(autodiscover_xml(self.server.settings, requested_email))
+            return
+        if parsed.path == "/api/logout":
+            self.send_logout_response()
             return
         if parsed.path == "/api/classifications/action":
             self.send_json(self.classification_action_payload())
@@ -96,6 +135,12 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/retention/policies/action":
             self.send_json(self.retention_policy_action_payload())
+            return
+        if parsed.path == "/api/rules/action":
+            self.send_json(self.rule_action_payload())
+            return
+        if parsed.path == "/api/internal-apply/action":
+            self.send_json(self.internal_apply_action_payload())
             return
         if parsed.path == "/api/retention/action":
             self.send_json(self.retention_action_payload())
@@ -109,14 +154,126 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
             flush=True,
         )
 
+    def auth_required(self, parsed: urllib.parse.ParseResult, method: str) -> bool:
+        if not self.server.auth_required:
+            return False
+        public = PUBLIC_GET_PATHS if method == "GET" else PUBLIC_POST_PATHS
+        return parsed.path not in public
+
+    def session_context(self) -> dict[str, object] | None:
+        if not self.server.auth_required:
+            return None
+        cached = getattr(self, "_session_context", None)
+        if cached is not None:
+            return cached
+        token = self.session_cookie()
+        if not token:
+            self._session_context = None
+            return None
+        with self.store() as store:
+            context = store.web_session(token)
+            store.connection.commit()
+        self._session_context = context
+        return context
+
+    def session_cookie(self) -> str:
+        raw = self.headers.get("Cookie") or ""
+        if not raw:
+            return ""
+        cookie = SimpleCookie(raw)
+        morsel = cookie.get(SESSION_COOKIE_NAME)
+        return morsel.value if morsel else ""
+
+    def request_mailbox(self, store: PostgresMailStore) -> dict[str, object]:
+        context = self.session_context()
+        if self.server.auth_required and context:
+            mailbox = context.get("mailbox")
+            if isinstance(mailbox, dict) and mailbox.get("id"):
+                return mailbox
+        mailbox = store.mailbox_by_address(self.server.mailbox_address)
+        if mailbox is None:
+            raise NotFoundError(f"Mailbox not found: {self.server.mailbox_address}")
+        return mailbox
+
+    def session_payload(self) -> dict[str, object]:
+        context = self.session_context()
+        if not self.server.auth_required:
+            return {
+                "auth_required": False,
+                "authenticated": True,
+                "mailbox_address": self.server.mailbox_address,
+            }
+        return {
+            "auth_required": True,
+            "authenticated": bool(context),
+            "identity": {
+                "id": context.get("identity_id"),
+                "login_address": context.get("login_address"),
+                "display_name": context.get("display_name"),
+            }
+            if context
+            else None,
+            "mailbox": context.get("mailbox") if context else None,
+            "expires_at": context.get("expires_at") if context else None,
+        }
+
+    def send_login_response(self) -> None:
+        payload = self.read_json_body()
+        login = str(payload.get("login") or "").strip()
+        password = str(payload.get("password") or "")
+        if not login or not password:
+            raise BadRequestError("login and password are required")
+        with self.store() as store:
+            session = store.create_web_session(
+                login=login,
+                password=password,
+                remote_address=self.client_address[0],
+                user_agent=self.headers.get("User-Agent", ""),
+            )
+            if session is None:
+                store.connection.rollback()
+                self.send_json({"error": "Invalid login"}, status=HTTPStatus.UNAUTHORIZED)
+                return
+            store.connection.commit()
+        self.send_json(
+            {
+                "ok": True,
+                "mailbox": session["mailbox"],
+                "expires_at": session["expires_at"],
+            },
+            headers=[
+                (
+                    "Set-Cookie",
+                    (
+                        f"{SESSION_COOKIE_NAME}={session['token']}; Path=/; "
+                        "HttpOnly; SameSite=Lax; Max-Age=43200"
+                    ),
+                )
+            ],
+        )
+
+    def send_logout_response(self) -> None:
+        token = self.session_cookie()
+        if token:
+            with self.store() as store:
+                store.revoke_web_session(token)
+                store.connection.commit()
+        self.send_json(
+            {"ok": True},
+            headers=[
+                (
+                    "Set-Cookie",
+                    f"{SESSION_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0",
+                )
+            ],
+        )
+
     def bootstrap_payload(self, parsed: urllib.parse.ParseResult) -> dict[str, object]:
         query = urllib.parse.parse_qs(parsed.query)
         folder = query.get("folder", ["INBOX"])[0]
         requested_limit = parse_message_limit(query.get("limit", [DEFAULT_MESSAGE_LIMIT])[0])
         with self.store() as store:
-            mailbox = store.mailbox_by_address(self.server.mailbox_address)
-            if mailbox is None:
-                raise NotFoundError(f"Mailbox not found: {self.server.mailbox_address}")
+            mailbox = self.request_mailbox(store)
             folders = store.list_folders(str(mailbox["id"]))
             folder_counts = store.webmail_folder_counts(mailbox_id=str(mailbox["id"]))
             selected_folder = folder if folder in folder_counts else "INBOX"
@@ -141,9 +298,7 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
         if not uid_text.isdigit():
             raise BadRequestError("uid is required")
         with self.store() as store:
-            mailbox = store.mailbox_by_address(self.server.mailbox_address)
-            if mailbox is None:
-                raise NotFoundError(f"Mailbox not found: {self.server.mailbox_address}")
+            mailbox = self.request_mailbox(store)
             detail = store.get_webmail_message_by_uid(
                 mailbox_id=str(mailbox["id"]),
                 folder_path=folder,
@@ -178,9 +333,7 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
         except ValueError:
             limit = 50
         with self.store() as store:
-            mailbox = store.mailbox_by_address(self.server.mailbox_address)
-            if mailbox is None:
-                raise NotFoundError(f"Mailbox not found: {self.server.mailbox_address}")
+            mailbox = self.request_mailbox(store)
             suggestions = store.list_review_suggestions(limit=limit)
             retention = store.list_retention_review_items(
                 mailbox_id=str(mailbox["id"]),
@@ -220,6 +373,60 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
             policies = store.list_retention_policies(statuses=statuses or None)
         return {"policies": policies, "statuses": statuses}
 
+    def search_payload(self, parsed: urllib.parse.ParseResult) -> dict[str, object]:
+        query = urllib.parse.parse_qs(parsed.query)
+        q = query.get("q", [""])[0].strip()
+        folder = query.get("folder", [""])[0].strip()
+        source_type = query.get("source_type", [""])[0].strip()
+        source = query.get("source", [""])[0].strip()
+        sender = query.get("from", [""])[0].strip()
+        since = query.get("since", [""])[0].strip()
+        until = query.get("until", [""])[0].strip()
+        has_attachments = parse_bool_filter(query.get("has_attachments", [""])[0])
+        limit = parse_int_limit(query.get("limit", ["100"])[0], default=100, maximum=500)
+        if not any([q, folder, source_type, source, sender, since, until, has_attachments is not None]):
+            raise BadRequestError("Search text or at least one filter is required")
+        with self.store() as store:
+            mailbox = self.request_mailbox(store)
+            results = store.search_webmail_messages(
+                mailbox_id=str(mailbox["id"]),
+                query=q,
+                folder_path=folder,
+                source_type=source_type,
+                source=source,
+                sender=sender,
+                since=since,
+                until=until,
+                has_attachments=has_attachments,
+                limit=limit,
+            )
+        return {"results": results, "limit": limit}
+
+    def rules_payload(self, parsed: urllib.parse.ParseResult) -> dict[str, object]:
+        query = urllib.parse.parse_qs(parsed.query)
+        statuses = [
+            status
+            for value in query.get("status", [])
+            for status in value.split(",")
+            if status
+        ]
+        limit = parse_int_limit(query.get("limit", ["100"])[0], default=100, maximum=500)
+        with self.store() as store:
+            rules = store.list_brain_rules(statuses=statuses or None, limit=limit)
+        return {"rules": rules, "limit": limit, "statuses": statuses}
+
+    def internal_apply_payload(self, parsed: urllib.parse.ParseResult) -> dict[str, object]:
+        query = urllib.parse.parse_qs(parsed.query)
+        limit = parse_int_limit(query.get("limit", ["100"])[0], default=100, maximum=500)
+        with self.store() as store:
+            mailbox = self.request_mailbox(store)
+            status = store.internal_apply_status(mailbox_id=str(mailbox["id"]), limit=limit)
+        return {
+            **status,
+            "automation_level": automation_level(self.server.settings),
+            "auto_internal_allowed": automation_level_allows(self.server.settings, "auto_internal"),
+        }
+
     def classification_action_payload(self) -> dict[str, object]:
         payload = self.read_json_body()
         classification_id = str(payload.get("classification_id") or "")
@@ -227,7 +434,7 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
         if not classification_id or action not in {"approve", "reject", "always", "never"}:
             raise BadRequestError("classification_id and valid action are required")
         with self.store() as store:
-            mailbox = store.mailbox_by_address(self.server.mailbox_address)
+            mailbox = self.request_mailbox(store)
             identity_id = str(mailbox["owner_identity_id"]) if mailbox else None
             try:
                 result = store.record_classification_feedback(
@@ -247,7 +454,7 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
         if not candidate_id or action not in {"approve", "reject"}:
             raise BadRequestError("candidate_id and valid action are required")
         with self.store() as store:
-            mailbox = store.mailbox_by_address(self.server.mailbox_address)
+            mailbox = self.request_mailbox(store)
             identity_id = str(mailbox["owner_identity_id"]) if mailbox else None
             try:
                 result = store.record_unsubscribe_feedback(
@@ -268,9 +475,7 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
         if not policy_id or not mailbox_message_id or action not in {"acknowledge", "defer"}:
             raise BadRequestError("policy_id, mailbox_message_id, and valid action are required")
         with self.store() as store:
-            mailbox = store.mailbox_by_address(self.server.mailbox_address)
-            if mailbox is None:
-                raise NotFoundError(f"Mailbox not found: {self.server.mailbox_address}")
+            mailbox = self.request_mailbox(store)
             identity_id = str(mailbox["owner_identity_id"])
             try:
                 result = store.record_retention_feedback(
@@ -309,7 +514,7 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
                 except ValueError as exc:
                     raise BadRequestError("hold_duration_seconds must be a number") from exc
         with self.store() as store:
-            mailbox = store.mailbox_by_address(self.server.mailbox_address)
+            mailbox = self.request_mailbox(store)
             identity_id = str(mailbox["owner_identity_id"]) if mailbox else None
             try:
                 policy = store.record_retention_policy_action(
@@ -325,25 +530,97 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
             store.connection.commit()
         return {"ok": True, "policy": policy}
 
+    def rule_action_payload(self) -> dict[str, object]:
+        payload = self.read_json_body()
+        rule_id = str(payload.get("rule_id") or "")
+        action = str(payload.get("action") or "").strip().lower()
+        if not rule_id or action not in {"activate", "disable", "retire", "update"}:
+            raise BadRequestError("rule_id and valid action are required")
+        updates: dict[str, object] = {}
+        if action == "update":
+            if "rule_name" in payload:
+                updates["rule_name"] = str(payload.get("rule_name") or "")
+            if "status" in payload:
+                updates["status"] = str(payload.get("status") or "")
+            if "priority" in payload:
+                try:
+                    updates["priority"] = int(str(payload.get("priority") or "0"))
+                except ValueError as exc:
+                    raise BadRequestError("priority must be a number") from exc
+        with self.store() as store:
+            mailbox = self.request_mailbox(store)
+            identity_id = str(mailbox["owner_identity_id"]) if mailbox else None
+            try:
+                rule = store.record_brain_rule_action(
+                    rule_id=rule_id,
+                    action=action,
+                    updates=updates,
+                    identity_id=identity_id,
+                )
+            except KeyError as exc:
+                raise NotFoundError(str(exc)) from exc
+            except ValueError as exc:
+                raise BadRequestError(str(exc)) from exc
+            store.connection.commit()
+        return {"ok": True, "rule": rule}
+
+    def internal_apply_action_payload(self) -> dict[str, object]:
+        payload = self.read_json_body()
+        mode = str(payload.get("mode") or "dry_run").strip().lower()
+        target = str(payload.get("target") or "both").strip().lower()
+        if mode not in {"dry_run", "execute"}:
+            raise BadRequestError("mode must be dry_run or execute")
+        if target not in {"both", "suggestions", "retention"}:
+            raise BadRequestError("target must be both, suggestions, or retention")
+        limit = parse_int_limit(str(payload.get("limit") or "100"), default=100, maximum=500)
+        if mode == "execute" and not automation_level_allows(self.server.settings, "auto_internal"):
+            raise BadRequestError("automation_level must allow auto_internal before execute")
+        commands = []
+        if target in {"both", "suggestions"}:
+            commands.append(("suggestions", apply_command("millie_apply_suggestions.py", mode=mode, limit=limit)))
+        if target in {"both", "retention"}:
+            commands.append(("retention", apply_command("millie_apply_retention.py", mode=mode, limit=limit)))
+        results = [run_apply_command(name, command) for name, command in commands]
+        return {
+            "ok": all(item["returncode"] == 0 for item in results),
+            "mode": mode,
+            "target": target,
+            "limit": limit,
+            "results": results,
+        }
+
     def store(self) -> PostgresMailStore:
         return PostgresMailStore.connect(self.server.settings)
 
-    def send_html(self, value: str) -> None:
+    def send_html(self, value: str, *, status: int = HTTPStatus.OK) -> None:
         payload = value.encode("utf-8")
-        self.send_response(HTTPStatus.OK)
+        self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
 
-    def send_json(self, value: object) -> None:
+    def send_json(
+        self,
+        value: object,
+        *,
+        status: int = HTTPStatus.OK,
+        headers: list[tuple[str, str]] | None = None,
+    ) -> None:
         payload = json.dumps(value, default=json_default, ensure_ascii=False).encode("utf-8")
-        self.send_response(HTTPStatus.OK)
+        self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
+        for name, header_value in headers or []:
+            self.send_header(name, header_value)
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
+
+    def send_redirect(self, location: str) -> None:
+        self.send_response(HTTPStatus.SEE_OTHER)
+        self.send_header("Location", location)
+        self.end_headers()
 
     def send_xml(self, value: str) -> None:
         payload = value.encode("utf-8")
@@ -398,9 +675,18 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
 
 
 class MillieWebmailServer(ThreadingHTTPServer):
-    def __init__(self, server_address, handler_class, *, settings: dict[str, str], mailbox_address: str):
+    def __init__(
+        self,
+        server_address,
+        handler_class,
+        *,
+        settings: dict[str, str],
+        mailbox_address: str,
+        auth_required: bool,
+    ):
         self.settings = settings
         self.mailbox_address = mailbox_address
+        self.auth_required = auth_required
         super().__init__(server_address, handler_class)
 
 
@@ -493,6 +779,52 @@ def parse_message_limit(value: str) -> str:
     return normalized if normalized in MESSAGE_LIMIT_OPTIONS else DEFAULT_MESSAGE_LIMIT
 
 
+def parse_int_limit(value: str, *, default: int, maximum: int) -> int:
+    try:
+        limit = int(str(value or "").strip())
+    except ValueError:
+        return default
+    return max(1, min(limit, maximum))
+
+
+def parse_bool_filter(value: str) -> bool | None:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"1", "true", "yes", "on", "with"}:
+        return True
+    if normalized in {"0", "false", "no", "off", "without"}:
+        return False
+    return None
+
+
+def apply_command(script_name: str, *, mode: str, limit: int) -> list[str]:
+    command = [
+        sys.executable,
+        str(PROJECT_ROOT / "tools" / script_name),
+        "--limit",
+        str(limit),
+    ]
+    if mode == "execute":
+        command.extend(["--execute", "--record-blocked"])
+    return command
+
+
+def run_apply_command(name: str, command: list[str]) -> dict[str, object]:
+    completed = subprocess.run(
+        command,
+        cwd=PROJECT_ROOT,
+        text=True,
+        capture_output=True,
+        timeout=300,
+        check=False,
+    )
+    return {
+        "name": name,
+        "returncode": completed.returncode,
+        "stdout": completed.stdout[-6000:],
+        "stderr": completed.stderr[-6000:],
+    }
+
+
 def autodiscover_request_email(body: bytes) -> str | None:
     text = body.decode("utf-8", errors="ignore")
     match = re.search(r"<(?:[A-Za-z0-9_]+:)?E?MailAddress>\s*([^<]+?)\s*</", text, re.I)
@@ -562,9 +894,14 @@ def autoconfig_xml(settings: dict[str, str], login_name: str) -> str:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Start MILLIE's no-auth development webmail.")
+    parser = argparse.ArgumentParser(description="Start MILLIE's development webmail/admin UI.")
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument(
+        "--no-auth",
+        action="store_true",
+        help="Disable web login for local-only development testing.",
+    )
     parser.add_argument(
         "--mailbox",
         default="",
@@ -641,8 +978,10 @@ def serve(args: argparse.Namespace) -> None:
         MillieWebmailHandler,
         settings=settings,
         mailbox_address=mailbox_address,
+        auth_required=not args.no_auth,
     )
-    print(f"MILLIE webmail listening on http://{args.host}:{args.port}", flush=True)
+    auth_mode = "auth" if server.auth_required else "no-auth"
+    print(f"MILLIE webmail listening on http://{args.host}:{args.port} mode={auth_mode}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -652,6 +991,107 @@ def serve(args: argparse.Namespace) -> None:
             sync_stop.set()
         if sync_thread is not None:
             sync_thread.join(timeout=5)
+
+
+LOGIN_HTML = r"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MILLIE Login</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: #f6f8fb;
+      color: #17202f;
+      font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    form {
+      width: min(360px, calc(100vw - 32px));
+      display: grid;
+      gap: 12px;
+      padding: 24px;
+      border: 1px solid #d7dde7;
+      border-radius: 8px;
+      background: #fff;
+      box-shadow: 0 1px 2px rgba(18, 28, 45, .08);
+    }
+    h1 {
+      margin: 0 0 6px;
+      font-size: 22px;
+      letter-spacing: 0;
+    }
+    label {
+      display: grid;
+      gap: 5px;
+      color: #657084;
+      font-size: 12px;
+      font-weight: 650;
+    }
+    input, button {
+      height: 38px;
+      border-radius: 7px;
+      font: inherit;
+    }
+    input {
+      border: 1px solid #d7dde7;
+      padding: 0 10px;
+    }
+    button {
+      border: 0;
+      background: #17202f;
+      color: #fff;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .error {
+      min-height: 18px;
+      color: #c5221f;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <form id="loginForm">
+    <h1>MILLIE Mail</h1>
+    <label>Login
+      <input id="login" name="login" type="email" autocomplete="username" required>
+    </label>
+    <label>Password
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+    </label>
+    <button type="submit">Sign in</button>
+    <div id="error" class="error"></div>
+  </form>
+  <script>
+    const form = document.getElementById("loginForm");
+    const error = document.getElementById("error");
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      error.textContent = "";
+      const response = await fetch("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          login: document.getElementById("login").value,
+          password: document.getElementById("password").value,
+        }),
+      });
+      if (response.ok) {
+        window.location.href = "/";
+        return;
+      }
+      const data = await response.json().catch(() => ({}));
+      error.textContent = data.error || "Sign in failed";
+    });
+  </script>
+</body>
+</html>
+"""
 
 
 INDEX_HTML = r"""<!doctype html>
@@ -711,7 +1151,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     .topbar {
       display: grid;
-      grid-template-columns: 220px minmax(160px, 1fr) auto auto auto auto auto;
+      grid-template-columns: 220px minmax(160px, 1fr) repeat(7, auto) minmax(80px, 180px) auto;
       align-items: center;
       gap: 14px;
       padding: 0 18px;
@@ -1096,6 +1536,43 @@ INDEX_HTML = r"""<!doctype html>
       grid-template-columns: 70px 82px;
       gap: 6px;
     }
+    .filter-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(120px, 1fr)) auto;
+      gap: 8px;
+      align-items: end;
+    }
+    .filter-grid label {
+      display: grid;
+      gap: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+    .filter-grid input,
+    .filter-grid select {
+      height: 30px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--text);
+      padding: 0 8px;
+      font-size: 12px;
+      min-width: 0;
+    }
+    .json-box, .output-box {
+      max-height: 170px;
+      overflow: auto;
+      margin: 0;
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--surface-2);
+      color: var(--text);
+      font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
     .review-list {
       display: grid;
       gap: 10px;
@@ -1114,6 +1591,7 @@ INDEX_HTML = r"""<!doctype html>
       .topbar { grid-template-columns: 160px minmax(120px, 1fr); grid-auto-flow: row; height: auto; padding: 10px 12px; }
       .themes, .account { grid-column: span 1; }
       .policy-edit { grid-template-columns: 1fr 1fr; align-items: stretch; }
+      .filter-grid { grid-template-columns: 1fr 1fr; }
       .main { grid-template-columns: 76px minmax(260px, 38vw) minmax(320px, 1fr); }
       .folder { grid-template-columns: 1fr; justify-items: center; padding: 0 6px; }
       .folder .name { max-width: 54px; }
@@ -1129,15 +1607,19 @@ INDEX_HTML = r"""<!doctype html>
     <header class="topbar">
       <div class="brand"><span class="brand-mark">M</span><span>MILLIE Mail</span></div>
       <input id="search" class="search" type="search" placeholder="Search mail" autocomplete="off">
+      <button id="searchButton" class="review-button" type="button">Search</button>
       <button id="reviewButton" class="review-button" type="button">Review</button>
       <button id="unsubscribeButton" class="review-button" type="button">Unsub</button>
       <button id="policiesButton" class="review-button" type="button">Policies</button>
+      <button id="rulesButton" class="review-button" type="button">Rules</button>
+      <button id="applyButton" class="review-button" type="button">Apply</button>
       <div class="themes" id="themes">
         <button type="button" data-theme="gmail">Gmail</button>
         <button type="button" data-theme="outlook">Outlook</button>
         <button type="button" data-theme="m365">365</button>
       </div>
       <div class="account" id="account"></div>
+      <button id="logoutButton" class="review-button" type="button">Logout</button>
     </header>
     <main class="main">
       <nav class="folders" id="folders"></nav>
@@ -1211,6 +1693,10 @@ INDEX_HTML = r"""<!doctype html>
 
     async function api(path) {
       const response = await fetch(path, { cache: "no-store" });
+      if (response.status === 401) {
+        window.location.href = "/login";
+        throw new Error("Authentication required");
+      }
       if (!response.ok) {
         const payload = await response.json().catch(() => ({}));
         throw new Error(payload.error || response.statusText);
@@ -1224,6 +1710,10 @@ INDEX_HTML = r"""<!doctype html>
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
+      if (response.status === 401) {
+        window.location.href = "/login";
+        throw new Error("Authentication required");
+      }
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
         throw new Error(data.error || response.statusText);
@@ -1563,6 +2053,33 @@ INDEX_HTML = r"""<!doctype html>
       renderPolicyList(data.policies || []);
     }
 
+    async function runGlobalSearch(extra = {}) {
+      const params = new URLSearchParams();
+      const q = extra.q ?? $("search").value;
+      if (q) params.set("q", q);
+      ["folder", "from", "source_type", "source", "since", "until", "has_attachments"].forEach((key) => {
+        if (extra[key]) params.set(key, extra[key]);
+      });
+      params.set("limit", extra.limit || "100");
+      const data = await api(`/api/search?${params.toString()}`);
+      renderSearchList(data.results || [], Object.fromEntries(params.entries()));
+    }
+
+    async function openRules() {
+      const data = await api("/api/rules?limit=100");
+      renderRuleList(data.rules || []);
+    }
+
+    async function openInternalApply() {
+      const data = await api("/api/internal-apply?limit=100");
+      renderInternalApply(data);
+    }
+
+    async function loadSessionState() {
+      const data = await api("/api/session");
+      $("logoutButton").hidden = !data.auth_required;
+    }
+
     function durationParts(seconds) {
       const normalized = Math.max(1, Number(seconds || 86400));
       if (normalized % 604800 === 0) return { value: normalized / 604800, unit: "weeks" };
@@ -1689,6 +2206,97 @@ INDEX_HTML = r"""<!doctype html>
       }
     }
 
+    function renderSearchList(results, criteria = {}) {
+      $("reader").innerHTML = `
+        <div class="review-list">
+          <h1>Search</h1>
+          <form class="filter-grid" id="searchFilters">
+            <label>Text
+              <input name="q" type="search">
+            </label>
+            <label>Folder
+              <input name="folder" type="text">
+            </label>
+            <label>From
+              <input name="from" type="text">
+            </label>
+            <label>Source
+              <input name="source" type="text">
+            </label>
+            <label>Attachments
+              <select name="has_attachments">
+                <option value="">Any</option>
+                <option value="true">With</option>
+                <option value="false">Without</option>
+              </select>
+            </label>
+            <label>Since
+              <input name="since" type="date">
+            </label>
+            <label>Until
+              <input name="until" type="date">
+            </label>
+            <label>Limit
+              <select name="limit">
+                <option value="25">25</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+                <option value="250">250</option>
+                <option value="500">500</option>
+              </select>
+            </label>
+            <button class="review-button" type="submit">Run</button>
+          </form>
+          <div class="suggestion-meta">${results.length} results</div>
+          <div data-list="search-results"></div>
+        </div>
+      `;
+      const form = $("reader").querySelector("#searchFilters");
+      ["q", "folder", "from", "source", "has_attachments", "since", "until", "limit"].forEach((name) => {
+        if (criteria[name]) form.elements[name].value = criteria[name];
+      });
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        await runGlobalSearch(Object.fromEntries(new FormData(form).entries()));
+      });
+      const list = $("reader").querySelector('[data-list="search-results"]');
+      if (!results.length) {
+        list.innerHTML = `<div class="empty">No matching messages</div>`;
+        return;
+      }
+      results.forEach((item) => {
+        const card = document.createElement("div");
+        card.className = "suggestion-card";
+        card.innerHTML = `
+          <div class="suggestion-top">
+            <div>
+              <div class="suggestion-title"></div>
+              <div class="suggestion-meta"></div>
+            </div>
+            <span class="suggestion-badge"></span>
+          </div>
+          <div class="suggestion-meta" data-field="preview"></div>
+          <div class="suggestion-actions"></div>
+        `;
+        card.querySelector(".suggestion-title").textContent = text(item.subject, "(no subject)");
+        card.querySelector(".suggestion-meta").textContent =
+          `${item.from || "(unknown)"} · ${formatDate(item.message_date)} · ${item.folder_path}`;
+        card.querySelector(".suggestion-badge").textContent = item.source_type || "source";
+        card.querySelector('[data-field="preview"]').textContent =
+          `${item.source || ""} · ${item.body_preview || formatSize(item.size)}`;
+        const actions = card.querySelector(".suggestion-actions");
+        const openButton = document.createElement("button");
+        openButton.type = "button";
+        openButton.textContent = "Open";
+        openButton.addEventListener("click", async () => {
+          await loadFolder(item.folder_path);
+          await openMessage(item.uid);
+        });
+        actions.appendChild(openButton);
+        list.appendChild(card);
+      });
+    }
+
     function renderPolicyList(policies) {
       $("reader").innerHTML = `
         <div class="review-list">
@@ -1797,6 +2405,136 @@ INDEX_HTML = r"""<!doctype html>
       });
     }
 
+    function renderRuleList(rules) {
+      $("reader").innerHTML = `
+        <div class="review-list">
+          <h1>Brain Rules</h1>
+          <div class="suggestion-meta">${rules.length} rules</div>
+          <div data-list="brain-rules"></div>
+        </div>
+      `;
+      const list = $("reader").querySelector('[data-list="brain-rules"]');
+      if (!rules.length) {
+        list.innerHTML = `<div class="empty">No brain rules</div>`;
+        return;
+      }
+      rules.forEach((item) => {
+        const card = document.createElement("div");
+        card.className = "suggestion-card";
+        card.innerHTML = `
+          <div class="suggestion-top">
+            <div>
+              <div class="suggestion-title"></div>
+              <div class="suggestion-meta" data-field="rule-meta"></div>
+            </div>
+            <span class="suggestion-badge"></span>
+          </div>
+          <div class="policy-edit">
+            <label>Name
+              <input data-field="rule-name" type="text">
+            </label>
+            <label>Priority
+              <input data-field="rule-priority" type="number" step="1">
+            </label>
+            <label>Status
+              <select data-field="rule-status">
+                <option value="proposed">proposed</option>
+                <option value="active">active</option>
+                <option value="disabled">disabled</option>
+                <option value="superseded">superseded</option>
+                <option value="retired">retired</option>
+              </select>
+            </label>
+          </div>
+          <pre class="json-box" data-field="rule-json"></pre>
+          <div class="suggestion-actions"></div>
+        `;
+        card.querySelector(".suggestion-title").textContent = item.rule_name || item.id;
+        card.querySelector('[data-field="rule-meta"]').textContent =
+          `${item.rule_type} · ${item.rule_source} · evidence ${item.evidence_count} · confidence ${Number(item.confidence || 0).toFixed(2)}`;
+        card.querySelector(".suggestion-badge").textContent = item.status;
+        card.querySelector('[data-field="rule-name"]').value = item.rule_name || "";
+        card.querySelector('[data-field="rule-priority"]').value = item.priority || 0;
+        card.querySelector('[data-field="rule-status"]').value = item.status || "proposed";
+        card.querySelector('[data-field="rule-json"]').textContent =
+          JSON.stringify({ condition: item.condition, action: item.rule_action }, null, 2);
+        const actions = card.querySelector(".suggestion-actions");
+        const saveButton = document.createElement("button");
+        saveButton.type = "button";
+        saveButton.textContent = "Save";
+        saveButton.addEventListener("click", async () => {
+          await saveRule(card, item.id);
+          await openRules();
+        });
+        actions.appendChild(saveButton);
+        [
+          ["activate", "Activate"],
+          ["disable", "Disable"],
+          ["retire", "Retire"],
+        ].forEach(([action, label]) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.textContent = label;
+          button.addEventListener("click", async () => {
+            await applyRuleAction(item.id, action);
+            await openRules();
+          });
+          actions.appendChild(button);
+        });
+        list.appendChild(card);
+      });
+    }
+
+    function renderInternalApply(status) {
+      $("reader").innerHTML = `
+        <div class="review-list">
+          <h1>Internal Apply</h1>
+          <div class="suggestion-meta"></div>
+          <div class="suggestion-card">
+            <div class="suggestion-top">
+              <div>
+                <div class="suggestion-title">Pending internal actions</div>
+                <div class="suggestion-meta" data-field="apply-meta"></div>
+              </div>
+              <span class="suggestion-badge"></span>
+            </div>
+            <div class="filter-grid">
+              <label>Target
+                <select id="applyTarget">
+                  <option value="both">both</option>
+                  <option value="suggestions">suggestions</option>
+                  <option value="retention">retention</option>
+                </select>
+              </label>
+              <label>Limit
+                <select id="applyLimit">
+                  <option value="25">25</option>
+                  <option value="50">50</option>
+                  <option value="100">100</option>
+                  <option value="250">250</option>
+                  <option value="500">500</option>
+                </select>
+              </label>
+            </div>
+            <div class="suggestion-actions">
+              <button id="applyDryRun" type="button">Dry run</button>
+              <button id="applyExecute" type="button">Execute</button>
+            </div>
+          </div>
+          <div data-list="apply-output"></div>
+        </div>
+      `;
+      $("reader").querySelector(".suggestion-meta").textContent =
+        `level ${status.automation_level} · suggestions ${status.approved_suggestions_pending} · retention ${status.retention_pending}`;
+      $("reader").querySelector(".suggestion-badge").textContent =
+        status.auto_internal_allowed ? "allowed" : "guarded";
+      $("reader").querySelector('[data-field="apply-meta"]').textContent =
+        `${status.approved_suggestions_pending} approved suggestions · ${status.retention_pending} retention decisions`;
+      $("applyLimit").value = String(status.limit || 100);
+      $("applyDryRun").addEventListener("click", () => runInternalApply("dry_run").catch(showError));
+      $("applyExecute").addEventListener("click", () => runInternalApply("execute").catch(showError));
+    }
+
     function renderUnsubscribeQueue(candidates) {
       $("reader").innerHTML = `
         <div class="review-list">
@@ -1862,6 +2600,20 @@ INDEX_HTML = r"""<!doctype html>
       });
     }
 
+    async function applyRuleAction(ruleId, action) {
+      await postJson("/api/rules/action", { rule_id: ruleId, action });
+    }
+
+    async function saveRule(card, ruleId) {
+      await postJson("/api/rules/action", {
+        rule_id: ruleId,
+        action: "update",
+        rule_name: card.querySelector('[data-field="rule-name"]').value,
+        priority: card.querySelector('[data-field="rule-priority"]').value,
+        status: card.querySelector('[data-field="rule-status"]').value,
+      });
+    }
+
     async function applyPolicyAction(policyId, action) {
       await postJson("/api/retention/policies/action", { policy_id: policyId, action });
     }
@@ -1880,6 +2632,37 @@ INDEX_HTML = r"""<!doctype html>
       });
     }
 
+    async function runInternalApply(mode) {
+      const data = await postJson("/api/internal-apply/action", {
+        mode,
+        target: $("applyTarget").value,
+        limit: $("applyLimit").value,
+      });
+      const list = $("reader").querySelector('[data-list="apply-output"]');
+      list.innerHTML = "";
+      data.results.forEach((result) => {
+        const card = document.createElement("div");
+        card.className = "suggestion-card";
+        card.innerHTML = `
+          <div class="suggestion-top">
+            <div class="suggestion-title"></div>
+            <span class="suggestion-badge"></span>
+          </div>
+          <pre class="output-box"></pre>
+        `;
+        card.querySelector(".suggestion-title").textContent = result.name;
+        card.querySelector(".suggestion-badge").textContent = `exit ${result.returncode}`;
+        card.querySelector(".output-box").textContent =
+          [result.stdout || "", result.stderr || ""].filter(Boolean).join("\\n");
+        list.appendChild(card);
+      });
+    }
+
+    async function logout() {
+      await postJson("/api/logout", {});
+      window.location.href = "/login";
+    }
+
     function showError(error) {
       $("reader").innerHTML = `<div class="error"></div>`;
       $("reader").querySelector(".error").textContent = error.message || String(error);
@@ -1892,6 +2675,9 @@ INDEX_HTML = r"""<!doctype html>
     $("search").addEventListener("input", (event) => {
       state.query = event.target.value;
       renderMessages();
+    });
+    $("search").addEventListener("keydown", (event) => {
+      if (event.key === "Enter") runGlobalSearch().catch(showError);
     });
     $("messageLimit").addEventListener("change", (event) => {
       state.limit = validMessageLimits.has(event.target.value) ? event.target.value : "50";
@@ -1910,8 +2696,21 @@ INDEX_HTML = r"""<!doctype html>
     $("policiesButton").addEventListener("click", () => {
       openPolicies().catch(showError);
     });
+    $("searchButton").addEventListener("click", () => {
+      runGlobalSearch().catch(showError);
+    });
+    $("rulesButton").addEventListener("click", () => {
+      openRules().catch(showError);
+    });
+    $("applyButton").addEventListener("click", () => {
+      openInternalApply().catch(showError);
+    });
+    $("logoutButton").addEventListener("click", () => {
+      logout().catch(showError);
+    });
 
     setTheme(localStorage.getItem("millie.webmail.theme") || "gmail");
+    loadSessionState().catch(() => {});
     loadBootstrap().catch(showError);
   </script>
 </body>

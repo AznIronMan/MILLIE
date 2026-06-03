@@ -74,6 +74,8 @@ The webmail view includes a **Review** queue and message-level suggestion panels
 
 Unsubscribe candidates can be approved or ignored. Approval does not click links, submit forms, send mail, or contact providers by itself.
 
+The webmail **Rules** panel lists learned brain rules and can activate, disable, retire, or lightly edit rule names and priorities. Rule changes write audit rows and do not apply mail movements by themselves.
+
 Reviewed unsubscribe candidates can be listed and prepared with a dry-run-first command:
 
 ```sh
@@ -115,6 +117,8 @@ Execution requires `automation_level=auto_internal` or higher:
 
 The apply command creates missing MILLIE folders and maps approved messages into those folders. It does not expunge existing MILLIE folder mappings and does not write to source providers.
 
+The webmail **Apply** panel can run the same approved-suggestion command in dry-run mode or execute mode. Execute mode is blocked unless `automation_level` allows `auto_internal`.
+
 Reviewed retention decisions can be applied with a dry-run-first command:
 
 ```sh
@@ -128,6 +132,8 @@ Execution requires `automation_level=auto_internal` or higher:
 ```
 
 The retention apply command only considers acknowledged decisions for active policies. It supports `no_action` audit application and non-destructive `hide_from_default_views`, which marks matching `INBOX` and `All Mail` facade rows hidden while leaving hold/source folders and provider mail intact. `expire_internal_copy` and `delete_internal_copy` are not executed yet.
+
+The webmail **Apply** panel can also run the retention apply command in dry-run mode or execute mode. This path remains internal-only and never writes to source providers.
 
 Automatic unsubscribe execution is planned follow-up work. Manual-assist preparation is available, but browser automation and provider form submission are not enabled.
 

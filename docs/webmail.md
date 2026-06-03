@@ -1,12 +1,14 @@
 # Webmail
 
-MILLIE currently includes a temporary no-auth webmail view for local development.
+MILLIE currently includes a temporary authenticated webmail/admin view for local development.
 
 Start it from the project root:
 
 ```sh
 .private/venv/bin/python tools/millie_webmail_server.py --host 0.0.0.0 --port 22001 --daemon
 ```
+
+The page uses the same Postgres-backed MILLIE identity password used by the development IMAP listener. For local-only development testing without login, add `--no-auth`.
 
 Open:
 
@@ -20,11 +22,11 @@ On the LAN, the current internal URL is:
 http://10.0.20.9:22001/
 ```
 
-The first version opens the current `geon@millie.cnbsk.cloud` mailbox from the configured service mail domain, lists folders and copied messages from the Postgres mailbox facade, and renders message bodies as sanitized plain text. SMTP and compose behavior are intentionally out of scope for this archive view.
+The first version opens the signed-in mailbox from the configured service mail domain, lists folders and copied messages from the Postgres mailbox facade, and renders message bodies as sanitized plain text. SMTP and compose behavior are intentionally out of scope for this archive view.
 
 The message list loads only the selected folder. Use the **Show** control to choose `25`, `50`, `100`, `250`, `500`, or `All` messages for the active folder. The choice is remembered in browser local storage. Folder counts use cheap count queries, and the message list is cached in the browser until **Refresh** is clicked or the page is reloaded.
 
-Messages with pending MILLIE brain suggestions show a suggestion badge. The reader shows proposed classifications and unsubscribe candidates for the selected message. Messages in hold folders also show matching retention policy status, including hold duration and eligibility timing. The **Review** button opens proposed classifications plus retention-eligible hold messages. The **Unsub** button opens a global unsubscribe candidate queue. The **Policies** button opens retention policy management for names, hold durations, review requirements, internal actions, and active/disabled states. Approve/ignore unsubscribe actions write review feedback only; actual unsubscribe preparation remains in the CLI. Classification, retention review, and retention policy actions write feedback, learned rule evidence, and audit rows only; they do not move messages, delete messages, unsubscribe, expire messages, or write to source providers.
+Use **Search** for global indexed search across copied messages. Messages with pending MILLIE brain suggestions show a suggestion badge. The reader shows proposed classifications and unsubscribe candidates for the selected message. Messages in hold folders also show matching retention policy status, including hold duration and eligibility timing. The **Review** button opens proposed classifications plus retention-eligible hold messages. The **Unsub** button opens a global unsubscribe candidate queue. The **Policies** button opens retention policy management for names, hold durations, review requirements, internal actions, and active/disabled states. The **Rules** button opens learned brain rule management. The **Apply** button opens dry-run and guarded execute controls for internal suggestion/retention apply commands. Classification, retention, rule, and apply controls do not write to source providers.
 
 Settings are separate from webmail during this temporary phase:
 
