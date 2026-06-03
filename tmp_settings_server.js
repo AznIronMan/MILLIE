@@ -22,6 +22,7 @@ const THINKING_LEVELS = ["", "low", "med", "high", "xhigh"];
 const ACCOUNT_TYPES = ["imap", "smtp"];
 const ACCOUNT_SECURITY = ["", "none", "starttls", "ssl_tls"];
 const ACCOUNT_AUTH = ["password", "oauth", "none"];
+const AUTOMATION_LEVELS = ["observe", "review", "auto_internal", "provider_write"];
 const ICLOUD_DOMAINS = new Set(["icloud.com", "me.com", "mac.com"]);
 
 function parseArgs(argv) {
@@ -253,6 +254,20 @@ function buildSeedRows(instanceId) {
       value: "files",
       description: "Logging target. files appends to logs/YYYYMMDD.log. sqlite creates data/<instance_id>.logdb when possible. cnblogger is reserved and disabled for now.",
       options: optionList(["files", "sqlite", "cnblogger"]),
+      secret: false,
+    },
+    {
+      key: "automation_level",
+      value: "observe",
+      description: "Maximum autonomous MILLIE automation level. observe stores suggestions only; review records user feedback; auto_internal may apply MILLIE-only mailbox changes; provider_write is reserved and requires a second switch.",
+      options: optionList(AUTOMATION_LEVELS),
+      secret: false,
+    },
+    {
+      key: "automation_provider_write_enabled",
+      value: "false",
+      description: "Second switch for future provider-side automation. Must be true and automation_level must be provider_write. Manifest purge tools remain separate.",
+      options: optionList(["false", "true"]),
       secret: false,
     },
   ];

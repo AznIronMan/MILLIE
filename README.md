@@ -18,7 +18,7 @@ This repository has been reset for a fresh start. The prior version is archived 
 - Mail import status: duplicate-safe bulk PST and IMAP import tools available
 - Dedupe status: exact raw-message dedupe plus normalized duplicate fingerprints/reporting
 - Live sync status: runtime IMAP/OAuth checker available while MILLIE is running
-- Automation status: Postgres brain schema foundation and observe-only sorter available; review tooling not implemented yet
+- Automation status: Postgres brain schema foundation, observe-only sorter, and webmail review feedback available
 - Mail service status: dormant Postgres identity/mailbox facade scaffolded
 - Dev IMAP status: development listener available for local/LAN browse and mailbox-copy mutation testing
 - Dev SMTP status: optional setup-only blackhole listener; MILLIE never sends outbound SMTP
@@ -171,7 +171,11 @@ To persist suggestions without moving or deleting anything:
 .private/venv/bin/python tools/millie_sort_mail.py --observe --apply --limit 250
 ```
 
-Review UI, internal move/tag automation, retention execution, and unsubscribe execution are planned follow-up work. Provider-side cleanup remains separate and must use the manifest-driven purge flow.
+The sorter supports `--account`, `--folder`, `--message-id`, `--since`, and `--until` filters. Webmail shows pending suggestion badges, message-level suggestion panels, and a Review queue. Review actions write feedback, learned rule evidence, and audit rows only.
+
+Automation guardrails live in `millie.settings` as `automation_level` and `automation_provider_write_enabled`. Provider writes require both `automation_level=provider_write` and `automation_provider_write_enabled=true`; manifest-driven purge tools remain separate.
+
+Internal move/tag automation, retention execution, and unsubscribe execution are planned follow-up work. Provider-side cleanup remains separate and must use the manifest-driven purge flow.
 
 ## Dev IMAP Listener
 
@@ -204,9 +208,11 @@ Start the temporary no-auth webmail view:
 .private/venv/bin/python tools/millie_webmail_server.py --host 0.0.0.0 --port 22001 --daemon
 ```
 
-It opens the current `geon@millie.cnbsk.cloud` mailbox through the Postgres mailbox facade and provides Gmail, Outlook, and Microsoft 365-inspired theme options. The first pass is read-only and does not include SMTP or compose behavior.
+It opens the current `geon@millie.cnbsk.cloud` mailbox through the Postgres mailbox facade and provides Gmail, Outlook, and Microsoft 365-inspired theme options. It does not include SMTP or compose behavior.
 
 The message list loads only the selected folder and supports `25`, `50`, `100`, `250`, `500`, or `All` messages at a time. The selected size is remembered in browser local storage, folder counts use cheap count queries, and the active list can be refreshed from the webmail toolbar.
+
+The webmail view can review MILLIE brain suggestions. Approve/reject/always/never controls persist review decisions and learned rule evidence, but they do not move mail or write back to source providers.
 
 To have webmail check live IMAP/OAuth sources while the webmail process is running, add `--live-sync`. This does not install a macOS service:
 

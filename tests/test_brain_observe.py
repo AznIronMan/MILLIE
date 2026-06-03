@@ -8,6 +8,7 @@ from millie.brain.observe import (
     classify_candidate,
     extract_unsubscribe_suggestions,
 )
+from tools.millie_sort_mail import parse_filter_datetime
 
 
 class BrainObserveTest(unittest.TestCase):
@@ -51,6 +52,16 @@ class BrainObserveTest(unittest.TestCase):
         self.assertTrue(all(not item.requires_browser for item in suggestions))
         self.assertTrue(any(item.unsubscribe_mailto for item in suggestions))
         self.assertTrue(any(item.unsubscribe_url for item in suggestions))
+
+    def test_sort_date_filter_parses_date_bounds(self) -> None:
+        self.assertEqual(
+            parse_filter_datetime("2026-06-03", end_of_day=False).isoformat(),
+            "2026-06-03T00:00:00+00:00",
+        )
+        self.assertEqual(
+            parse_filter_datetime("2026-06-03", end_of_day=True).isoformat(),
+            "2026-06-03T23:59:59+00:00",
+        )
 
 
 if __name__ == "__main__":

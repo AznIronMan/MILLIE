@@ -8,6 +8,7 @@ import sys
 import uuid
 from collections import Counter
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,7 @@ from millie.brain.observe import (  # noqa: E402
     classify_candidate,
     extract_unsubscribe_suggestions,
 )
+from millie.brain.automation import automation_level_allows  # noqa: E402
 from millie.importing.models import stable_id  # noqa: E402
 from millie.settings_loader import load_local_settings  # noqa: E402
 from millie.storage.postgres_store import PostgresMailStore  # noqa: E402
@@ -59,6 +61,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--account", action="append", default=[], help="Filter by source account text.")
     parser.add_argument("--folder", action="append", default=[], help="Filter by MILLIE mailbox folder path.")
     parser.add_argument("--message-id", action="append", default=[], help="Filter to exact MILLIE message ids.")
+    parser.add_argument("--since", default="", help="Only inspect messages on or after this ISO date/datetime.")
+    parser.add_argument("--until", default="", help="Only inspect messages on or before this ISO date/datetime.")
     parser.add_argument(
         "--include-classified",
         action="store_true",
@@ -76,6 +80,8 @@ def main() -> int:
     settings = load_local_settings()["settings"]
     if (settings.get("database_mode") or "").lower() != "postgres":
         raise SystemExit("millie_sort_mail currently requires database_mode=postgres.")
+    if not automation_level_allows(settings, "observe"):
+        raise SystemExit("automation_level does not allow observe sorting.")
 
     with PostgresMailStore.connect(settings) as store:
         store.initialize()
@@ -114,6 +120,14 @@ def load_candidates(store: PostgresMailStore, args: argparse.Namespace) -> list[
     for folder in args.folder:
         where.append("v.folder_path = %s")
         params.append(folder)
+
+    if args.since:
+        where.append("coalesce(m.sent_at, m.received_at, m.created_at) >= %s")
+        params.append(parse_filter_datetime(args.since, end_of_day=False))
+
+    if args.until:
+        where.append("coalesce(m.sent_at, m.received_at, m.created_at) <= %s")
+        params.append(parse_filter_datetime(args.until, end_of_day=True))
 
     if not args.include_classified:
         where.append(
@@ -425,6 +439,20 @@ def placeholders(values: list[object]) -> str:
     if not values:
         raise ValueError("values must not be empty")
     return ", ".join(["%s"] * len(values))
+
+
+def parse_filter_datetime(value: str, *, end_of_day: bool) -> datetime:
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError("date value must not be empty")
+    if normalized.endswith("Z"):
+        normalized = f"{normalized[:-1]}+00:00"
+    if "T" not in normalized and " " not in normalized:
+        normalized = f"{normalized}T{'23:59:59' if end_of_day else '00:00:00'}"
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 if __name__ == "__main__":

@@ -27,6 +27,8 @@ class BrainSchemaTest(unittest.TestCase):
         self.assertIn("requires_review BOOLEAN NOT NULL DEFAULT TRUE", schema)
         self.assertIn("'block_provider_write'", schema)
         self.assertIn("'provider_purge_manifest'", schema)
+        self.assertIn("'create_rule'", schema)
+        self.assertIn("'unsubscribe_approve'", schema)
         self.assertNotIn("'delete_provider_message'", schema)
 
     def test_classifications_and_audit_reference_messages(self) -> None:

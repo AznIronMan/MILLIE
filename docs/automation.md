@@ -13,6 +13,13 @@ Automation levels are:
 
 Provider cleanup remains separate from sorting. Remote provider cleanup must use the manifest purge flow, which targets exact provider UIDs from a sync cutoff.
 
+The settings database exposes two guardrails:
+
+- `automation_level`: maximum autonomous level, defaulting to `observe`.
+- `automation_provider_write_enabled`: second switch for future provider-side automation, defaulting to `false`.
+
+Future provider writes require both `automation_level=provider_write` and `automation_provider_write_enabled=true`. Manifest-driven purge tools remain a separate explicit workflow.
+
 ## Brain Data
 
 The Postgres brain layer records:
@@ -41,4 +48,24 @@ By default this is a dry run. To store suggestions and audit rows:
 .private/venv/bin/python tools/millie_sort_mail.py --observe --apply --limit 250
 ```
 
-The applied observe mode only writes to the brain tables. Review UI, automatic internal moves/tags, retention execution, and unsubscribe execution are planned follow-up work.
+The sorter can be scoped by account, folder, message id, and date:
+
+```sh
+.private/venv/bin/python tools/millie_sort_mail.py \
+  --observe \
+  --apply \
+  --account geoff@example.com \
+  --since 2026-01-01 \
+  --until 2026-06-03
+```
+
+The webmail view includes a **Review** queue and message-level suggestion panels. Classification actions currently persist review decisions only:
+
+- **Approve** marks a suggestion approved.
+- **Reject** marks a suggestion rejected.
+- **Always** marks it approved and creates active rule evidence.
+- **Never** marks it rejected and creates active block-rule evidence.
+
+Unsubscribe candidates can be approved or ignored, but approval does not execute an unsubscribe yet.
+
+The applied observe and review modes only write to the brain tables. Automatic internal moves/tags, retention execution, and unsubscribe execution are planned follow-up work.

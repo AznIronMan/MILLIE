@@ -64,6 +64,9 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/messages":
             self.send_json(self.message_payload(parsed))
             return
+        if parsed.path == "/api/review":
+            self.send_json(self.review_payload(parsed))
+            return
         if parsed.path in AUTODISCOVER_PATHS:
             self.send_xml(autodiscover_xml(self.server.settings, self.server.mailbox_address))
             return
@@ -78,6 +81,12 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
             body = self.read_request_body()
             requested_email = autodiscover_request_email(body) or self.server.mailbox_address
             self.send_xml(autodiscover_xml(self.server.settings, requested_email))
+            return
+        if parsed.path == "/api/classifications/action":
+            self.send_json(self.classification_action_payload())
+            return
+        if parsed.path == "/api/unsubscribe/action":
+            self.send_json(self.unsubscribe_action_payload())
             return
         self.send_error(HTTPStatus.METHOD_NOT_ALLOWED, "Method not allowed")
 
@@ -144,7 +153,60 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
             "attachments": detail["attachments"],
             "has_attachments": detail["has_attachments"],
             "size": detail["size"],
+            "classifications": detail["classifications"],
+            "unsubscribe_candidates": detail["unsubscribe_candidates"],
         }
+
+    def review_payload(self, parsed: urllib.parse.ParseResult) -> dict[str, object]:
+        query = urllib.parse.parse_qs(parsed.query)
+        limit_text = query.get("limit", ["50"])[0]
+        try:
+            limit = min(max(int(limit_text), 1), 250)
+        except ValueError:
+            limit = 50
+        with self.store() as store:
+            suggestions = store.list_review_suggestions(limit=limit)
+        return {"suggestions": suggestions, "limit": limit}
+
+    def classification_action_payload(self) -> dict[str, object]:
+        payload = self.read_json_body()
+        classification_id = str(payload.get("classification_id") or "")
+        action = str(payload.get("action") or "")
+        if not classification_id or action not in {"approve", "reject", "always", "never"}:
+            raise BadRequestError("classification_id and valid action are required")
+        with self.store() as store:
+            mailbox = store.mailbox_by_address(self.server.mailbox_address)
+            identity_id = str(mailbox["owner_identity_id"]) if mailbox else None
+            try:
+                result = store.record_classification_feedback(
+                    classification_id=classification_id,
+                    action=action,
+                    identity_id=identity_id,
+                )
+            except KeyError as exc:
+                raise NotFoundError(str(exc)) from exc
+            store.connection.commit()
+        return {"ok": True, "classification": result}
+
+    def unsubscribe_action_payload(self) -> dict[str, object]:
+        payload = self.read_json_body()
+        candidate_id = str(payload.get("candidate_id") or "")
+        action = str(payload.get("action") or "")
+        if not candidate_id or action not in {"approve", "reject"}:
+            raise BadRequestError("candidate_id and valid action are required")
+        with self.store() as store:
+            mailbox = store.mailbox_by_address(self.server.mailbox_address)
+            identity_id = str(mailbox["owner_identity_id"]) if mailbox else None
+            try:
+                result = store.record_unsubscribe_feedback(
+                    candidate_id=candidate_id,
+                    action=action,
+                    identity_id=identity_id,
+                )
+            except KeyError as exc:
+                raise NotFoundError(str(exc)) from exc
+            store.connection.commit()
+        return {"ok": True, "unsubscribe_candidate": result}
 
     def store(self) -> PostgresMailStore:
         return PostgresMailStore.connect(self.server.settings)
@@ -182,6 +244,18 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
         except ValueError:
             length = 0
         return self.rfile.read(max(length, 0)) if length else b""
+
+    def read_json_body(self) -> dict[str, object]:
+        body = self.read_request_body()
+        if not body:
+            raise BadRequestError("JSON body is required")
+        try:
+            value = json.loads(body.decode("utf-8"))
+        except json.JSONDecodeError as exc:
+            raise BadRequestError("Invalid JSON body") from exc
+        if not isinstance(value, dict):
+            raise BadRequestError("JSON object body is required")
+        return value
 
     def send_error(self, code: int, message: str | None = None, explain: str | None = None) -> None:
         if self.path.startswith("/api/"):
@@ -520,7 +594,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     .topbar {
       display: grid;
-      grid-template-columns: 220px minmax(160px, 1fr) auto auto;
+      grid-template-columns: 220px minmax(160px, 1fr) auto auto auto;
       align-items: center;
       gap: 14px;
       padding: 0 18px;
@@ -695,6 +769,20 @@ INDEX_HTML = r"""<!doctype html>
       cursor: pointer;
     }
     .refresh-button:hover { border-color: var(--accent); color: var(--accent); }
+    .review-button {
+      height: 32px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--surface);
+      color: var(--text);
+      padding: 0 11px;
+      font: inherit;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .review-button:hover { border-color: var(--accent); color: var(--accent); }
     .message-row {
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
@@ -723,7 +811,26 @@ INDEX_HTML = r"""<!doctype html>
     }
     .sender { font-weight: 650; }
     .date { color: var(--muted); font-size: 12px; white-space: nowrap; }
-    .subject { grid-column: 1 / -1; font-weight: 600; }
+    .subject-line {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      min-width: 0;
+    }
+    .subject { font-weight: 600; }
+    .suggestion-badge {
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      height: 19px;
+      padding: 0 6px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-size: 11px;
+      font-weight: 700;
+    }
     .preview { grid-column: 1 / -1; color: var(--muted); }
     .reader {
       border-right: 0;
@@ -784,6 +891,64 @@ INDEX_HTML = r"""<!doctype html>
       text-overflow: ellipsis;
       white-space: nowrap;
     }
+    .review-panel {
+      display: grid;
+      gap: 10px;
+      margin-top: 18px;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface-2);
+    }
+    .review-panel h2 {
+      margin: 0;
+      font-size: 15px;
+      letter-spacing: 0;
+    }
+    .suggestion-card {
+      display: grid;
+      gap: 8px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+    }
+    .suggestion-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .suggestion-title { font-weight: 700; overflow-wrap: anywhere; }
+    .suggestion-meta { color: var(--muted); font-size: 12px; }
+    .suggestion-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .suggestion-actions button {
+      height: 28px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--text);
+      padding: 0 9px;
+      font: inherit;
+      font-size: 12px;
+      font-weight: 650;
+      cursor: pointer;
+    }
+    .suggestion-actions button:hover { border-color: var(--accent); color: var(--accent); }
+    .review-list {
+      display: grid;
+      gap: 10px;
+      padding: 24px 30px 48px;
+    }
+    .review-list h1 {
+      margin: 0 0 4px;
+      font-size: 24px;
+      letter-spacing: 0;
+    }
     .empty, .error {
       padding: 30px;
       color: var(--muted);
@@ -806,6 +971,7 @@ INDEX_HTML = r"""<!doctype html>
     <header class="topbar">
       <div class="brand"><span class="brand-mark">M</span><span>MILLIE Mail</span></div>
       <input id="search" class="search" type="search" placeholder="Search mail" autocomplete="off">
+      <button id="reviewButton" class="review-button" type="button">Review</button>
       <div class="themes" id="themes">
         <button type="button" data-theme="gmail">Gmail</button>
         <button type="button" data-theme="outlook">Outlook</button>
@@ -888,6 +1054,19 @@ INDEX_HTML = r"""<!doctype html>
       if (!response.ok) {
         const payload = await response.json().catch(() => ({}));
         throw new Error(payload.error || response.statusText);
+      }
+      return response.json();
+    }
+
+    async function postJson(path, payload) {
+      const response = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || response.statusText);
       }
       return response.json();
     }
@@ -995,12 +1174,19 @@ INDEX_HTML = r"""<!doctype html>
         row.innerHTML = `
           <div class="sender"></div>
           <div class="date"></div>
-          <div class="subject"></div>
+          <div class="subject-line"><span class="subject"></span><span class="suggestion-badge"></span></div>
           <div class="preview"></div>
         `;
         row.querySelector(".sender").textContent = text(message.from, "(unknown)");
         row.querySelector(".date").textContent = formatDate(message.message_date);
         row.querySelector(".subject").textContent = text(message.subject, "(no subject)");
+        const badge = row.querySelector(".suggestion-badge");
+        const suggestionCount = Number(message.proposed_classifications || 0);
+        if (suggestionCount > 0) {
+          badge.textContent = `${suggestionCount} suggested`;
+        } else {
+          badge.remove();
+        }
         row.querySelector(".preview").textContent = text(message.body_preview, formatSize(message.size));
         row.addEventListener("click", () => openMessage(message.uid).catch(showError));
         list.appendChild(row);
@@ -1033,6 +1219,14 @@ INDEX_HTML = r"""<!doctype html>
             ${cc ? `<div class="meta-row"><span class="meta-label">Cc</span><span class="meta-value" data-field="cc"></span></div>` : ""}
             <div class="meta-row"><span class="meta-label">Date</span><span class="meta-value" data-field="date"></span></div>
           </div>
+          <div class="review-panel" data-panel="classifications" hidden>
+            <h2>MILLIE Suggestions</h2>
+            <div data-list="classifications"></div>
+          </div>
+          <div class="review-panel" data-panel="unsubscribe" hidden>
+            <h2>Unsubscribe Candidates</h2>
+            <div data-list="unsubscribe"></div>
+          </div>
           <div class="body"></div>
           <div class="attachments"></div>
         </div>
@@ -1050,6 +1244,171 @@ INDEX_HTML = r"""<!doctype html>
         item.className = "attachment";
         item.textContent = `${attachment.filename} · ${formatSize(attachment.size)}`;
         container.appendChild(item);
+      });
+      renderClassificationPanel(message.classifications || []);
+      renderUnsubscribePanel(message.unsubscribe_candidates || []);
+    }
+
+    function renderClassificationPanel(classifications) {
+      const panel = $("reader").querySelector('[data-panel="classifications"]');
+      const list = $("reader").querySelector('[data-list="classifications"]');
+      if (!panel || !list || !classifications.length) return;
+      panel.hidden = false;
+      list.innerHTML = "";
+      classifications.forEach((item) => {
+        const card = document.createElement("div");
+        card.className = "suggestion-card";
+        const target = item.target_folder_path || (item.target_tags || []).join(", ");
+        card.innerHTML = `
+          <div class="suggestion-top">
+            <div>
+              <div class="suggestion-title"></div>
+              <div class="suggestion-meta"></div>
+            </div>
+            <span class="suggestion-badge"></span>
+          </div>
+          <div class="suggestion-meta" data-field="reason"></div>
+          <div class="suggestion-actions"></div>
+        `;
+        card.querySelector(".suggestion-title").textContent = `${item.kind}:${item.value} -> ${target}`;
+        card.querySelector(".suggestion-meta").textContent = `confidence ${Number(item.confidence || 0).toFixed(2)}`;
+        card.querySelector(".suggestion-badge").textContent = item.status;
+        card.querySelector('[data-field="reason"]').textContent = item.reason || "";
+        const actions = card.querySelector(".suggestion-actions");
+        if (item.status === "proposed") {
+          [
+            ["approve", "Approve"],
+            ["reject", "Reject"],
+            ["always", "Always"],
+            ["never", "Never"],
+          ].forEach(([action, label]) => {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.textContent = label;
+            button.addEventListener("click", () => applyClassificationAction(item.id, action).catch(showError));
+            actions.appendChild(button);
+          });
+        }
+        list.appendChild(card);
+      });
+    }
+
+    function renderUnsubscribePanel(candidates) {
+      const panel = $("reader").querySelector('[data-panel="unsubscribe"]');
+      const list = $("reader").querySelector('[data-list="unsubscribe"]');
+      if (!panel || !list || !candidates.length) return;
+      panel.hidden = false;
+      list.innerHTML = "";
+      candidates.forEach((item) => {
+        const card = document.createElement("div");
+        card.className = "suggestion-card";
+        const target = item.unsubscribe_mailto || item.unsubscribe_url || item.candidate_type;
+        card.innerHTML = `
+          <div class="suggestion-top">
+            <div>
+              <div class="suggestion-title"></div>
+              <div class="suggestion-meta"></div>
+            </div>
+            <span class="suggestion-badge"></span>
+          </div>
+          <div class="suggestion-actions"></div>
+        `;
+        card.querySelector(".suggestion-title").textContent = target;
+        card.querySelector(".suggestion-meta").textContent = `${item.candidate_type} · confidence ${Number(item.confidence || 0).toFixed(2)}`;
+        card.querySelector(".suggestion-badge").textContent = item.status;
+        const actions = card.querySelector(".suggestion-actions");
+        if (["detected", "review_required"].includes(item.status)) {
+          [
+            ["approve", "Approve"],
+            ["reject", "Ignore"],
+          ].forEach(([action, label]) => {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.textContent = label;
+            button.addEventListener("click", () => applyUnsubscribeAction(item.id, action).catch(showError));
+            actions.appendChild(button);
+          });
+        }
+        list.appendChild(card);
+      });
+    }
+
+    async function applyClassificationAction(classificationId, action) {
+      await postJson("/api/classifications/action", { classification_id: classificationId, action });
+      state.cache.delete(cacheKey(state.folder));
+      if (state.selectedUid) await openMessage(state.selectedUid);
+    }
+
+    async function applyUnsubscribeAction(candidateId, action) {
+      await postJson("/api/unsubscribe/action", { candidate_id: candidateId, action });
+      if (state.selectedUid) await openMessage(state.selectedUid);
+    }
+
+    async function openReview() {
+      const data = await api("/api/review?limit=50");
+      renderReviewList(data.suggestions || []);
+    }
+
+    function renderReviewList(suggestions) {
+      $("reader").innerHTML = `
+        <div class="review-list">
+          <h1>Review Suggestions</h1>
+          <div class="suggestion-meta"></div>
+          <div data-list="review"></div>
+        </div>
+      `;
+      $("reader").querySelector(".suggestion-meta").textContent = `${suggestions.length} proposed classifications`;
+      const list = $("reader").querySelector('[data-list="review"]');
+      if (!suggestions.length) {
+        list.innerHTML = `<div class="empty">No suggestions waiting for review</div>`;
+        return;
+      }
+      suggestions.forEach((item) => {
+        const card = document.createElement("div");
+        card.className = "suggestion-card";
+        const target = item.target_folder_path || (item.target_tags || []).join(", ");
+        card.innerHTML = `
+          <div class="suggestion-top">
+            <div>
+              <div class="suggestion-title"></div>
+              <div class="suggestion-meta"></div>
+            </div>
+            <span class="suggestion-badge"></span>
+          </div>
+          <div class="suggestion-meta" data-field="reason"></div>
+          <div class="suggestion-actions"></div>
+        `;
+        card.querySelector(".suggestion-title").textContent = `${item.subject} · ${item.kind}:${item.value} -> ${target}`;
+        card.querySelector(".suggestion-meta").textContent = `${item.from || "(unknown)"} · ${formatDate(item.message_date)}`;
+        card.querySelector(".suggestion-badge").textContent = Number(item.confidence || 0).toFixed(2);
+        card.querySelector('[data-field="reason"]').textContent = item.reason || "";
+        const actions = card.querySelector(".suggestion-actions");
+        [
+          ["approve", "Approve"],
+          ["reject", "Reject"],
+          ["always", "Always"],
+          ["never", "Never"],
+        ].forEach(([action, label]) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.textContent = label;
+          button.addEventListener("click", async () => {
+            await postJson("/api/classifications/action", { classification_id: item.classification_id, action });
+            await openReview();
+          });
+          actions.appendChild(button);
+        });
+        if (item.folder_path && item.uid) {
+          const openButton = document.createElement("button");
+          openButton.type = "button";
+          openButton.textContent = "Open";
+          openButton.addEventListener("click", async () => {
+            await loadFolder(item.folder_path);
+            await openMessage(item.uid);
+          });
+          actions.appendChild(openButton);
+        }
+        list.appendChild(card);
       });
     }
 
@@ -1073,6 +1432,9 @@ INDEX_HTML = r"""<!doctype html>
     });
     $("refreshFolder").addEventListener("click", () => {
       loadFolder(state.folder, { force: true }).catch(showError);
+    });
+    $("reviewButton").addEventListener("click", () => {
+      openReview().catch(showError);
     });
 
     setTheme(localStorage.getItem("millie.webmail.theme") || "gmail");

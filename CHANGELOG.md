@@ -18,10 +18,13 @@ All notable changes to MILLIE will be documented in this file.
 - Added a sync-cutoff remote purge snapshot tool and a manifest-driven provider purge executor that deletes only exact manifest IMAP UIDs.
 - Added a dormant Postgres brain schema foundation for safe sorting automation, learned rules, classifications, feedback, retention policies, unsubscribe candidates, automation runs, and audit logging.
 - Added an observe-only sorter CLI that proposes categories and unsubscribe candidates without moving, deleting, unsubscribing, or writing to source providers.
+- Added webmail review controls for MILLIE brain classification suggestions and unsubscribe candidates.
+- Added automation-level guardrail settings and helper checks, including a separate provider-write switch.
 
 ### Changed
 
 - Changed exact-folder IMAP imports to skip broad provider folder listing and trust supplied `--folder` names for targeted catch-up runs.
+- Extended the observe sorter with account, folder, message id, and date filters.
 
 ## [1.0.0] - 2026-05-31
 

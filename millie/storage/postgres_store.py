@@ -820,7 +820,8 @@ class PostgresMailStore:
                 m.has_attachments,
                 m.raw_mime_size_bytes,
                 from_addr.value AS from_text,
-                to_addr.value AS to_text
+                to_addr.value AS to_text,
+                review_counts.proposed_count
             FROM millie_mailbox_messages mm
             JOIN millie_mailbox_folders mf ON mf.id = mm.folder_id
             JOIN mail_messages m ON m.id = mm.message_id
@@ -850,6 +851,12 @@ class PostgresMailStore:
                 FROM mail_message_addresses a
                 WHERE a.message_id = m.id AND a.role = 'to'
             ) to_addr ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT count(*) AS proposed_count
+                FROM millie_message_classifications c
+                WHERE c.message_id = m.id
+                  AND c.status = 'proposed'
+            ) review_counts ON TRUE
             WHERE mm.mailbox_id = %s
               AND mf.folder_path = %s
               AND mm.is_expunged = FALSE
@@ -872,6 +879,7 @@ class PostgresMailStore:
                 "size": int(row[9] or 0),
                 "from": row[10] or "",
                 "to": row[11] or "",
+                "proposed_classifications": int(row[12] or 0),
             }
             for row in rows
         ]
@@ -961,7 +969,462 @@ class PostgresMailStore:
             "raw_mime": bytes(row[12]) if row[12] is not None else None,
             "addresses": self.message_addresses(message_id),
             "attachments": self.message_attachments(message_id),
+            "classifications": self.message_classifications(message_id),
+            "unsubscribe_candidates": self.message_unsubscribe_candidates(message_id),
         }
+
+    def message_classifications(self, message_id: str) -> list[dict[str, object]]:
+        rows = self.connection.execute(
+            """
+            SELECT
+                id,
+                classification_kind,
+                classification_value,
+                target_folder_path,
+                target_tags,
+                status,
+                automation_level,
+                confidence,
+                reason_text,
+                evidence_json,
+                created_at,
+                updated_at
+            FROM millie_message_classifications
+            WHERE message_id = %s
+            ORDER BY
+                CASE status
+                    WHEN 'proposed' THEN 0
+                    WHEN 'approved' THEN 1
+                    WHEN 'rejected' THEN 2
+                    ELSE 3
+                END,
+                confidence DESC,
+                created_at DESC
+            """,
+            (message_id,),
+        ).fetchall()
+        return [
+            {
+                "id": row[0],
+                "kind": row[1],
+                "value": row[2],
+                "target_folder_path": row[3],
+                "target_tags": list(row[4] or []),
+                "status": row[5],
+                "automation_level": row[6],
+                "confidence": float(row[7] or 0),
+                "reason": row[8] or "",
+                "evidence": row[9] or {},
+                "created_at": row[10],
+                "updated_at": row[11],
+            }
+            for row in rows
+        ]
+
+    def message_unsubscribe_candidates(self, message_id: str) -> list[dict[str, object]]:
+        rows = self.connection.execute(
+            """
+            SELECT
+                id,
+                candidate_type,
+                unsubscribe_url,
+                unsubscribe_mailto,
+                status,
+                confidence,
+                requires_browser,
+                discovered_at,
+                result_json
+            FROM millie_unsubscribe_candidates
+            WHERE message_id = %s
+            ORDER BY
+                CASE status
+                    WHEN 'review_required' THEN 0
+                    WHEN 'detected' THEN 1
+                    WHEN 'approved' THEN 2
+                    ELSE 3
+                END,
+                confidence DESC,
+                discovered_at DESC
+            """,
+            (message_id,),
+        ).fetchall()
+        return [
+            {
+                "id": row[0],
+                "candidate_type": row[1],
+                "unsubscribe_url": row[2],
+                "unsubscribe_mailto": row[3],
+                "status": row[4],
+                "confidence": float(row[5] or 0),
+                "requires_browser": bool(row[6]),
+                "discovered_at": row[7],
+                "evidence": row[8] or {},
+            }
+            for row in rows
+        ]
+
+    def list_review_suggestions(self, *, limit: int = 50) -> list[dict[str, object]]:
+        rows = self.connection.execute(
+            """
+            WITH from_addresses AS (
+                SELECT
+                    message_id,
+                    string_agg(
+                        CASE
+                            WHEN coalesce(display_name, '') <> '' AND coalesce(email_address, '') <> ''
+                                THEN display_name || ' <' || email_address || '>'
+                            WHEN coalesce(email_address, '') <> '' THEN email_address
+                            ELSE coalesce(raw_value, '')
+                        END,
+                        ', ' ORDER BY ordinal
+                    ) AS from_text
+                FROM mail_message_addresses
+                WHERE role = 'from'
+                GROUP BY message_id
+            )
+            SELECT DISTINCT ON (c.id)
+                c.id,
+                c.message_id,
+                c.classification_kind,
+                c.classification_value,
+                c.target_folder_path,
+                c.target_tags,
+                c.confidence,
+                c.reason_text,
+                m.subject,
+                coalesce(m.sent_at, m.received_at, v.internal_date) AS message_date,
+                coalesce(fa.from_text, '') AS from_text,
+                v.folder_path,
+                v.imap_uid
+            FROM millie_message_classifications c
+            JOIN mail_messages m ON m.id = c.message_id
+            LEFT JOIN millie_v_mailbox_messages v ON v.message_id = c.message_id
+            LEFT JOIN from_addresses fa ON fa.message_id = c.message_id
+            WHERE c.status = 'proposed'
+            ORDER BY
+                c.id,
+                CASE WHEN coalesce(v.folder_path, '') = 'All Mail' THEN 1 ELSE 0 END,
+                c.confidence DESC,
+                c.created_at DESC
+            LIMIT %s
+            """,
+            (limit,),
+        ).fetchall()
+        return [
+            {
+                "classification_id": row[0],
+                "message_id": row[1],
+                "kind": row[2],
+                "value": row[3],
+                "target_folder_path": row[4],
+                "target_tags": list(row[5] or []),
+                "confidence": float(row[6] or 0),
+                "reason": row[7] or "",
+                "subject": row[8] or "(no subject)",
+                "message_date": row[9],
+                "from": row[10] or "",
+                "folder_path": row[11],
+                "uid": int(row[12]) if row[12] is not None else None,
+            }
+            for row in rows
+        ]
+
+    def record_classification_feedback(
+        self,
+        *,
+        classification_id: str,
+        action: str,
+        identity_id: str | None = None,
+        feedback_source: str = "webmail",
+    ) -> dict[str, object]:
+        if action not in {"approve", "reject", "always", "never"}:
+            raise ValueError(f"Unsupported classification action: {action}")
+        row = self.connection.execute(
+            """
+            SELECT
+                id,
+                message_id,
+                classification_kind,
+                classification_value,
+                target_folder_path,
+                target_tags,
+                confidence,
+                reason_text,
+                evidence_json,
+                status
+            FROM millie_message_classifications
+            WHERE id = %s
+            """,
+            (classification_id,),
+        ).fetchone()
+        if not row:
+            raise KeyError(f"Classification not found: {classification_id}")
+
+        status = "approved" if action in {"approve", "always"} else "rejected"
+        rule_id = None
+        if action in {"always", "never"}:
+            rule_id = self._upsert_feedback_rule(
+                classification_row=row,
+                identity_id=identity_id,
+                action=action,
+            )
+        self.connection.execute(
+            """
+            UPDATE millie_message_classifications
+            SET status = %s,
+                reviewed_by_identity_id = %s,
+                reviewed_at = now(),
+                updated_at = now()
+            WHERE id = %s
+            """,
+            (status, identity_id, classification_id),
+        )
+        feedback_type = {
+            "approve": "approve_classification",
+            "reject": "reject_classification",
+            "always": "create_rule",
+            "never": "create_rule",
+        }[action]
+        self.connection.execute(
+            """
+            INSERT INTO millie_user_feedback_events (
+                id, identity_id, message_id, classification_id, rule_id,
+                feedback_type, feedback_source, previous_value_json, new_value_json
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                str(uuid.uuid4()),
+                identity_id,
+                row[1],
+                classification_id,
+                rule_id,
+                feedback_type,
+                feedback_source,
+                Jsonb({"status": row[9]}),
+                Jsonb({"status": status, "action": action, "rule_id": rule_id}),
+            ),
+        )
+        audit_action = {
+            "approve": "approve_classification",
+            "reject": "reject_classification",
+            "always": "create_rule",
+            "never": "disable_rule",
+        }[action]
+        self._insert_automation_audit(
+            action_type=audit_action,
+            identity_id=identity_id,
+            message_id=str(row[1]),
+            classification_id=classification_id,
+            rule_id=rule_id,
+            after_json={
+                "status": status,
+                "action": action,
+                "rule_id": rule_id,
+            },
+        )
+        return {
+            "id": classification_id,
+            "message_id": row[1],
+            "status": status,
+            "action": action,
+            "rule_id": rule_id,
+        }
+
+    def _upsert_feedback_rule(
+        self,
+        *,
+        classification_row: object,
+        identity_id: str | None,
+        action: str,
+    ) -> str:
+        (
+            _classification_id,
+            _message_id,
+            kind,
+            value,
+            target_folder_path,
+            target_tags,
+            confidence,
+            reason_text,
+            evidence_json,
+            _status,
+        ) = classification_row
+        rule_id = stable_id(
+            "millie_brain_rule",
+            action,
+            kind,
+            value,
+            target_folder_path,
+            ",".join(target_tags or []),
+        )
+        block = action == "never"
+        rule_name = (
+            f"Never suggest {kind}:{value}"
+            if block
+            else f"Always suggest {kind}:{value}"
+        )
+        condition = {
+            "classification_kind": kind,
+            "classification_value": value,
+            "target_folder_path": target_folder_path,
+            "target_tags": list(target_tags or []),
+        }
+        rule_action = {
+            "action": "block_suggestion" if block else "suggest",
+            "classification_kind": kind,
+            "classification_value": value,
+            "target_folder_path": target_folder_path,
+            "target_tags": list(target_tags or []),
+        }
+        self.connection.execute(
+            """
+            INSERT INTO millie_brain_rules (
+                id, rule_name, rule_type, rule_source, status, automation_level,
+                priority, condition_json, action_json, confidence, evidence_count,
+                created_by_identity_id, updated_at, metadata_json
+            )
+            VALUES (
+                %s, %s, %s, 'user', 'active', 'review',
+                %s, %s, %s, %s, 1, %s, now(), %s
+            )
+            ON CONFLICT(id) DO UPDATE SET
+                status = 'active',
+                confidence = greatest(millie_brain_rules.confidence, excluded.confidence),
+                evidence_count = millie_brain_rules.evidence_count + 1,
+                updated_at = now(),
+                metadata_json = millie_brain_rules.metadata_json || excluded.metadata_json
+            """,
+            (
+                rule_id,
+                rule_name,
+                kind,
+                10 if block else 100,
+                Jsonb(condition),
+                Jsonb(rule_action),
+                confidence,
+                identity_id,
+                Jsonb(
+                    {
+                        "feedback_action": action,
+                        "reason": reason_text,
+                        "evidence": evidence_json or {},
+                    }
+                ),
+            ),
+        )
+        return rule_id
+
+    def record_unsubscribe_feedback(
+        self,
+        *,
+        candidate_id: str,
+        action: str,
+        identity_id: str | None = None,
+        feedback_source: str = "webmail",
+    ) -> dict[str, object]:
+        if action not in {"approve", "reject"}:
+            raise ValueError(f"Unsupported unsubscribe action: {action}")
+        row = self.connection.execute(
+            """
+            SELECT id, message_id, status, candidate_type, unsubscribe_url, unsubscribe_mailto
+            FROM millie_unsubscribe_candidates
+            WHERE id = %s
+            """,
+            (candidate_id,),
+        ).fetchone()
+        if not row:
+            raise KeyError(f"Unsubscribe candidate not found: {candidate_id}")
+        status = "approved" if action == "approve" else "ignored"
+        self.connection.execute(
+            """
+            UPDATE millie_unsubscribe_candidates
+            SET status = %s,
+                approved_by_identity_id = CASE WHEN %s = 'approved' THEN %s ELSE approved_by_identity_id END,
+                approved_at = CASE WHEN %s = 'approved' THEN now() ELSE approved_at END,
+                metadata_json = metadata_json || %s
+            WHERE id = %s
+            """,
+            (
+                status,
+                status,
+                identity_id,
+                status,
+                Jsonb({"review_action": action}),
+                candidate_id,
+            ),
+        )
+        feedback_type = "unsubscribe_approve" if action == "approve" else "unsubscribe_reject"
+        self.connection.execute(
+            """
+            INSERT INTO millie_user_feedback_events (
+                id, identity_id, message_id, feedback_type, feedback_source,
+                previous_value_json, new_value_json, metadata_json
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                str(uuid.uuid4()),
+                identity_id,
+                row[1],
+                feedback_type,
+                feedback_source,
+                Jsonb({"status": row[2]}),
+                Jsonb({"status": status, "action": action}),
+                Jsonb({"unsubscribe_candidate_id": candidate_id}),
+            ),
+        )
+        self._insert_automation_audit(
+            action_type=feedback_type,
+            identity_id=identity_id,
+            message_id=str(row[1]),
+            unsubscribe_candidate_id=candidate_id,
+            after_json={
+                "status": status,
+                "action": action,
+                "candidate_type": row[3],
+                "unsubscribe_url": row[4],
+                "unsubscribe_mailto": row[5],
+            },
+        )
+        return {
+            "id": candidate_id,
+            "message_id": row[1],
+            "status": status,
+            "action": action,
+        }
+
+    def _insert_automation_audit(
+        self,
+        *,
+        action_type: str,
+        identity_id: str | None = None,
+        message_id: str | None = None,
+        classification_id: str | None = None,
+        rule_id: str | None = None,
+        unsubscribe_candidate_id: str | None = None,
+        after_json: dict[str, object] | None = None,
+    ) -> None:
+        self.connection.execute(
+            """
+            INSERT INTO millie_automation_audit_log (
+                id, identity_id, message_id, classification_id, rule_id,
+                unsubscribe_candidate_id, action_type, automation_level,
+                status, after_json
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 'review', 'recorded', %s)
+            """,
+            (
+                str(uuid.uuid4()),
+                identity_id,
+                message_id,
+                classification_id,
+                rule_id,
+                unsubscribe_candidate_id,
+                action_type,
+                Jsonb(after_json or {}),
+            ),
+        )
 
     def message_addresses(self, message_id: str) -> list[dict[str, object]]:
         rows = self.connection.execute(

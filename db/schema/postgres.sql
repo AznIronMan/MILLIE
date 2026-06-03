@@ -660,6 +660,7 @@ CREATE TABLE IF NOT EXISTS millie_automation_audit_log (
     action_type TEXT NOT NULL CHECK (
         action_type IN (
             'suggest_classification', 'approve_classification', 'reject_classification',
+            'create_rule', 'disable_rule', 'unsubscribe_approve', 'unsubscribe_reject',
             'apply_internal_move', 'apply_internal_tag', 'block_provider_write',
             'retention_evaluate', 'retention_apply', 'unsubscribe_detect',
             'unsubscribe_attempt', 'provider_purge_manifest', 'custom'
@@ -684,6 +685,19 @@ CREATE INDEX IF NOT EXISTS idx_millie_audit_message
     ON millie_automation_audit_log(message_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_millie_audit_action
     ON millie_automation_audit_log(action_type, status, created_at);
+
+ALTER TABLE millie_automation_audit_log
+    DROP CONSTRAINT IF EXISTS millie_automation_audit_log_action_type_check;
+ALTER TABLE millie_automation_audit_log
+    ADD CONSTRAINT millie_automation_audit_log_action_type_check CHECK (
+        action_type IN (
+            'suggest_classification', 'approve_classification', 'reject_classification',
+            'create_rule', 'disable_rule', 'unsubscribe_approve', 'unsubscribe_reject',
+            'apply_internal_move', 'apply_internal_tag', 'block_provider_write',
+            'retention_evaluate', 'retention_apply', 'unsubscribe_detect',
+            'unsubscribe_attempt', 'provider_purge_manifest', 'custom'
+        )
+    );
 
 CREATE OR REPLACE VIEW millie_v_mailbox_messages AS
 SELECT
