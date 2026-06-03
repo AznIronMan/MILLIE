@@ -86,6 +86,10 @@ Metrics also shows **Rule candidates** discovered from current classification ev
 
 Metrics shows **Taxonomy proposals** built from aggregate targets, sender domains, source folders, and message years. These proposals include LLM-ready aggregate context for review, but MILLIE does not send email content or metadata to an LLM from this panel. Seeding a taxonomy proposal creates a proposed custom brain rule for manual review.
 
+The webmail **Proposals** panel reviews saved proposals from rule candidates and taxonomy proposals. It shows proposal status counts, filters by open/proposed/active/disabled/retired/all, supports checkbox selection, and can activate, disable, or retire one or many proposals. These actions only update `millie_brain_rules` status and write audit rows. They do not move messages, apply retention, unsubscribe, or write to source providers.
+
+The **Proposals** panel also has an **Observe** preview. It runs `tools/millie_sort_mail.py --observe` without `--apply` and prints a bounded dry-run summary. Use it after activating proposal rules to see what the current active brain rules would suggest before any suggestions are persisted or applied.
+
 Reviewed unsubscribe candidates can be listed and prepared with a dry-run-first command:
 
 ```sh

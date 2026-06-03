@@ -2180,6 +2180,117 @@ class PostgresMailStore:
         ).fetchall()
         return [self._brain_rule_dict(row) for row in rows]
 
+    def proposal_review(
+        self,
+        *,
+        statuses: list[str] | None = None,
+        limit: int = 100,
+    ) -> dict[str, object]:
+        normalized_statuses = self._normalized_rule_statuses(statuses)
+        if statuses is not None and not normalized_statuses:
+            return {
+                "proposals": [],
+                "status_counts": {},
+                "total": 0,
+                "limit": max(1, min(limit, 500)),
+            }
+        status_filter = ""
+        params: list[object] = []
+        if normalized_statuses:
+            status_filter = f"AND status IN ({placeholders(normalized_statuses)})"
+            params.extend(normalized_statuses)
+        rows = self.connection.execute(
+            f"""
+            SELECT
+                id, rule_name, rule_type, rule_source, status, automation_level,
+                priority, condition_json, action_json, confidence, evidence_count,
+                positive_feedback_count, negative_feedback_count,
+                last_matched_at, created_at, updated_at, metadata_json
+            FROM millie_brain_rules
+            WHERE coalesce(metadata_json, '{{}}'::jsonb) ? 'proposal'
+              {status_filter}
+            ORDER BY
+                CASE status
+                    WHEN 'proposed' THEN 0
+                    WHEN 'disabled' THEN 1
+                    WHEN 'active' THEN 2
+                    WHEN 'retired' THEN 3
+                    ELSE 4
+                END,
+                evidence_count DESC,
+                confidence DESC,
+                updated_at DESC
+            LIMIT %s
+            """,
+            tuple([*params, max(1, min(limit, 500))]),
+        ).fetchall()
+        count_rows = self.connection.execute(
+            """
+            SELECT status, count(*)
+            FROM millie_brain_rules
+            WHERE coalesce(metadata_json, '{}'::jsonb) ? 'proposal'
+            GROUP BY status
+            ORDER BY status
+            """
+        ).fetchall()
+        proposals = [self._proposal_rule_dict(row) for row in rows]
+        counts = {str(row[0] or "unknown"): int(row[1] or 0) for row in count_rows}
+        return {
+            "proposals": proposals,
+            "status_counts": counts,
+            "total": sum(counts.values()),
+            "limit": max(1, min(limit, 500)),
+        }
+
+    def record_proposal_batch_action(
+        self,
+        *,
+        rule_ids: list[str],
+        action: str,
+        identity_id: str | None = None,
+    ) -> dict[str, object]:
+        action = action.strip().lower()
+        if action not in {"activate", "disable", "retire"}:
+            raise ValueError(f"Unsupported proposal action: {action}")
+        normalized_ids = []
+        for rule_id in rule_ids:
+            value = str(rule_id or "").strip()
+            if value and value not in normalized_ids:
+                normalized_ids.append(value)
+        if not normalized_ids:
+            raise ValueError("At least one proposal rule id is required")
+        if len(normalized_ids) > 100:
+            raise ValueError("Proposal batch actions are limited to 100 rules")
+        results = []
+        for rule_id in normalized_ids:
+            before = self.load_brain_rule(rule_id)
+            if not before:
+                raise KeyError(f"Brain rule not found: {rule_id}")
+            metadata = before.get("metadata") if isinstance(before, dict) else {}
+            if not isinstance(metadata, dict) or "proposal" not in metadata:
+                raise ValueError(f"Brain rule is not a saved proposal: {rule_id}")
+            results.append(
+                self.record_brain_rule_action(
+                    rule_id=rule_id,
+                    action=action,
+                    identity_id=identity_id,
+                )
+            )
+        return {
+            "ok": True,
+            "action": action,
+            "count": len(results),
+            "rules": results,
+        }
+
+    def _normalized_rule_statuses(self, statuses: list[str] | None) -> list[str]:
+        normalized: list[str] = []
+        for status in statuses or []:
+            value = str(status).strip().lower()
+            if value in BRAIN_RULE_STATUSES and value not in normalized:
+                normalized.append(value)
+        return normalized
+
     def record_brain_rule_action(
         self,
         *,
@@ -2277,6 +2388,49 @@ class PostgresMailStore:
             "updated_at": row[15],
             "metadata": row[16] or {},
         }
+
+    def _proposal_rule_dict(self, row: object) -> dict[str, object]:
+        rule = self._brain_rule_dict(row)
+        metadata = rule.get("metadata") if isinstance(rule.get("metadata"), dict) else {}
+        proposal = metadata.get("proposal") if isinstance(metadata, dict) else {}
+        if not isinstance(proposal, dict):
+            proposal = {}
+        nested_metadata = proposal.get("metadata")
+        if not isinstance(nested_metadata, dict):
+            nested_metadata = {}
+        condition = proposal.get("condition")
+        if not isinstance(condition, dict):
+            condition = rule.get("condition") if isinstance(rule.get("condition"), dict) else {}
+        rule_action = rule.get("rule_action") if isinstance(rule.get("rule_action"), dict) else {}
+        backtest = proposal.get("backtest")
+        if not isinstance(backtest, dict):
+            backtest = {}
+        samples = backtest.get("samples") or proposal.get("samples") or []
+        proposal_type = (
+            nested_metadata.get("proposal_type")
+            or condition.get("proposal_type")
+            or rule_action.get("action")
+            or rule.get("rule_type")
+            or "proposal"
+        )
+        rule["proposal"] = proposal
+        rule["proposal_type"] = str(proposal_type)
+        rule["proposal_seed_action"] = str(proposal.get("action") or "")
+        rule["proposal_target"] = (
+            proposal.get("target")
+            or rule_action.get("target")
+            or condition.get("target")
+            or condition.get("target_folder_path")
+            or ", ".join(str(tag) for tag in condition.get("target_tags") or [])
+            or ""
+        )
+        rule["proposal_samples"] = samples if isinstance(samples, list) else []
+        rule["proposal_context"] = {
+            "sender_domains": proposal.get("sender_domains") or nested_metadata.get("sender_domain") or [],
+            "source_folders": proposal.get("source_folders") or nested_metadata.get("folder_path") or [],
+            "message_years": proposal.get("message_years") or nested_metadata.get("message_year") or [],
+        }
+        return rule
 
     def learning_metrics(self, *, limit: int = 12) -> dict[str, object]:
         limit = max(1, min(limit, 50))
@@ -2833,7 +2987,7 @@ class PostgresMailStore:
         for candidate in self.rule_backtest_candidates(
             limit=100,
             sample_limit=5,
-            candidate_limit=20000,
+            candidate_limit=5000,
             min_messages=1,
         ):
             if candidate["id"] == candidate_id:

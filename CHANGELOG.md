@@ -6,6 +6,18 @@ All notable changes to MILLIE will be documented in this file.
 
 No unreleased changes.
 
+## [1.2.0] - 2026-06-03
+
+### Added
+
+- Added a dedicated webmail Proposal Review panel for saved rule and taxonomy proposals with status counts, filters, checkbox selection, single-row actions, and bulk activate/disable/retire controls.
+- Added `/api/proposals` and `/api/proposals/action` endpoints plus guarded Postgres proposal review and batch-action helpers.
+- Added a Proposal Review observe preview that runs the sorter in bounded dry-run mode without persisting suggestions or writing to providers.
+
+### Changed
+
+- Reduced rule candidate action reload scans to the same bounded candidate set used by candidate listing to avoid unnecessary heavy database rescans.
+
 ## [1.1.0] - 2026-06-03
 
 ### Added

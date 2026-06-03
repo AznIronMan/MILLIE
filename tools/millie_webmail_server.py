@@ -112,6 +112,9 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/taxonomy/proposals":
             self.send_json(self.taxonomy_proposals_payload(parsed))
             return
+        if parsed.path == "/api/proposals":
+            self.send_json(self.proposal_review_payload(parsed))
+            return
         if parsed.path == "/api/internal-apply":
             self.send_json(self.internal_apply_payload(parsed))
             return
@@ -162,6 +165,9 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/taxonomy/proposals/action":
             self.send_json(self.taxonomy_proposal_action_payload())
+            return
+        if parsed.path == "/api/proposals/action":
+            self.send_json(self.proposal_action_payload())
             return
         if parsed.path == "/api/internal-apply/action":
             self.send_json(self.internal_apply_action_payload())
@@ -505,6 +511,23 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
             "sample_limit": sample_limit,
         }
 
+    def proposal_review_payload(self, parsed: urllib.parse.ParseResult) -> dict[str, object]:
+        query = urllib.parse.parse_qs(parsed.query)
+        statuses = [
+            status
+            for value in query.get("status", [])
+            for status in value.split(",")
+            if status and status.strip().lower() != "all"
+        ]
+        limit = parse_int_limit(query.get("limit", ["100"])[0], default=100, maximum=500)
+        with self.store() as store:
+            self.request_mailbox(store)
+            review = store.proposal_review(statuses=statuses or None, limit=limit)
+        return {
+            **review,
+            "statuses": statuses,
+        }
+
     def internal_apply_payload(self, parsed: urllib.parse.ParseResult) -> dict[str, object]:
         query = urllib.parse.parse_qs(parsed.query)
         limit = parse_int_limit(query.get("limit", ["100"])[0], default=100, maximum=500)
@@ -730,6 +753,51 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
             try:
                 result = store.record_taxonomy_proposal_action(
                     proposal_id=proposal_id,
+                    action=action,
+                    identity_id=identity_id,
+                )
+            except KeyError as exc:
+                raise NotFoundError(str(exc)) from exc
+            except ValueError as exc:
+                raise BadRequestError(str(exc)) from exc
+            store.connection.commit()
+        return result
+
+    def proposal_action_payload(self) -> dict[str, object]:
+        payload = self.read_json_body()
+        action = str(payload.get("action") or "").strip().lower()
+        if action == "observe_preview":
+            limit = parse_int_limit(str(payload.get("limit") or "25"), default=25, maximum=250)
+            command = [
+                sys.executable,
+                str(PROJECT_ROOT / "tools" / "millie_sort_mail.py"),
+                "--observe",
+                "--include-classified",
+                "--limit",
+                str(limit),
+                "--sample",
+                "10",
+            ]
+            result = run_apply_command("proposal_observe_preview", command)
+            return {
+                "ok": result["returncode"] == 0,
+                "action": action,
+                "limit": limit,
+                "result": result,
+            }
+        if action not in {"activate", "disable", "retire"}:
+            raise BadRequestError("valid proposal action is required")
+        rule_ids = payload.get("rule_ids")
+        if rule_ids is None and payload.get("rule_id"):
+            rule_ids = [payload.get("rule_id")]
+        if not isinstance(rule_ids, list):
+            raise BadRequestError("rule_ids must be a list")
+        with self.store() as store:
+            mailbox = self.request_mailbox(store)
+            identity_id = str(mailbox["owner_identity_id"]) if mailbox else None
+            try:
+                result = store.record_proposal_batch_action(
+                    rule_ids=[str(item) for item in rule_ids],
                     action=action,
                     identity_id=identity_id,
                 )
@@ -1425,9 +1493,9 @@ INDEX_HTML = r"""<!doctype html>
     }
     .topbar {
       display: grid;
-      grid-template-columns: 220px minmax(160px, 1fr) repeat(10, auto) minmax(80px, 180px) auto;
+      grid-template-columns: 210px minmax(150px, 1fr) repeat(11, auto) minmax(80px, 180px) auto;
       align-items: center;
-      gap: 14px;
+      gap: 10px;
       padding: 0 18px;
       background: var(--surface);
       border-bottom: 1px solid var(--line);
@@ -1815,6 +1883,40 @@ INDEX_HTML = r"""<!doctype html>
       grid-template-columns: 70px 82px;
       gap: 6px;
     }
+    .proposal-controls {
+      display: grid;
+      grid-template-columns: minmax(140px, 180px) minmax(100px, 130px) repeat(6, auto);
+      gap: 8px;
+      align-items: end;
+    }
+    .proposal-controls label {
+      display: grid;
+      gap: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+    .proposal-controls select {
+      height: 30px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--text);
+      padding: 0 8px;
+      font-size: 12px;
+      min-width: 0;
+    }
+    .proposal-head {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: start;
+    }
+    .proposal-check {
+      width: 18px;
+      height: 18px;
+      margin-top: 2px;
+    }
     .filter-grid {
       display: grid;
       grid-template-columns: repeat(4, minmax(120px, 1fr)) auto;
@@ -1911,6 +2013,7 @@ INDEX_HTML = r"""<!doctype html>
       .topbar { grid-template-columns: 160px minmax(120px, 1fr); grid-auto-flow: row; height: auto; padding: 10px 12px; }
       .themes, .account { grid-column: span 1; }
       .policy-edit { grid-template-columns: 1fr 1fr; align-items: stretch; }
+      .proposal-controls { grid-template-columns: 1fr 1fr; align-items: stretch; }
       .filter-grid { grid-template-columns: 1fr 1fr; }
       .metric-grid { grid-template-columns: 1fr 1fr; }
       .main { grid-template-columns: 76px minmax(260px, 38vw) minmax(320px, 1fr); }
@@ -1934,6 +2037,7 @@ INDEX_HTML = r"""<!doctype html>
       <button id="metricsButton" class="review-button" type="button">Metrics</button>
       <button id="unsubscribeButton" class="review-button" type="button">Unsub</button>
       <button id="policiesButton" class="review-button" type="button">Policies</button>
+      <button id="proposalsButton" class="review-button" type="button">Proposals</button>
       <button id="rulesButton" class="review-button" type="button">Rules</button>
       <button id="applyButton" class="review-button" type="button">Apply</button>
       <button id="opsButton" class="review-button" type="button">Ops</button>
@@ -2424,6 +2528,15 @@ INDEX_HTML = r"""<!doctype html>
         api("/api/taxonomy/proposals?limit=12&sample_limit=4"),
       ]);
       renderLearningMetrics(data, ruleCandidates.candidates || [], taxonomy.proposals || []);
+    }
+
+    async function openProposals(statusValue = null) {
+      const currentSelect = $("proposalStatus");
+      const selectedStatus = statusValue || (currentSelect ? currentSelect.value : "proposed,disabled");
+      const params = new URLSearchParams({ limit: "100" });
+      if (selectedStatus && selectedStatus !== "all") params.set("status", selectedStatus);
+      const data = await api(`/api/proposals?${params.toString()}`);
+      renderProposalReview(data, selectedStatus);
     }
 
     async function openInternalApply() {
@@ -2923,6 +3036,155 @@ INDEX_HTML = r"""<!doctype html>
         });
         list.appendChild(card);
       });
+    }
+
+    function renderProposalReview(data, selectedStatus = "proposed,disabled") {
+      const proposals = data.proposals || [];
+      const counts = data.status_counts || {};
+      $("reader").innerHTML = `
+        <div class="review-list">
+          <h1>Proposal Review</h1>
+          <div class="suggestion-meta"></div>
+          <div class="metric-grid" data-list="proposal-metrics"></div>
+          <div class="proposal-controls">
+            <label>Status
+              <select id="proposalStatus">
+                <option value="proposed,disabled">Open</option>
+                <option value="proposed">Proposed</option>
+                <option value="active">Active</option>
+                <option value="disabled">Disabled</option>
+                <option value="retired">Retired</option>
+                <option value="all">All</option>
+              </select>
+            </label>
+            <label>Preview
+              <select id="proposalPreviewLimit">
+                <option value="25">25</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+                <option value="250">250</option>
+              </select>
+            </label>
+            <button id="proposalRefresh" class="review-button" type="button">Refresh</button>
+            <button id="proposalSelectAll" class="review-button" type="button">Select all</button>
+            <button id="proposalActivate" class="review-button" type="button">Activate</button>
+            <button id="proposalDisable" class="review-button" type="button">Disable</button>
+            <button id="proposalRetire" class="review-button" type="button">Retire</button>
+            <button id="proposalObserve" class="review-button" type="button">Observe</button>
+          </div>
+          <pre id="proposalPreviewOutput" class="output-box" hidden></pre>
+          <div data-list="proposal-review"></div>
+        </div>
+      `;
+      $("reader").querySelector(".suggestion-meta").textContent =
+        `${proposals.length} visible proposals · ${formatCount(data.total)} saved total · ${statusCounts(counts)}`;
+      $("proposalStatus").value = selectedStatus;
+      const metrics = $("reader").querySelector('[data-list="proposal-metrics"]');
+      addMetric(metrics, "Proposed", counts.proposed || 0, "waiting for activation");
+      addMetric(metrics, "Active", counts.active || 0, "available to brain workflows");
+      addMetric(metrics, "Disabled", counts.disabled || 0, "kept for later");
+      addMetric(metrics, "Retired", counts.retired || 0, "suppressed proposals");
+      $("proposalStatus").addEventListener("change", () => openProposals($("proposalStatus").value).catch(showError));
+      $("proposalRefresh").addEventListener("click", () => openProposals().catch(showError));
+      $("proposalSelectAll").addEventListener("click", () => {
+        $("reader").querySelectorAll("[data-proposal-select]").forEach((input) => {
+          input.checked = true;
+        });
+      });
+      $("proposalActivate").addEventListener("click", () => applyProposalBatchAction("activate").catch(showError));
+      $("proposalDisable").addEventListener("click", () => applyProposalBatchAction("disable").catch(showError));
+      $("proposalRetire").addEventListener("click", () => applyProposalBatchAction("retire").catch(showError));
+      $("proposalObserve").addEventListener("click", () => runProposalObservePreview().catch(showError));
+      const list = $("reader").querySelector('[data-list="proposal-review"]');
+      if (!proposals.length) {
+        list.innerHTML = `<div class="empty">No saved proposals match this filter</div>`;
+        return;
+      }
+      proposals.forEach((item) => {
+        const proposal = item.proposal || {};
+        const context = item.proposal_context || {};
+        const card = document.createElement("div");
+        card.className = "suggestion-card";
+        card.innerHTML = `
+          <div class="proposal-head">
+            <input class="proposal-check" data-proposal-select type="checkbox">
+            <div>
+              <div class="suggestion-title"></div>
+              <div class="suggestion-meta" data-field="proposal-meta"></div>
+            </div>
+            <span class="suggestion-badge"></span>
+          </div>
+          <div class="suggestion-meta" data-field="proposal-context"></div>
+          <div data-list="proposal-samples"></div>
+          <div class="suggestion-actions"></div>
+          <pre class="json-box"></pre>
+        `;
+        const checkbox = card.querySelector("[data-proposal-select]");
+        checkbox.value = item.id;
+        checkbox.setAttribute("aria-label", `Select ${item.rule_name || item.id}`);
+        card.querySelector(".suggestion-title").textContent = item.rule_name || item.id;
+        card.querySelector('[data-field="proposal-meta"]').textContent =
+          `${item.proposal_type || item.rule_type} · ${item.rule_source} · evidence ${formatCount(item.evidence_count)} · confidence ${Number(item.confidence || 0).toFixed(2)} · target ${text(item.proposal_target, "n/a")}`;
+        card.querySelector(".suggestion-badge").textContent = item.status;
+        card.querySelector('[data-field="proposal-context"]').textContent =
+          `senders ${proposalListText(context.sender_domains)} · sources ${proposalListText(context.source_folders)} · years ${proposalListText(context.message_years)}`;
+        const samples = card.querySelector('[data-list="proposal-samples"]');
+        (item.proposal_samples || []).slice(0, 4).forEach((sample) => {
+          const row = document.createElement("div");
+          row.className = "source-row";
+          row.innerHTML = `
+            <div>
+              <div class="suggestion-title"></div>
+              <div class="suggestion-meta"></div>
+            </div>
+            <button class="review-button" type="button">Open</button>
+          `;
+          row.querySelector(".suggestion-title").textContent = sample.subject || "(no subject)";
+          row.querySelector(".suggestion-meta").textContent =
+            `${sample.from || "(unknown)"} · ${formatDate(sample.message_date)} · ${sample.folder_path || ""}`;
+          const openButton = row.querySelector("button");
+          if (sample.folder_path && sample.uid) {
+            openButton.addEventListener("click", async () => {
+              await loadFolder(sample.folder_path);
+              await openMessage(sample.uid);
+            });
+          } else {
+            openButton.disabled = true;
+          }
+          samples.appendChild(row);
+        });
+        const actions = card.querySelector(".suggestion-actions");
+        [
+          ["activate", "Activate"],
+          ["disable", "Disable"],
+          ["retire", "Retire"],
+        ].forEach(([action, label]) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.textContent = label;
+          button.disabled =
+            (action === "activate" && item.status === "active") ||
+            (action === "disable" && item.status === "disabled") ||
+            (action === "retire" && item.status === "retired");
+          button.addEventListener("click", () => applyProposalBatchAction(action, [item.id]).catch(showError));
+          actions.appendChild(button);
+        });
+        card.querySelector(".json-box").textContent = JSON.stringify(
+          {
+            condition: item.condition,
+            action: item.rule_action,
+            proposal_context: proposal.llm_context || item.proposal_context,
+          },
+          null,
+          2,
+        );
+        list.appendChild(card);
+      });
+    }
+
+    function proposalListText(value) {
+      if (Array.isArray(value)) return value.filter(Boolean).join(", ") || "none";
+      return text(value, "none");
     }
 
     function renderLearningMetrics(data, ruleCandidates = [], taxonomyProposals = []) {
@@ -3580,6 +3842,42 @@ INDEX_HTML = r"""<!doctype html>
       });
     }
 
+    function selectedProposalRuleIds() {
+      return Array.from($("reader").querySelectorAll("[data-proposal-select]:checked"))
+        .map((input) => input.value)
+        .filter(Boolean);
+    }
+
+    async function applyProposalBatchAction(action, explicitRuleIds = null) {
+      const ruleIds = explicitRuleIds || selectedProposalRuleIds();
+      const output = $("proposalPreviewOutput");
+      if (!ruleIds.length) {
+        if (output) {
+          output.hidden = false;
+          output.textContent = "Select at least one proposal.";
+        }
+        return;
+      }
+      await postJson("/api/proposals/action", { action, rule_ids: ruleIds });
+      await openProposals();
+    }
+
+    async function runProposalObservePreview() {
+      const output = $("proposalPreviewOutput");
+      output.hidden = false;
+      output.textContent = "Running observe preview...";
+      const data = await postJson("/api/proposals/action", {
+        action: "observe_preview",
+        limit: $("proposalPreviewLimit").value,
+      });
+      const result = data.result || {};
+      output.textContent = [
+        `proposal observe preview · exit ${result.returncode}`,
+        result.stdout || "",
+        result.stderr || "",
+      ].filter(Boolean).join("\\n");
+    }
+
     async function applyRuleAction(ruleId, action) {
       await postJson("/api/rules/action", { rule_id: ruleId, action });
     }
@@ -3681,6 +3979,9 @@ INDEX_HTML = r"""<!doctype html>
     });
     $("policiesButton").addEventListener("click", () => {
       openPolicies().catch(showError);
+    });
+    $("proposalsButton").addEventListener("click", () => {
+      openProposals().catch(showError);
     });
     $("searchButton").addEventListener("click", () => {
       runGlobalSearch().catch(showError);
