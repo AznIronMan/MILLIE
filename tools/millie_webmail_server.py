@@ -67,6 +67,9 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/review":
             self.send_json(self.review_payload(parsed))
             return
+        if parsed.path == "/api/unsubscribe":
+            self.send_json(self.unsubscribe_payload(parsed))
+            return
         if parsed.path in AUTODISCOVER_PATHS:
             self.send_xml(autodiscover_xml(self.server.settings, self.server.mailbox_address))
             return
@@ -178,6 +181,26 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
                 limit=limit,
             )
         return {"suggestions": suggestions, "retention": retention, "limit": limit}
+
+    def unsubscribe_payload(self, parsed: urllib.parse.ParseResult) -> dict[str, object]:
+        query = urllib.parse.parse_qs(parsed.query)
+        limit_text = query.get("limit", ["100"])[0]
+        try:
+            limit = min(max(int(limit_text), 1), 250)
+        except ValueError:
+            limit = 100
+        statuses = [
+            status
+            for value in query.get("status", [])
+            for status in value.split(",")
+            if status
+        ]
+        with self.store() as store:
+            candidates = store.list_unsubscribe_review_items(
+                limit=limit,
+                statuses=statuses or None,
+            )
+        return {"candidates": candidates, "limit": limit, "statuses": statuses}
 
     def classification_action_payload(self) -> dict[str, object]:
         payload = self.read_json_body()
@@ -632,7 +655,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     .topbar {
       display: grid;
-      grid-template-columns: 220px minmax(160px, 1fr) auto auto auto;
+      grid-template-columns: 220px minmax(160px, 1fr) auto auto auto auto;
       align-items: center;
       gap: 14px;
       padding: 0 18px;
@@ -1010,6 +1033,7 @@ INDEX_HTML = r"""<!doctype html>
       <div class="brand"><span class="brand-mark">M</span><span>MILLIE Mail</span></div>
       <input id="search" class="search" type="search" placeholder="Search mail" autocomplete="off">
       <button id="reviewButton" class="review-button" type="button">Review</button>
+      <button id="unsubscribeButton" class="review-button" type="button">Unsub</button>
       <div class="themes" id="themes">
         <button type="button" data-theme="gmail">Gmail</button>
         <button type="button" data-theme="outlook">Outlook</button>
@@ -1431,6 +1455,11 @@ INDEX_HTML = r"""<!doctype html>
       renderReviewList(data.suggestions || [], data.retention || []);
     }
 
+    async function openUnsubscribeQueue() {
+      const data = await api("/api/unsubscribe?limit=100");
+      renderUnsubscribeQueue(data.candidates || []);
+    }
+
     function renderReviewList(suggestions, retentionItems) {
       $("reader").innerHTML = `
         <div class="review-list">
@@ -1543,6 +1572,71 @@ INDEX_HTML = r"""<!doctype html>
       }
     }
 
+    function renderUnsubscribeQueue(candidates) {
+      $("reader").innerHTML = `
+        <div class="review-list">
+          <h1>Unsubscribe Queue</h1>
+          <div class="suggestion-meta"></div>
+          <div data-list="unsubscribe-queue"></div>
+        </div>
+      `;
+      $("reader").querySelector(".suggestion-meta").textContent = `${candidates.length} candidates`;
+      const list = $("reader").querySelector('[data-list="unsubscribe-queue"]');
+      if (!candidates.length) {
+        list.innerHTML = `<div class="empty">No unsubscribe candidates</div>`;
+        return;
+      }
+      candidates.forEach((item) => {
+        const card = document.createElement("div");
+        card.className = "suggestion-card";
+        const target = item.unsubscribe_mailto || item.unsubscribe_url || item.candidate_type;
+        const browser = item.requires_browser ? "browser/manual assist" : "manual assist";
+        card.innerHTML = `
+          <div class="suggestion-top">
+            <div>
+              <div class="suggestion-title"></div>
+              <div class="suggestion-meta"></div>
+            </div>
+            <span class="suggestion-badge"></span>
+          </div>
+          <div class="suggestion-meta" data-field="target"></div>
+          <div class="suggestion-actions"></div>
+        `;
+        card.querySelector(".suggestion-title").textContent = `${item.subject} · ${item.candidate_type}`;
+        card.querySelector(".suggestion-meta").textContent =
+          `${item.from || "(unknown)"} · ${formatDate(item.message_date)} · confidence ${Number(item.confidence || 0).toFixed(2)}`;
+        card.querySelector(".suggestion-badge").textContent = item.status;
+        card.querySelector('[data-field="target"]').textContent = `${browser} · ${target}`;
+        const actions = card.querySelector(".suggestion-actions");
+        if (["detected", "review_required"].includes(item.status)) {
+          [
+            ["approve", "Approve"],
+            ["reject", "Ignore"],
+          ].forEach(([action, label]) => {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.textContent = label;
+            button.addEventListener("click", async () => {
+              await applyUnsubscribeAction(item.id, action);
+              await openUnsubscribeQueue();
+            });
+            actions.appendChild(button);
+          });
+        }
+        if (item.folder_path && item.uid) {
+          const openButton = document.createElement("button");
+          openButton.type = "button";
+          openButton.textContent = "Open";
+          openButton.addEventListener("click", async () => {
+            await loadFolder(item.folder_path);
+            await openMessage(item.uid);
+          });
+          actions.appendChild(openButton);
+        }
+        list.appendChild(card);
+      });
+    }
+
     function showError(error) {
       $("reader").innerHTML = `<div class="error"></div>`;
       $("reader").querySelector(".error").textContent = error.message || String(error);
@@ -1566,6 +1660,9 @@ INDEX_HTML = r"""<!doctype html>
     });
     $("reviewButton").addEventListener("click", () => {
       openReview().catch(showError);
+    });
+    $("unsubscribeButton").addEventListener("click", () => {
+      openUnsubscribeQueue().catch(showError);
     });
 
     setTheme(localStorage.getItem("millie.webmail.theme") || "gmail");

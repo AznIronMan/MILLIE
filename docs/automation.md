@@ -66,7 +66,30 @@ The webmail view includes a **Review** queue and message-level suggestion panels
 - **Always** marks it approved and creates active rule evidence.
 - **Never** marks it rejected and creates active block-rule evidence.
 
-Unsubscribe candidates can be approved or ignored, but approval does not execute an unsubscribe yet.
+Unsubscribe candidates can be approved or ignored. Approval does not click links, submit forms, send mail, or contact providers by itself.
+
+Reviewed unsubscribe candidates can be listed and prepared with a dry-run-first command:
+
+```sh
+.private/venv/bin/python tools/millie_unsubscribe_review.py list --status approved --include-browser
+.private/venv/bin/python tools/millie_unsubscribe_review.py prepare --execute
+```
+
+Preparation records `attempting` or `unsafe` state plus `unsubscribe_attempt` audit rows only. It does not load unsubscribe URLs or submit forms. Browser-required or body-derived candidates are marked unsafe unless explicitly prepared with manual browser assist:
+
+```sh
+.private/venv/bin/python tools/millie_unsubscribe_review.py prepare \
+  --allow-browser-manual \
+  --execute
+```
+
+Generate a local manual-assist checklist for approved or prepared candidates:
+
+```sh
+.private/venv/bin/python tools/millie_unsubscribe_review.py assist
+```
+
+The checklist is written under ignored `.private/local/` and contains reviewed links/mailto targets for human follow-up. MILLIE still does not click or submit anything.
 
 Messages opened from hold folders with matching retention policies show a read-only retention panel in webmail. The panel shows the policy status, hold duration, target action, review requirement, copied date, and eligibility date. It does not hide, expire, delete, or otherwise change messages.
 
@@ -100,7 +123,7 @@ Execution requires `automation_level=auto_internal` or higher:
 
 The retention apply command only considers acknowledged decisions for active policies. It supports `no_action` audit application and non-destructive `hide_from_default_views`, which marks matching `INBOX` and `All Mail` facade rows hidden while leaving hold/source folders and provider mail intact. `expire_internal_copy` and `delete_internal_copy` are not executed yet.
 
-Unsubscribe execution is planned follow-up work.
+Automatic unsubscribe execution is planned follow-up work. Manual-assist preparation is available, but browser automation and provider form submission are not enabled.
 
 ## Retention Holds
 

@@ -175,6 +175,16 @@ The sorter supports `--account`, `--folder`, `--message-id`, `--since`, and `--u
 
 Automation guardrails live in `millie.settings` as `automation_level` and `automation_provider_write_enabled`. Provider writes require both `automation_level=provider_write` and `automation_provider_write_enabled=true`; manifest-driven purge tools remain separate.
 
+Reviewed unsubscribe candidates can be prepared without contacting providers:
+
+```sh
+.private/venv/bin/python tools/millie_unsubscribe_review.py list --status approved --include-browser
+.private/venv/bin/python tools/millie_unsubscribe_review.py prepare --execute
+.private/venv/bin/python tools/millie_unsubscribe_review.py assist
+```
+
+Preparation records `attempting` or `unsafe` state and audit rows only. The manual-assist checklist is written under ignored `.private/local/` for human follow-up; MILLIE does not click links or submit provider forms.
+
 Approved suggestions can be applied inside MILLIE with a dry-run-first command:
 
 ```sh

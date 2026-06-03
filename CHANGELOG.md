@@ -27,6 +27,8 @@ All notable changes to MILLIE will be documented in this file.
 - Added a dry-run-first retention apply command for acknowledged active policies, including non-destructive internal hide-from-default-views support.
 - Added a dry-run-first retention policy manager for listing, creating, activating, disabling, and editing policies with audit rows.
 - Added a live-upkeep runner that combines live sync, dedupe backfill, Gmail label aliasing, observe sorting, retention scan, and safe internal apply steps while MILLIE is running.
+- Added a safe unsubscribe review CLI for listing, preparing, ignoring, marking unsafe, and generating manual-assist checklists without clicking provider links.
+- Added a webmail unsubscribe queue for global candidate review.
 
 ### Changed
 

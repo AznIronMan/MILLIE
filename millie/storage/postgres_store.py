@@ -1164,6 +1164,95 @@ class PostgresMailStore:
             for row in rows
         ]
 
+    def list_unsubscribe_review_items(
+        self,
+        *,
+        limit: int = 50,
+        statuses: list[str] | None = None,
+    ) -> list[dict[str, object]]:
+        allowed_statuses = statuses or ["review_required", "detected", "approved", "attempting", "unsafe", "failed"]
+        rows = self.connection.execute(
+            f"""
+            WITH from_addresses AS (
+                SELECT
+                    message_id,
+                    string_agg(
+                        CASE
+                            WHEN coalesce(display_name, '') <> '' AND coalesce(email_address, '') <> ''
+                                THEN display_name || ' <' || email_address || '>'
+                            WHEN coalesce(email_address, '') <> '' THEN email_address
+                            ELSE coalesce(raw_value, '')
+                        END,
+                        ', ' ORDER BY ordinal
+                    ) AS from_text
+                FROM mail_message_addresses
+                WHERE role = 'from'
+                GROUP BY message_id
+            )
+            SELECT DISTINCT ON (u.id)
+                u.id,
+                u.message_id,
+                u.candidate_type,
+                u.unsubscribe_url,
+                u.unsubscribe_mailto,
+                u.status,
+                u.confidence,
+                u.requires_browser,
+                u.discovered_at,
+                u.approved_at,
+                u.result_json,
+                u.error_message,
+                coalesce(m.subject, '(no subject)') AS subject,
+                coalesce(m.sent_at, m.received_at, v.internal_date) AS message_date,
+                coalesce(fa.from_text, '') AS from_text,
+                v.folder_path,
+                v.imap_uid
+            FROM millie_unsubscribe_candidates u
+            JOIN mail_messages m ON m.id = u.message_id
+            LEFT JOIN millie_v_mailbox_messages v ON v.message_id = u.message_id
+            LEFT JOIN from_addresses fa ON fa.message_id = u.message_id
+            WHERE u.status IN ({placeholders(allowed_statuses)})
+            ORDER BY
+                u.id,
+                CASE WHEN coalesce(v.folder_path, '') = 'All Mail' THEN 1 ELSE 0 END,
+                CASE u.status
+                    WHEN 'approved' THEN 0
+                    WHEN 'review_required' THEN 1
+                    WHEN 'detected' THEN 2
+                    WHEN 'attempting' THEN 3
+                    WHEN 'failed' THEN 4
+                    WHEN 'unsafe' THEN 5
+                    ELSE 6
+                END,
+                u.confidence DESC,
+                u.discovered_at DESC
+            LIMIT %s
+            """,
+            tuple([*allowed_statuses, limit]),
+        ).fetchall()
+        return [
+            {
+                "id": row[0],
+                "message_id": row[1],
+                "candidate_type": row[2],
+                "unsubscribe_url": row[3],
+                "unsubscribe_mailto": row[4],
+                "status": row[5],
+                "confidence": float(row[6] or 0),
+                "requires_browser": bool(row[7]),
+                "discovered_at": row[8],
+                "approved_at": row[9],
+                "evidence": row[10] or {},
+                "error_message": row[11] or "",
+                "subject": row[12] or "(no subject)",
+                "message_date": row[13],
+                "from": row[14] or "",
+                "folder_path": row[15],
+                "uid": int(row[16]) if row[16] is not None else None,
+            }
+            for row in rows
+        ]
+
     def list_review_suggestions(self, *, limit: int = 50) -> list[dict[str, object]]:
         rows = self.connection.execute(
             """
