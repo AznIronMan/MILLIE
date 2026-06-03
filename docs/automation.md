@@ -203,3 +203,5 @@ For a runtime loop that stops when the command stops:
 ```
 
 Each upkeep pass records a `live_upkeep` automation run with step return codes and timings. This is runtime behavior only; it does not install a macOS service.
+
+The webmail **Ops** dashboard shows recent `live_upkeep` runs, live source cursor status, queue counts, and bounded one-off buttons for sync, upkeep, dedupe report, and dedupe backfill. The dashboard is for local MILLIE maintenance only and does not run remote provider purge.

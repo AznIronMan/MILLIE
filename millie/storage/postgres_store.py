@@ -2248,6 +2248,265 @@ class PostgresMailStore:
             "limit": max(1, min(limit, 500)),
         }
 
+    def operations_status(
+        self,
+        *,
+        mailbox_id: str,
+        accounts: list[dict[str, Any]] | None = None,
+        run_limit: int = 10,
+    ) -> dict[str, object]:
+        source_rows = self.connection.execute(
+            """
+            SELECT
+                s.id,
+                s.source_type,
+                coalesce(s.display_name, ''),
+                s.source_uri,
+                coalesce(s.auth_mode, ''),
+                s.is_active,
+                s.created_at,
+                s.updated_at,
+                (SELECT count(*) FROM mail_folders f WHERE f.source_id = s.id) AS folder_count,
+                (SELECT count(*) FROM mail_messages m WHERE m.source_id = s.id) AS message_count,
+                (
+                    SELECT max(coalesce(m.received_at, m.sent_at, m.created_at))
+                    FROM mail_messages m
+                    WHERE m.source_id = s.id
+                ) AS newest_message_at,
+                (
+                    SELECT max(c.updated_at)
+                    FROM mail_source_cursors c
+                    WHERE c.source_id = s.id
+                ) AS last_cursor_at
+            FROM mail_sources s
+            ORDER BY
+                CASE s.source_type WHEN 'imap' THEN 0 WHEN 'exchange_imap_oauth' THEN 1 ELSE 2 END,
+                lower(coalesce(nullif(s.display_name, ''), s.source_uri)),
+                s.source_uri
+            """
+        ).fetchall()
+        source_ids = [str(row[0]) for row in source_rows]
+        cursors_by_source: dict[str, list[dict[str, object]]] = {source_id: [] for source_id in source_ids}
+        if source_ids:
+            cursor_rows = self.connection.execute(
+                f"""
+                SELECT source_id, cursor_key, cursor_value, updated_at
+                FROM (
+                    SELECT
+                        source_id,
+                        cursor_key,
+                        cursor_value,
+                        updated_at,
+                        row_number() OVER (
+                            PARTITION BY source_id
+                            ORDER BY updated_at DESC, cursor_key
+                        ) AS row_number
+                    FROM mail_source_cursors
+                    WHERE source_id IN ({placeholders(source_ids)})
+                ) ranked
+                WHERE row_number <= 8
+                ORDER BY source_id, updated_at DESC, cursor_key
+                """,
+                tuple(source_ids),
+            ).fetchall()
+            for row in cursor_rows:
+                source_id = str(row[0])
+                cursors_by_source.setdefault(source_id, []).append(
+                    {
+                        "key": row[1],
+                        "value": str(row[2] or "")[:160],
+                        "updated_at": row[3],
+                    }
+                )
+
+        sources: list[dict[str, object]] = []
+        for row in source_rows:
+            source_id = str(row[0])
+            source = {
+                "id": source_id,
+                "source_type": row[1],
+                "display_name": row[2],
+                "source_uri": row[3],
+                "auth_mode": row[4],
+                "is_active": bool(row[5]),
+                "created_at": row[6],
+                "updated_at": row[7],
+                "folder_count": int(row[8] or 0),
+                "message_count": int(row[9] or 0),
+                "newest_message_at": row[10],
+                "last_cursor_at": row[11],
+                "cursors": cursors_by_source.get(source_id, []),
+            }
+            source["_match_text"] = " ".join(
+                str(value or "").lower()
+                for value in [source["display_name"], source["source_uri"]]
+            )
+            sources.append(source)
+
+        configured_accounts = self._operations_accounts(accounts or [], sources)
+        matched_source_ids = {
+            str(source["id"])
+            for account in configured_accounts
+            for source in account.get("sources", [])
+            if isinstance(source, dict)
+        }
+        exposed_sources = []
+        for source in sources:
+            cleaned = dict(source)
+            cleaned.pop("_match_text", None)
+            exposed_sources.append(cleaned)
+
+        classification_counts = {
+            str(row[0]): int(row[1] or 0)
+            for row in self.connection.execute(
+                """
+                SELECT status, count(*)
+                FROM millie_message_classifications
+                GROUP BY status
+                ORDER BY status
+                """
+            ).fetchall()
+        }
+        unsubscribe_counts = {
+            str(row[0]): int(row[1] or 0)
+            for row in self.connection.execute(
+                """
+                SELECT status, count(*)
+                FROM millie_unsubscribe_candidates
+                GROUP BY status
+                ORDER BY status
+                """
+            ).fetchall()
+        }
+        retention_counts = {
+            str(row[0]): int(row[1] or 0)
+            for row in self.connection.execute(
+                """
+                SELECT status, count(*)
+                FROM millie_retention_policies
+                GROUP BY status
+                ORDER BY status
+                """
+            ).fetchall()
+        }
+        mailbox_row = self.connection.execute(
+            """
+            SELECT count(*), count(DISTINCT folder_id)
+            FROM millie_mailbox_messages
+            WHERE mailbox_id = %s
+              AND is_expunged = FALSE
+            """,
+            (mailbox_id,),
+        ).fetchone()
+        run_rows = self.connection.execute(
+            """
+            SELECT
+                id,
+                run_type,
+                automation_level,
+                status,
+                trigger_source,
+                started_at,
+                completed_at,
+                messages_scanned,
+                suggestions_created,
+                actions_applied,
+                error_message,
+                metadata_json,
+                created_at
+            FROM millie_automation_runs
+            ORDER BY coalesce(started_at, created_at) DESC, created_at DESC
+            LIMIT %s
+            """,
+            (max(1, min(run_limit, 50)),),
+        ).fetchall()
+        runs = [
+            {
+                "id": row[0],
+                "run_type": row[1],
+                "automation_level": row[2],
+                "status": row[3],
+                "trigger_source": row[4],
+                "started_at": row[5],
+                "completed_at": row[6],
+                "messages_scanned": int(row[7] or 0),
+                "suggestions_created": int(row[8] or 0),
+                "actions_applied": int(row[9] or 0),
+                "error_message": row[10] or "",
+                "metadata": row[11] or {},
+                "created_at": row[12],
+            }
+            for row in run_rows
+        ]
+        total_messages = sum(int(source["message_count"] or 0) for source in exposed_sources)
+        total_folders = sum(int(source["folder_count"] or 0) for source in exposed_sources)
+        return {
+            "summary": {
+                "source_count": len(exposed_sources),
+                "live_source_count": sum(
+                    1 for source in exposed_sources if source["source_type"] in {"imap", "exchange_imap_oauth"}
+                ),
+                "pst_source_count": sum(1 for source in exposed_sources if source["source_type"] == "pst"),
+                "message_count": total_messages,
+                "folder_count": total_folders,
+                "mailbox_message_count": int(mailbox_row[0] or 0),
+                "mailbox_folder_count": int(mailbox_row[1] or 0),
+            },
+            "accounts": configured_accounts,
+            "sources": exposed_sources,
+            "unmatched_sources": [
+                source for source in exposed_sources if str(source["id"]) not in matched_source_ids
+            ],
+            "queues": {
+                "classifications": classification_counts,
+                "unsubscribes": unsubscribe_counts,
+                "retention_policies": retention_counts,
+                "internal_apply": self.internal_apply_status(mailbox_id=mailbox_id, limit=100),
+            },
+            "automation_runs": runs,
+        }
+
+    def _operations_accounts(
+        self,
+        accounts: list[dict[str, Any]],
+        sources: list[dict[str, object]],
+    ) -> list[dict[str, object]]:
+        configured_accounts: list[dict[str, object]] = []
+        for account in accounts:
+            keys = [
+                str(account.get("email_address") or "").strip().lower(),
+                str(account.get("username") or "").strip().lower(),
+                str(account.get("display_name") or "").strip().lower(),
+            ]
+            keys = [key for key in keys if key]
+            matched_sources: list[dict[str, object]] = []
+            if keys:
+                for source in sources:
+                    match_text = str(source.get("_match_text") or "")
+                    if not any(key in match_text for key in keys):
+                        continue
+                    cleaned = dict(source)
+                    cleaned.pop("_match_text", None)
+                    matched_sources.append(cleaned)
+            configured_accounts.append(
+                {
+                    "id": account.get("id") or "",
+                    "account_type": account.get("account_type") or "",
+                    "display_name": account.get("display_name") or "",
+                    "email_address": account.get("email_address") or "",
+                    "host": account.get("host") or "",
+                    "port": account.get("port") or "",
+                    "username": account.get("username") or "",
+                    "security": account.get("security") or "",
+                    "auth_method": account.get("auth_method") or "",
+                    "enabled": bool(account.get("enabled")),
+                    "credential_status": "configured" if account.get("password") else "missing",
+                    "source_count": len(matched_sources),
+                    "sources": matched_sources,
+                }
+            )
+        return configured_accounts
+
     def record_unsubscribe_feedback(
         self,
         *,

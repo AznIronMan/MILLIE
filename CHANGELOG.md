@@ -33,6 +33,7 @@ All notable changes to MILLIE will be documented in this file.
 - Added provider-write guardrails that block remote provider purge execution unless explicit provider-write settings and a manifest id are present.
 - Added Postgres-backed webmail login sessions with an explicit `--no-auth` development override.
 - Added webmail global search, brain rule management, and internal apply dry-run/execute controls.
+- Added a webmail Ops dashboard for live source status, queue counts, automation run history, and bounded one-off sync/upkeep/dedupe commands.
 
 ### Changed
 

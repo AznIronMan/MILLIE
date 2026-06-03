@@ -103,6 +103,9 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/internal-apply":
             self.send_json(self.internal_apply_payload(parsed))
             return
+        if parsed.path == "/api/operations":
+            self.send_json(self.operations_payload(parsed))
+            return
         if parsed.path in AUTODISCOVER_PATHS:
             self.send_xml(autodiscover_xml(self.server.settings, self.server.mailbox_address))
             return
@@ -141,6 +144,9 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/internal-apply/action":
             self.send_json(self.internal_apply_action_payload())
+            return
+        if parsed.path == "/api/operations/action":
+            self.send_json(self.operations_action_payload())
             return
         if parsed.path == "/api/retention/action":
             self.send_json(self.retention_action_payload())
@@ -427,6 +433,22 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
             "auto_internal_allowed": automation_level_allows(self.server.settings, "auto_internal"),
         }
 
+    def operations_payload(self, parsed: urllib.parse.ParseResult) -> dict[str, object]:
+        query = urllib.parse.parse_qs(parsed.query)
+        run_limit = parse_int_limit(query.get("run_limit", ["10"])[0], default=10, maximum=50)
+        with self.store() as store:
+            mailbox = self.request_mailbox(store)
+            status = store.operations_status(
+                mailbox_id=str(mailbox["id"]),
+                accounts=self.server.accounts,
+                run_limit=run_limit,
+            )
+        return {
+            **status,
+            "automation_level": automation_level(self.server.settings),
+            "auto_internal_allowed": automation_level_allows(self.server.settings, "auto_internal"),
+        }
+
     def classification_action_payload(self) -> dict[str, object]:
         payload = self.read_json_body()
         classification_id = str(payload.get("classification_id") or "")
@@ -589,6 +611,73 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
             "results": results,
         }
 
+    def operations_action_payload(self) -> dict[str, object]:
+        payload = self.read_json_body()
+        action = str(payload.get("action") or "").strip().lower()
+        limit = parse_int_limit(str(payload.get("limit") or "500"), default=500, maximum=5000)
+        batch_size = parse_int_limit(
+            str(payload.get("fetch_batch_size") or "10"),
+            default=10,
+            maximum=100,
+        )
+        commit_every = parse_int_limit(
+            str(payload.get("commit_every") or "50"),
+            default=50,
+            maximum=1000,
+        )
+        command: list[str]
+        timeout = 600
+        if action == "live_sync_once":
+            command = [
+                sys.executable,
+                str(PROJECT_ROOT / "tools" / "millie_live_sync.py"),
+                "--once",
+                "--fetch-batch-size",
+                str(batch_size),
+                "--commit-every",
+                str(commit_every),
+                "--imap-timeout",
+                "120",
+            ]
+            timeout = 900
+        elif action == "live_upkeep_once":
+            command = [
+                sys.executable,
+                str(PROJECT_ROOT / "tools" / "millie_live_upkeep.py"),
+                "--once",
+                "--dedupe-limit",
+                str(limit),
+            ]
+            timeout = 900
+        elif action == "dedupe_report":
+            command = [
+                sys.executable,
+                str(PROJECT_ROOT / "tools" / "millie_dedupe_report.py"),
+                "--json",
+                "--samples",
+                "0",
+            ]
+        elif action == "dedupe_backfill":
+            command = [
+                sys.executable,
+                str(PROJECT_ROOT / "tools" / "millie_dedupe_report.py"),
+                "--backfill",
+                "--limit",
+                str(limit),
+                "--samples",
+                "0",
+                "--json",
+            ]
+        else:
+            raise BadRequestError("Unsupported operations action")
+        result = run_admin_command(action, command, timeout=timeout)
+        return {
+            "ok": result["returncode"] == 0,
+            "action": action,
+            "limit": limit,
+            "result": result,
+        }
+
     def store(self) -> PostgresMailStore:
         return PostgresMailStore.connect(self.server.settings)
 
@@ -681,10 +770,12 @@ class MillieWebmailServer(ThreadingHTTPServer):
         handler_class,
         *,
         settings: dict[str, str],
+        accounts: list[dict[str, Any]],
         mailbox_address: str,
         auth_required: bool,
     ):
         self.settings = settings
+        self.accounts = accounts
         self.mailbox_address = mailbox_address
         self.auth_required = auth_required
         super().__init__(server_address, handler_class)
@@ -808,21 +899,41 @@ def apply_command(script_name: str, *, mode: str, limit: int) -> list[str]:
     return command
 
 
-def run_apply_command(name: str, command: list[str]) -> dict[str, object]:
-    completed = subprocess.run(
-        command,
-        cwd=PROJECT_ROOT,
-        text=True,
-        capture_output=True,
-        timeout=300,
-        check=False,
-    )
+def tail_output(value: object, *, limit: int = 6000) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")[-limit:]
+    return str(value)[-limit:]
+
+
+def run_admin_command(name: str, command: list[str], *, timeout: int = 600) -> dict[str, object]:
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=PROJECT_ROOT,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "name": name,
+            "returncode": 124,
+            "stdout": tail_output(exc.stdout),
+            "stderr": tail_output(exc.stderr) or f"Timed out after {timeout} seconds",
+        }
     return {
         "name": name,
         "returncode": completed.returncode,
-        "stdout": completed.stdout[-6000:],
-        "stderr": completed.stderr[-6000:],
+        "stdout": tail_output(completed.stdout),
+        "stderr": tail_output(completed.stderr),
     }
+
+
+def run_apply_command(name: str, command: list[str]) -> dict[str, object]:
+    return run_admin_command(name, command, timeout=300)
 
 
 def autodiscover_request_email(body: bytes) -> str | None:
@@ -956,7 +1067,9 @@ def daemonize(*, pid_file: Path, log_file: Path) -> None:
 
 
 def serve(args: argparse.Namespace) -> None:
-    settings = load_local_settings()["settings"]
+    config = load_local_settings()
+    settings = config["settings"]
+    accounts = config.get("accounts", [])
     mailbox_address = args.mailbox or default_service_login(settings, "geon")
     sync_thread = None
     sync_stop = None
@@ -977,6 +1090,7 @@ def serve(args: argparse.Namespace) -> None:
         (args.host, args.port),
         MillieWebmailHandler,
         settings=settings,
+        accounts=accounts,
         mailbox_address=mailbox_address,
         auth_required=not args.no_auth,
     )
@@ -1151,7 +1265,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     .topbar {
       display: grid;
-      grid-template-columns: 220px minmax(160px, 1fr) repeat(7, auto) minmax(80px, 180px) auto;
+      grid-template-columns: 220px minmax(160px, 1fr) repeat(8, auto) minmax(80px, 180px) auto;
       align-items: center;
       gap: 14px;
       padding: 0 18px;
@@ -1560,6 +1674,35 @@ INDEX_HTML = r"""<!doctype html>
       font-size: 12px;
       min-width: 0;
     }
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(120px, 1fr));
+      gap: 10px;
+    }
+    .metric-card {
+      display: grid;
+      gap: 3px;
+      min-height: 74px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+    }
+    .metric-label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+    .metric-value {
+      font-size: 24px;
+      font-weight: 750;
+      line-height: 1.1;
+    }
+    .metric-meta {
+      color: var(--muted);
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
     .json-box, .output-box {
       max-height: 170px;
       overflow: auto;
@@ -1592,6 +1735,7 @@ INDEX_HTML = r"""<!doctype html>
       .themes, .account { grid-column: span 1; }
       .policy-edit { grid-template-columns: 1fr 1fr; align-items: stretch; }
       .filter-grid { grid-template-columns: 1fr 1fr; }
+      .metric-grid { grid-template-columns: 1fr 1fr; }
       .main { grid-template-columns: 76px minmax(260px, 38vw) minmax(320px, 1fr); }
       .folder { grid-template-columns: 1fr; justify-items: center; padding: 0 6px; }
       .folder .name { max-width: 54px; }
@@ -1613,6 +1757,7 @@ INDEX_HTML = r"""<!doctype html>
       <button id="policiesButton" class="review-button" type="button">Policies</button>
       <button id="rulesButton" class="review-button" type="button">Rules</button>
       <button id="applyButton" class="review-button" type="button">Apply</button>
+      <button id="opsButton" class="review-button" type="button">Ops</button>
       <div class="themes" id="themes">
         <button type="button" data-theme="gmail">Gmail</button>
         <button type="button" data-theme="outlook">Outlook</button>
@@ -1689,6 +1834,16 @@ INDEX_HTML = r"""<!doctype html>
       if (size >= 1048576) return `${(size / 1048576).toFixed(1)} MB`;
       if (size >= 1024) return `${Math.round(size / 1024)} KB`;
       return `${size} B`;
+    }
+
+    function formatCount(value) {
+      return new Intl.NumberFormat().format(Number(value || 0));
+    }
+
+    function statusCounts(counts) {
+      const entries = Object.entries(counts || {}).filter(([, count]) => Number(count || 0) > 0);
+      if (!entries.length) return "none";
+      return entries.map(([status, count]) => `${status} ${formatCount(count)}`).join(" · ");
     }
 
     async function api(path) {
@@ -2073,6 +2228,11 @@ INDEX_HTML = r"""<!doctype html>
     async function openInternalApply() {
       const data = await api("/api/internal-apply?limit=100");
       renderInternalApply(data);
+    }
+
+    async function openOperations() {
+      const data = await api("/api/operations?run_limit=10");
+      renderOperations(data);
     }
 
     async function loadSessionState() {
@@ -2535,6 +2695,237 @@ INDEX_HTML = r"""<!doctype html>
       $("applyExecute").addEventListener("click", () => runInternalApply("execute").catch(showError));
     }
 
+    function renderOperations(data) {
+      const summary = data.summary || {};
+      const queues = data.queues || {};
+      const internalApply = queues.internal_apply || {};
+      $("reader").innerHTML = `
+        <div class="review-list">
+          <h1>Ops Dashboard</h1>
+          <div class="suggestion-meta"></div>
+          <div class="metric-grid" data-list="ops-metrics"></div>
+          <div class="suggestion-card">
+            <div class="suggestion-top">
+              <div>
+                <div class="suggestion-title">One-off maintenance</div>
+                <div class="suggestion-meta" data-field="ops-actions-meta"></div>
+              </div>
+              <span class="suggestion-badge"></span>
+            </div>
+            <div class="filter-grid">
+              <label>Limit
+                <select id="opsLimit">
+                  <option value="100">100</option>
+                  <option value="500">500</option>
+                  <option value="1000">1000</option>
+                  <option value="2500">2500</option>
+                  <option value="5000">5000</option>
+                </select>
+              </label>
+              <label>Fetch batch
+                <select id="opsBatch">
+                  <option value="10">10</option>
+                  <option value="25">25</option>
+                  <option value="50">50</option>
+                  <option value="100">100</option>
+                </select>
+              </label>
+              <label>Commit every
+                <select id="opsCommitEvery">
+                  <option value="50">50</option>
+                  <option value="100">100</option>
+                  <option value="250">250</option>
+                  <option value="500">500</option>
+                </select>
+              </label>
+              <button class="review-button" type="button" data-operation="refresh">Refresh</button>
+            </div>
+            <div class="suggestion-actions">
+              <button type="button" data-operation="live_sync_once">Sync once</button>
+              <button type="button" data-operation="live_upkeep_once">Upkeep once</button>
+              <button type="button" data-operation="dedupe_report">Dedupe report</button>
+              <button type="button" data-operation="dedupe_backfill">Dedupe backfill</button>
+            </div>
+          </div>
+          <div data-list="operation-output"></div>
+          <div data-list="ops-accounts"></div>
+          <div data-list="ops-runs"></div>
+          <div data-list="ops-unmatched"></div>
+        </div>
+      `;
+      $("reader").querySelector(".suggestion-meta").textContent =
+        `level ${data.automation_level} · live sources ${formatCount(summary.live_source_count)} · service mailbox ${formatCount(summary.mailbox_message_count)} messages`;
+      $("reader").querySelector(".suggestion-badge").textContent =
+        data.auto_internal_allowed ? "auto internal" : "guarded";
+      $("reader").querySelector('[data-field="ops-actions-meta"]').textContent =
+        "Local sync/import and internal maintenance only; no remote provider purge runs from here";
+      const metrics = $("reader").querySelector('[data-list="ops-metrics"]');
+      addMetric(metrics, "Archive messages", summary.message_count, `${formatCount(summary.folder_count)} source folders`);
+      addMetric(metrics, "Service mailbox", summary.mailbox_message_count, `${formatCount(summary.mailbox_folder_count)} visible folders`);
+      addMetric(metrics, "Review queue", queues.classifications?.proposed || 0, `approved ${formatCount(queues.classifications?.approved)}`);
+      addMetric(metrics, "Internal apply", Number(internalApply.approved_suggestions_pending || 0) + Number(internalApply.retention_pending || 0), "pending internal changes");
+      renderOperationsAccounts(data.accounts || []);
+      renderOperationsRuns(data.automation_runs || []);
+      renderOperationsUnmatched(data.unmatched_sources || [], queues);
+      $("reader").querySelectorAll("[data-operation]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const action = button.dataset.operation;
+          if (action === "refresh") {
+            openOperations().catch(showError);
+            return;
+          }
+          runOperation(action).catch(showError);
+        });
+      });
+    }
+
+    function addMetric(container, label, value, meta) {
+      const card = document.createElement("div");
+      card.className = "metric-card";
+      card.innerHTML = `
+        <div class="metric-label"></div>
+        <div class="metric-value"></div>
+        <div class="metric-meta"></div>
+      `;
+      card.querySelector(".metric-label").textContent = label;
+      card.querySelector(".metric-value").textContent = formatCount(value);
+      card.querySelector(".metric-meta").textContent = meta || "";
+      container.appendChild(card);
+    }
+
+    function renderOperationsAccounts(accounts) {
+      const list = $("reader").querySelector('[data-list="ops-accounts"]');
+      const header = document.createElement("div");
+      header.className = "suggestion-meta";
+      header.textContent = `${accounts.length} configured mail accounts`;
+      list.appendChild(header);
+      if (!accounts.length) {
+        list.innerHTML += `<div class="empty">No mail accounts are configured in settings</div>`;
+        return;
+      }
+      accounts.forEach((account) => {
+        const sources = account.sources || [];
+        const card = document.createElement("div");
+        card.className = "suggestion-card";
+        card.innerHTML = `
+          <div class="suggestion-top">
+            <div>
+              <div class="suggestion-title"></div>
+              <div class="suggestion-meta" data-field="account-meta"></div>
+            </div>
+            <span class="suggestion-badge"></span>
+          </div>
+          <pre class="output-box"></pre>
+        `;
+        card.querySelector(".suggestion-title").textContent =
+          `${text(account.display_name, account.email_address || account.id)} · ${text(account.account_type, "mail")}`;
+        card.querySelector('[data-field="account-meta"]').textContent =
+          `${account.host || "(no host)"}:${account.port || ""} · ${account.auth_method || "auth"} · credential ${account.credential_status}`;
+        card.querySelector(".suggestion-badge").textContent = account.enabled ? "enabled" : "disabled";
+        card.querySelector(".output-box").textContent = sources.length
+          ? sources.map(sourceLine).join("\n")
+          : "No imported source matched this account yet";
+        list.appendChild(card);
+      });
+    }
+
+    function renderOperationsRuns(runs) {
+      const list = $("reader").querySelector('[data-list="ops-runs"]');
+      const header = document.createElement("div");
+      header.className = "suggestion-meta";
+      header.textContent = `${runs.length} recent automation runs`;
+      list.appendChild(header);
+      if (!runs.length) {
+        list.innerHTML += `<div class="empty">No automation runs recorded yet</div>`;
+        return;
+      }
+      runs.forEach((run) => {
+        const card = document.createElement("div");
+        card.className = "suggestion-card";
+        card.innerHTML = `
+          <div class="suggestion-top">
+            <div>
+              <div class="suggestion-title"></div>
+              <div class="suggestion-meta" data-field="run-meta"></div>
+            </div>
+            <span class="suggestion-badge"></span>
+          </div>
+          <pre class="json-box"></pre>
+        `;
+        card.querySelector(".suggestion-title").textContent = `${run.run_type} · ${formatDate(run.started_at || run.created_at)}`;
+        card.querySelector('[data-field="run-meta"]').textContent =
+          `${run.trigger_source} · scanned ${formatCount(run.messages_scanned)} · suggestions ${formatCount(run.suggestions_created)} · actions ${formatCount(run.actions_applied)}${run.error_message ? " · " + run.error_message : ""}`;
+        card.querySelector(".suggestion-badge").textContent = run.status;
+        card.querySelector(".json-box").textContent = JSON.stringify(run.metadata || {}, null, 2);
+        list.appendChild(card);
+      });
+    }
+
+    function renderOperationsUnmatched(sources, queues) {
+      const list = $("reader").querySelector('[data-list="ops-unmatched"]');
+      const header = document.createElement("div");
+      header.className = "suggestion-meta";
+      header.textContent = `Queues: classifications ${statusCounts(queues.classifications)} · unsubscribes ${statusCounts(queues.unsubscribes)} · retention ${statusCounts(queues.retention_policies)}`;
+      list.appendChild(header);
+      if (!sources.length) return;
+      const card = document.createElement("div");
+      card.className = "suggestion-card";
+      card.innerHTML = `
+        <div class="suggestion-top">
+          <div class="suggestion-title">Unmatched or archive-only sources</div>
+          <span class="suggestion-badge"></span>
+        </div>
+        <pre class="output-box"></pre>
+      `;
+      card.querySelector(".suggestion-badge").textContent = String(sources.length);
+      card.querySelector(".output-box").textContent = sources.map(sourceLine).join("\n");
+      list.appendChild(card);
+    }
+
+    function sourceLine(source) {
+      const cursor = source.last_cursor_at ? ` · cursor ${formatDate(source.last_cursor_at)}` : "";
+      const newest = source.newest_message_at ? ` · newest ${formatDate(source.newest_message_at)}` : "";
+      return `${source.source_type} ${source.display_name || source.source_uri} · ${formatCount(source.message_count)} messages · ${formatCount(source.folder_count)} folders${newest}${cursor}`;
+    }
+
+    async function runOperation(action) {
+      const list = $("reader").querySelector('[data-list="operation-output"]');
+      list.innerHTML = `<div class="suggestion-card"><div class="suggestion-title">Running ${action}</div><div class="suggestion-meta">Waiting for command output</div></div>`;
+      const result = await postJson("/api/operations/action", {
+        action,
+        limit: $("opsLimit").value,
+        fetch_batch_size: $("opsBatch").value,
+        commit_every: $("opsCommitEvery").value,
+      });
+      await openOperations();
+      renderOperationResult(result);
+    }
+
+    function renderOperationResult(data) {
+      const list = $("reader").querySelector('[data-list="operation-output"]');
+      if (!list) return;
+      const result = data.result || {};
+      const card = document.createElement("div");
+      card.className = "suggestion-card";
+      card.innerHTML = `
+        <div class="suggestion-top">
+          <div>
+            <div class="suggestion-title"></div>
+            <div class="suggestion-meta"></div>
+          </div>
+          <span class="suggestion-badge"></span>
+        </div>
+        <pre class="output-box"></pre>
+      `;
+      card.querySelector(".suggestion-title").textContent = result.name || data.action || "operation";
+      card.querySelector(".suggestion-meta").textContent = data.ok ? "completed" : "failed or timed out";
+      card.querySelector(".suggestion-badge").textContent = `exit ${result.returncode}`;
+      card.querySelector(".output-box").textContent =
+        [result.stdout || "", result.stderr || ""].filter(Boolean).join("\n") || "(no output)";
+      list.innerHTML = "";
+      list.appendChild(card);
+    }
+
     function renderUnsubscribeQueue(candidates) {
       $("reader").innerHTML = `
         <div class="review-list">
@@ -2704,6 +3095,9 @@ INDEX_HTML = r"""<!doctype html>
     });
     $("applyButton").addEventListener("click", () => {
       openInternalApply().catch(showError);
+    });
+    $("opsButton").addEventListener("click", () => {
+      openOperations().catch(showError);
     });
     $("logoutButton").addEventListener("click", () => {
       logout().catch(showError);
