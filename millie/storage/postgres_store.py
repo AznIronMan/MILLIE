@@ -1885,7 +1885,8 @@ class PostgresMailStore:
                 confidence,
                 reason_text,
                 evidence_json,
-                status
+                status,
+                rule_id
             FROM millie_message_classifications
             WHERE id = %s
             """,
@@ -1895,23 +1896,30 @@ class PostgresMailStore:
             raise KeyError(f"Classification not found: {classification_id}")
 
         status = "approved" if action in {"approve", "always"} else "rejected"
-        rule_id = None
+        source_rule_id = row[10]
+        rule_id = source_rule_id if action in {"approve", "reject"} else None
         if action in {"always", "never"}:
             rule_id = self._upsert_feedback_rule(
                 classification_row=row,
                 identity_id=identity_id,
                 action=action,
             )
+        elif source_rule_id:
+            self._record_rule_feedback_signal(
+                rule_id=str(source_rule_id),
+                positive=action == "approve",
+            )
         self.connection.execute(
             """
             UPDATE millie_message_classifications
             SET status = %s,
+                rule_id = coalesce(%s, rule_id),
                 reviewed_by_identity_id = %s,
                 reviewed_at = now(),
                 updated_at = now()
             WHERE id = %s
             """,
-            (status, identity_id, classification_id),
+            (status, rule_id, identity_id, classification_id),
         )
         feedback_type = {
             "approve": "approve_classification",
@@ -1935,7 +1943,7 @@ class PostgresMailStore:
                 rule_id,
                 feedback_type,
                 feedback_source,
-                Jsonb({"status": row[9]}),
+                Jsonb({"status": row[9], "rule_id": source_rule_id}),
                 Jsonb({"status": status, "action": action, "rule_id": rule_id}),
             ),
         )
@@ -1965,6 +1973,18 @@ class PostgresMailStore:
             "rule_id": rule_id,
         }
 
+    def _record_rule_feedback_signal(self, *, rule_id: str, positive: bool) -> None:
+        column = "positive_feedback_count" if positive else "negative_feedback_count"
+        self.connection.execute(
+            f"""
+            UPDATE millie_brain_rules
+            SET {column} = {column} + 1,
+                updated_at = now()
+            WHERE id = %s
+            """,
+            (rule_id,),
+        )
+
     def _upsert_feedback_rule(
         self,
         *,
@@ -1983,7 +2003,12 @@ class PostgresMailStore:
             reason_text,
             evidence_json,
             _status,
+            _source_rule_id,
         ) = classification_row
+        context = self._classification_rule_context(str(_message_id))
+        sender_domain = str(context.get("sender_domain") or "")
+        folder_path = str(context.get("folder_path") or "")
+        message_year = str(context.get("message_year") or "")
         rule_id = stable_id(
             "millie_brain_rule",
             action,
@@ -1991,12 +2016,21 @@ class PostgresMailStore:
             value,
             target_folder_path,
             ",".join(target_tags or []),
+            sender_domain,
+            folder_path,
+            message_year,
         )
         block = action == "never"
+        context_parts = [
+            part
+            for part in (sender_domain, folder_path, message_year)
+            if part
+        ]
+        context_suffix = f" for {' / '.join(context_parts)}" if context_parts else ""
         rule_name = (
-            f"Never suggest {kind}:{value}"
+            f"Never suggest {kind}:{value}{context_suffix}"
             if block
-            else f"Always suggest {kind}:{value}"
+            else f"Always suggest {kind}:{value}{context_suffix}"
         )
         condition = {
             "classification_kind": kind,
@@ -2004,6 +2038,7 @@ class PostgresMailStore:
             "target_folder_path": target_folder_path,
             "target_tags": list(target_tags or []),
         }
+        condition.update({key: value for key, value in context.items() if value})
         rule_action = {
             "action": "block_suggestion" if block else "suggest",
             "classification_kind": kind,
@@ -2016,16 +2051,19 @@ class PostgresMailStore:
             INSERT INTO millie_brain_rules (
                 id, rule_name, rule_type, rule_source, status, automation_level,
                 priority, condition_json, action_json, confidence, evidence_count,
+                positive_feedback_count, negative_feedback_count,
                 created_by_identity_id, updated_at, metadata_json
             )
             VALUES (
                 %s, %s, %s, 'user', 'active', 'review',
-                %s, %s, %s, %s, 1, %s, now(), %s
+                %s, %s, %s, %s, 1, %s, %s, %s, now(), %s
             )
             ON CONFLICT(id) DO UPDATE SET
                 status = 'active',
                 confidence = greatest(millie_brain_rules.confidence, excluded.confidence),
                 evidence_count = millie_brain_rules.evidence_count + 1,
+                positive_feedback_count = millie_brain_rules.positive_feedback_count + excluded.positive_feedback_count,
+                negative_feedback_count = millie_brain_rules.negative_feedback_count + excluded.negative_feedback_count,
                 updated_at = now(),
                 metadata_json = millie_brain_rules.metadata_json || excluded.metadata_json
             """,
@@ -2037,17 +2075,66 @@ class PostgresMailStore:
                 Jsonb(condition),
                 Jsonb(rule_action),
                 confidence,
+                0 if block else 1,
+                1 if block else 0,
                 identity_id,
                 Jsonb(
                     {
                         "feedback_action": action,
                         "reason": reason_text,
                         "evidence": evidence_json or {},
+                        "context": context,
                     }
                 ),
             ),
         )
         return rule_id
+
+    def _classification_rule_context(self, message_id: str) -> dict[str, object]:
+        row = self.connection.execute(
+            """
+            WITH from_addresses AS (
+                SELECT
+                    message_id,
+                    string_agg(
+                        CASE
+                            WHEN coalesce(display_name, '') <> '' AND coalesce(email_address, '') <> ''
+                                THEN display_name || ' <' || email_address || '>'
+                            WHEN coalesce(email_address, '') <> '' THEN email_address
+                            ELSE coalesce(raw_value, '')
+                        END,
+                        ', ' ORDER BY ordinal
+                    ) AS from_text,
+                    min(lower(email_address)) FILTER (
+                        WHERE coalesce(email_address, '') <> ''
+                    ) AS from_email
+                FROM mail_message_addresses
+                WHERE role = 'from'
+                GROUP BY message_id
+            )
+            SELECT DISTINCT ON (m.id)
+                coalesce(v.folder_path, '') AS folder_path,
+                coalesce(m.sent_at, m.received_at, v.internal_date) AS message_date,
+                coalesce(fa.from_email, '') AS from_email,
+                coalesce(fa.from_text, '') AS from_text
+            FROM mail_messages m
+            LEFT JOIN millie_v_mailbox_messages v ON v.message_id = m.id
+            LEFT JOIN from_addresses fa ON fa.message_id = m.id
+            WHERE m.id = %s
+            ORDER BY
+                m.id,
+                CASE WHEN coalesce(v.folder_path, '') = 'All Mail' THEN 1 ELSE 0 END
+            """,
+            (message_id,),
+        ).fetchone()
+        if not row:
+            return {}
+        message_date = row[1]
+        return {
+            "sender_domain": self._sender_domain(str(row[2] or ""), str(row[3] or "")),
+            "folder_path": str(row[0] or ""),
+            "message_year": str(message_date.year) if message_date else "",
+        }
 
     def list_brain_rules(
         self,
@@ -2188,6 +2275,160 @@ class PostgresMailStore:
             "created_at": row[14],
             "updated_at": row[15],
             "metadata": row[16] or {},
+        }
+
+    def learning_metrics(self, *, limit: int = 12) -> dict[str, object]:
+        limit = max(1, min(limit, 50))
+        classification_rows = self.connection.execute(
+            """
+            SELECT
+                classifier_type,
+                status,
+                count(*) AS count,
+                avg(confidence) AS avg_confidence
+            FROM millie_message_classifications
+            GROUP BY classifier_type, status
+            ORDER BY classifier_type, status
+            """
+        ).fetchall()
+        rule_status_rows = self.connection.execute(
+            """
+            SELECT status, count(*)
+            FROM millie_brain_rules
+            GROUP BY status
+            ORDER BY status
+            """
+        ).fetchall()
+        feedback_rows = self.connection.execute(
+            """
+            SELECT feedback_type, count(*), max(created_at)
+            FROM millie_user_feedback_events
+            GROUP BY feedback_type
+            ORDER BY feedback_type
+            """
+        ).fetchall()
+        target_rows = self.connection.execute(
+            """
+            SELECT
+                classification_kind,
+                classification_value,
+                target_folder_path,
+                target_tags,
+                status,
+                count(*) AS count,
+                avg(confidence) AS avg_confidence
+            FROM millie_message_classifications
+            GROUP BY
+                classification_kind,
+                classification_value,
+                target_folder_path,
+                target_tags,
+                status
+            ORDER BY count DESC, avg_confidence DESC NULLS LAST
+            LIMIT %s
+            """,
+            (limit,),
+        ).fetchall()
+        top_rule_rows = self.connection.execute(
+            """
+            SELECT
+                id, rule_name, rule_type, rule_source, status, automation_level,
+                priority, condition_json, action_json, confidence, evidence_count,
+                positive_feedback_count, negative_feedback_count,
+                last_matched_at, created_at, updated_at, metadata_json
+            FROM millie_brain_rules
+            WHERE status = 'active'
+            ORDER BY
+                evidence_count DESC,
+                positive_feedback_count DESC,
+                priority DESC,
+                updated_at DESC
+            LIMIT %s
+            """,
+            (limit,),
+        ).fetchall()
+        attention_rule_rows = self.connection.execute(
+            """
+            SELECT
+                id, rule_name, rule_type, rule_source, status, automation_level,
+                priority, condition_json, action_json, confidence, evidence_count,
+                positive_feedback_count, negative_feedback_count,
+                last_matched_at, created_at, updated_at, metadata_json
+            FROM millie_brain_rules
+            WHERE status = 'active'
+              AND (
+                negative_feedback_count > 0
+                OR evidence_count <= 1
+                OR last_matched_at IS NULL
+              )
+            ORDER BY
+                negative_feedback_count DESC,
+                evidence_count ASC,
+                last_matched_at ASC NULLS FIRST,
+                updated_at DESC
+            LIMIT %s
+            """,
+            (limit,),
+        ).fetchall()
+
+        classification_by_status: dict[str, int] = {}
+        classification_by_classifier: dict[str, int] = {}
+        classifier_status_rows = []
+        for row in classification_rows:
+            classifier = str(row[0] or "unknown")
+            status = str(row[1] or "unknown")
+            count = int(row[2] or 0)
+            classification_by_status[status] = classification_by_status.get(status, 0) + count
+            classification_by_classifier[classifier] = classification_by_classifier.get(classifier, 0) + count
+            classifier_status_rows.append(
+                {
+                    "classifier_type": classifier,
+                    "status": status,
+                    "count": count,
+                    "avg_confidence": round(float(row[3] or 0), 4),
+                }
+            )
+        rule_by_status = {str(row[0] or "unknown"): int(row[1] or 0) for row in rule_status_rows}
+        feedback_by_type = {
+            str(row[0] or "unknown"): {
+                "count": int(row[1] or 0),
+                "last_at": row[2],
+            }
+            for row in feedback_rows
+        }
+        feedback_total = sum(item["count"] for item in feedback_by_type.values())
+        return {
+            "summary": {
+                "classification_total": sum(classification_by_status.values()),
+                "proposed": classification_by_status.get("proposed", 0),
+                "approved": classification_by_status.get("approved", 0),
+                "rejected": classification_by_status.get("rejected", 0),
+                "applied": classification_by_status.get("applied", 0),
+                "rule_total": sum(rule_by_status.values()),
+                "active_rules": rule_by_status.get("active", 0),
+                "attention_rules": len(attention_rule_rows),
+                "feedback_total": feedback_total,
+            },
+            "classifications_by_status": classification_by_status,
+            "classifications_by_classifier": classification_by_classifier,
+            "classifier_status": classifier_status_rows,
+            "rules_by_status": rule_by_status,
+            "feedback_by_type": feedback_by_type,
+            "target_breakdown": [
+                {
+                    "kind": row[0],
+                    "value": row[1],
+                    "target_folder_path": row[2],
+                    "target_tags": list(row[3] or []),
+                    "status": row[4],
+                    "count": int(row[5] or 0),
+                    "avg_confidence": round(float(row[6] or 0), 4),
+                }
+                for row in target_rows
+            ],
+            "top_rules": [self._brain_rule_dict(row) for row in top_rule_rows],
+            "attention_rules": [self._brain_rule_dict(row) for row in attention_rule_rows],
+            "limit": limit,
         }
 
     def internal_apply_status(self, *, mailbox_id: str, limit: int = 100) -> dict[str, object]:

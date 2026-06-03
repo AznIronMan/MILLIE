@@ -74,9 +74,13 @@ The webmail view includes a **Review** queue and message-level suggestion panels
 
 The webmail **Workbench** groups proposed sorting suggestions by suggested target, sender domain, current folder, and message year. Batch actions use the same feedback and audit semantics as individual review actions, but apply them to the visible group so MILLIE can collect rule evidence faster. The workbench still only changes MILLIE review state and learned rule evidence; it does not move mail or write to source providers.
 
+Active learned rules are now used by the observe sorter. **Always** rules can create future proposed classifications when their message context matches. **Never** rules can suppress matching proposed classifications. Rule conditions can include the suggested target, sender domain, current source folder, and message year. This is still observe-only behavior: rule matches write proposed classifications and audit data only.
+
 Unsubscribe candidates can be approved or ignored. Approval does not click links, submit forms, send mail, or contact providers by itself.
 
 The webmail **Rules** panel lists learned brain rules and can activate, disable, retire, or lightly edit rule names and priorities. Rule changes write audit rows and do not apply mail movements by themselves.
+
+The webmail **Metrics** panel shows read-only learning health: proposed/approved/rejected suggestion counts, active and attention-needed rule counts, feedback event totals, target buckets, and top active rules. It does not run sorting, apply rules, or write to providers.
 
 Reviewed unsubscribe candidates can be listed and prepared with a dry-run-first command:
 

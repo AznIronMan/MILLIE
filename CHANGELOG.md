@@ -36,12 +36,15 @@ All notable changes to MILLIE will be documented in this file.
 - Added a webmail Ops dashboard for live source status, queue counts, automation run history, and bounded one-off sync/upkeep/dedupe commands.
 - Added persisted per-account/folder IMAP sync health with stale/failure visibility in webmail Ops and scoped account/folder sync actions.
 - Added a webmail sorting Workbench for grouped batch review of proposed classifications by target, sender domain, folder, and year.
+- Added active learned-rule matching to the observe sorter so approved rules can propose or suppress future internal suggestions.
+- Added a webmail learning Metrics dashboard for classification, feedback, target, and rule health.
 - Added `sync_stale_after_hours` settings support for Ops stale sync thresholds.
 
 ### Changed
 
 - Changed exact-folder IMAP imports to skip broad provider folder listing and trust supplied `--folder` names for targeted catch-up runs.
 - Extended the observe sorter with account, folder, message id, and date filters.
+- Changed Always/Never rule evidence to include sender domain, source folder, and message year when available.
 
 ## [1.0.0] - 2026-05-31
 

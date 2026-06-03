@@ -103,6 +103,9 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/rules":
             self.send_json(self.rules_payload(parsed))
             return
+        if parsed.path == "/api/learning/metrics":
+            self.send_json(self.learning_metrics_payload(parsed))
+            return
         if parsed.path == "/api/internal-apply":
             self.send_json(self.internal_apply_payload(parsed))
             return
@@ -449,6 +452,14 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
         with self.store() as store:
             rules = store.list_brain_rules(statuses=statuses or None, limit=limit)
         return {"rules": rules, "limit": limit, "statuses": statuses}
+
+    def learning_metrics_payload(self, parsed: urllib.parse.ParseResult) -> dict[str, object]:
+        query = urllib.parse.parse_qs(parsed.query)
+        limit = parse_int_limit(query.get("limit", ["12"])[0], default=12, maximum=50)
+        with self.store() as store:
+            self.request_mailbox(store)
+            metrics = store.learning_metrics(limit=limit)
+        return metrics
 
     def internal_apply_payload(self, parsed: urllib.parse.ParseResult) -> dict[str, object]:
         query = urllib.parse.parse_qs(parsed.query)
@@ -1326,7 +1337,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     .topbar {
       display: grid;
-      grid-template-columns: 220px minmax(160px, 1fr) repeat(9, auto) minmax(80px, 180px) auto;
+      grid-template-columns: 220px minmax(160px, 1fr) repeat(10, auto) minmax(80px, 180px) auto;
       align-items: center;
       gap: 14px;
       padding: 0 18px;
@@ -1832,6 +1843,7 @@ INDEX_HTML = r"""<!doctype html>
       <button id="searchButton" class="review-button" type="button">Search</button>
       <button id="reviewButton" class="review-button" type="button">Review</button>
       <button id="workbenchButton" class="review-button" type="button">Workbench</button>
+      <button id="metricsButton" class="review-button" type="button">Metrics</button>
       <button id="unsubscribeButton" class="review-button" type="button">Unsub</button>
       <button id="policiesButton" class="review-button" type="button">Policies</button>
       <button id="rulesButton" class="review-button" type="button">Rules</button>
@@ -2315,6 +2327,11 @@ INDEX_HTML = r"""<!doctype html>
     async function openRules() {
       const data = await api("/api/rules?limit=100");
       renderRuleList(data.rules || []);
+    }
+
+    async function openLearningMetrics() {
+      const data = await api("/api/learning/metrics?limit=12");
+      renderLearningMetrics(data);
     }
 
     async function openInternalApply() {
@@ -2812,6 +2829,89 @@ INDEX_HTML = r"""<!doctype html>
           });
           actions.appendChild(button);
         });
+        list.appendChild(card);
+      });
+    }
+
+    function renderLearningMetrics(data) {
+      const summary = data.summary || {};
+      $("reader").innerHTML = `
+        <div class="review-list">
+          <h1>Learning Metrics</h1>
+          <div class="suggestion-meta"></div>
+          <div class="metric-grid" data-list="learning-metrics"></div>
+          <div data-list="learning-targets"></div>
+          <div data-list="learning-attention"></div>
+          <div data-list="learning-top-rules"></div>
+        </div>
+      `;
+      $("reader").querySelector(".suggestion-meta").textContent =
+        "Read-only learning health from classifications, feedback, and brain rules";
+      const metrics = $("reader").querySelector('[data-list="learning-metrics"]');
+      addMetric(metrics, "Proposed", summary.proposed || 0, `approved ${formatCount(summary.approved)} · rejected ${formatCount(summary.rejected)}`);
+      addMetric(metrics, "Active rules", summary.active_rules || 0, `${formatCount(summary.rule_total)} total rules`);
+      addMetric(metrics, "Rule attention", summary.attention_rules || 0, "negative, weak, or never matched");
+      addMetric(metrics, "Feedback", summary.feedback_total || 0, "review events recorded");
+      renderLearningTargets(data.target_breakdown || []);
+      renderLearningRules("learning-attention", "Rules Needing Attention", data.attention_rules || []);
+      renderLearningRules("learning-top-rules", "Top Active Rules", data.top_rules || []);
+    }
+
+    function renderLearningTargets(targets) {
+      const list = $("reader").querySelector('[data-list="learning-targets"]');
+      const header = document.createElement("div");
+      header.className = "suggestion-meta";
+      header.textContent = `${targets.length} target/status buckets`;
+      list.appendChild(header);
+      if (!targets.length) {
+        list.innerHTML += `<div class="empty">No classification targets recorded yet</div>`;
+        return;
+      }
+      targets.forEach((item) => {
+        const card = document.createElement("div");
+        card.className = "source-row";
+        const target = item.target_folder_path || (item.target_tags || []).join(", ") || `${item.kind}:${item.value}`;
+        card.innerHTML = `
+          <div>
+            <div class="suggestion-title"></div>
+            <div class="suggestion-meta"></div>
+          </div>
+          <span class="suggestion-badge"></span>
+        `;
+        card.querySelector(".suggestion-title").textContent = `${item.kind}:${item.value} -> ${target}`;
+        card.querySelector(".suggestion-meta").textContent =
+          `${item.status} · avg confidence ${Number(item.avg_confidence || 0).toFixed(2)}`;
+        card.querySelector(".suggestion-badge").textContent = formatCount(item.count);
+        list.appendChild(card);
+      });
+    }
+
+    function renderLearningRules(containerName, title, rules) {
+      const list = $("reader").querySelector(`[data-list="${containerName}"]`);
+      const header = document.createElement("div");
+      header.className = "suggestion-meta";
+      header.textContent = `${title}: ${rules.length}`;
+      list.appendChild(header);
+      if (!rules.length) return;
+      rules.forEach((item) => {
+        const card = document.createElement("div");
+        card.className = "suggestion-card";
+        card.innerHTML = `
+          <div class="suggestion-top">
+            <div>
+              <div class="suggestion-title"></div>
+              <div class="suggestion-meta" data-field="rule-meta"></div>
+            </div>
+            <span class="suggestion-badge"></span>
+          </div>
+          <pre class="json-box"></pre>
+        `;
+        card.querySelector(".suggestion-title").textContent = item.rule_name || item.id;
+        card.querySelector('[data-field="rule-meta"]').textContent =
+          `${item.rule_type} · evidence ${formatCount(item.evidence_count)} · +${formatCount(item.positive_feedback_count)} / -${formatCount(item.negative_feedback_count)} · last matched ${formatDate(item.last_matched_at)}`;
+        card.querySelector(".suggestion-badge").textContent = item.status;
+        card.querySelector(".json-box").textContent =
+          JSON.stringify({ condition: item.condition, action: item.rule_action }, null, 2);
         list.appendChild(card);
       });
     }
@@ -3326,6 +3426,9 @@ INDEX_HTML = r"""<!doctype html>
     });
     $("workbenchButton").addEventListener("click", () => {
       openWorkbench().catch(showError);
+    });
+    $("metricsButton").addEventListener("click", () => {
+      openLearningMetrics().catch(showError);
     });
     $("unsubscribeButton").addEventListener("click", () => {
       openUnsubscribeQueue().catch(showError);

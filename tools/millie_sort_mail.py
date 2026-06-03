@@ -21,9 +21,12 @@ from millie.brain.observe import (  # noqa: E402
     CLASSIFIER_TYPE,
     CLASSIFIER_VERSION,
     ClassificationSuggestion,
+    LEARNED_RULE_CLASSIFIER_TYPE,
+    LEARNED_RULE_CLASSIFIER_VERSION,
     SortCandidate,
     UnsubscribeSuggestion,
     classify_candidate,
+    candidate_year,
     extract_unsubscribe_suggestions,
 )
 from millie.brain.automation import automation_level_allows  # noqa: E402
@@ -37,6 +40,18 @@ class CandidateResult:
     candidate: SortCandidate
     classifications: list[ClassificationSuggestion]
     unsubscribe_suggestions: list[UnsubscribeSuggestion]
+    blocked_classifications: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class LearnedRule:
+    id: str
+    rule_name: str
+    condition: dict[str, Any]
+    rule_action: dict[str, Any]
+    confidence: float
+    priority: int
+    evidence_count: int
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -66,7 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--include-classified",
         action="store_true",
-        help="Include messages that already have observe-v1 heuristic classifications.",
+        help="Include messages that already have observe-v1 heuristic or learned-v1 rule classifications.",
     )
     parser.add_argument("--sample", type=int, default=20, help="Number of suggestions to print.")
     return parser
@@ -88,14 +103,18 @@ def main() -> int:
         store.connection.commit()
         candidates = load_candidates(store, args)
         attach_headers(store, candidates)
-        results = [
-            CandidateResult(
-                candidate=candidate,
-                classifications=classify_candidate(candidate),
-                unsubscribe_suggestions=extract_unsubscribe_suggestions(candidate.headers),
+        learned_rules = load_active_learned_rules(store)
+        results = []
+        for candidate in candidates:
+            classifications, blocked_count = classify_with_learned_rules(candidate, learned_rules)
+            results.append(
+                CandidateResult(
+                    candidate=candidate,
+                    classifications=classifications,
+                    unsubscribe_suggestions=extract_unsubscribe_suggestions(candidate.headers),
+                    blocked_classifications=blocked_count,
+                )
             )
-            for candidate in candidates
-        ]
         if args.apply:
             write_results(store, results)
             store.connection.commit()
@@ -136,13 +155,26 @@ def load_candidates(store: PostgresMailStore, args: argparse.Namespace) -> list[
                 SELECT 1
                 FROM millie_message_classifications existing
                 WHERE existing.message_id = m.id
-                  AND existing.classifier_type = %s
-                  AND existing.classifier_version = %s
                   AND existing.status IN ('proposed', 'approved', 'applied', 'rejected')
+                  AND (
+                    (
+                      existing.classifier_type = %s
+                      AND existing.classifier_version = %s
+                    )
+                    OR (
+                      existing.classifier_type = %s
+                      AND existing.classifier_version = %s
+                    )
+                  )
             )
             """
         )
-        params.extend([CLASSIFIER_TYPE, CLASSIFIER_VERSION])
+        params.extend([
+            CLASSIFIER_TYPE,
+            CLASSIFIER_VERSION,
+            LEARNED_RULE_CLASSIFIER_TYPE,
+            LEARNED_RULE_CLASSIFIER_VERSION,
+        ])
 
     where_sql = "WHERE " + " AND ".join(where) if where else ""
     limit_sql = ""
@@ -200,6 +232,183 @@ def load_candidates(store: PostgresMailStore, args: argparse.Namespace) -> list[
     ]
 
 
+def load_active_learned_rules(store: PostgresMailStore) -> list[LearnedRule]:
+    rows = store.connection.execute(
+        """
+        SELECT
+            id,
+            rule_name,
+            condition_json,
+            action_json,
+            confidence,
+            priority,
+            evidence_count
+        FROM millie_brain_rules
+        WHERE status = 'active'
+        ORDER BY priority DESC, evidence_count DESC, updated_at DESC
+        """
+    ).fetchall()
+    return [
+        LearnedRule(
+            id=str(row[0]),
+            rule_name=str(row[1] or row[0]),
+            condition=dict(row[2] or {}),
+            rule_action=dict(row[3] or {}),
+            confidence=float(row[4] or 0),
+            priority=int(row[5] or 0),
+            evidence_count=int(row[6] or 0),
+        )
+        for row in rows
+    ]
+
+
+def classify_with_learned_rules(
+    candidate: SortCandidate,
+    learned_rules: list[LearnedRule],
+) -> tuple[list[ClassificationSuggestion], int]:
+    rule_suggestions: list[ClassificationSuggestion] = []
+    block_rules: list[LearnedRule] = []
+    for rule in learned_rules:
+        action = str(rule.rule_action.get("action") or "").strip().lower()
+        if action == "suggest":
+            suggestion = suggestion_from_rule(rule, candidate)
+            if suggestion:
+                rule_suggestions.append(suggestion)
+        elif action == "block_suggestion":
+            block_rules.append(rule)
+
+    suggestions: list[ClassificationSuggestion] = []
+    seen: set[tuple[object, ...]] = set()
+    blocked_count = 0
+    for suggestion in [*rule_suggestions, *classify_candidate(candidate)]:
+        if matching_block_rule(candidate, suggestion, block_rules):
+            blocked_count += 1
+            continue
+        key = suggestion_key(suggestion)
+        if key in seen:
+            continue
+        seen.add(key)
+        suggestions.append(suggestion)
+    return suggestions, blocked_count
+
+
+def suggestion_from_rule(
+    rule: LearnedRule,
+    candidate: SortCandidate,
+) -> ClassificationSuggestion | None:
+    if not candidate_matches_rule_context(candidate, rule.condition):
+        return None
+    kind = str(
+        rule.rule_action.get("classification_kind")
+        or rule.condition.get("classification_kind")
+        or ""
+    ).strip()
+    value = str(
+        rule.rule_action.get("classification_value")
+        or rule.condition.get("classification_value")
+        or ""
+    ).strip()
+    if not kind or not value:
+        return None
+    target_tags = tuple(str(tag) for tag in rule.rule_action.get("target_tags") or ())
+    target_folder_path = rule.rule_action.get("target_folder_path")
+    confidence = rule.confidence if rule.confidence > 0 else 0.75
+    return ClassificationSuggestion(
+        kind=kind,
+        value=value,
+        target_folder_path=str(target_folder_path) if target_folder_path else None,
+        target_tags=target_tags,
+        confidence=max(0.0, min(confidence, 1.0)),
+        reason=f"Learned rule: {rule.rule_name}",
+        evidence={
+            "source": "millie_brain_rule",
+            "rule_id": rule.id,
+            "rule_name": rule.rule_name,
+            "condition": rule.condition,
+            "evidence_count": rule.evidence_count,
+        },
+        classifier_type=LEARNED_RULE_CLASSIFIER_TYPE,
+        classifier_version=LEARNED_RULE_CLASSIFIER_VERSION,
+        rule_id=rule.id,
+    )
+
+
+def matching_block_rule(
+    candidate: SortCandidate,
+    suggestion: ClassificationSuggestion,
+    block_rules: list[LearnedRule],
+) -> LearnedRule | None:
+    for rule in block_rules:
+        if not candidate_matches_rule_context(candidate, rule.condition):
+            continue
+        if suggestion_matches_rule_json(suggestion, rule.condition) or suggestion_matches_rule_json(
+            suggestion,
+            rule.rule_action,
+        ):
+            return rule
+    return None
+
+
+def candidate_matches_rule_context(candidate: SortCandidate, condition: dict[str, Any]) -> bool:
+    sender_domain = str(condition.get("sender_domain") or "").strip().lower()
+    if sender_domain and sender_domain != candidate_sender_domain(candidate):
+        return False
+    folder_path = str(condition.get("folder_path") or "").strip()
+    if folder_path and folder_path != str(candidate.folder_path or ""):
+        return False
+    message_year = str(condition.get("message_year") or "").strip()
+    if message_year and message_year != str(candidate_year(candidate)):
+        return False
+    return True
+
+
+def suggestion_matches_rule_json(
+    suggestion: ClassificationSuggestion,
+    value: dict[str, Any],
+) -> bool:
+    field_map = {
+        "classification_kind": suggestion.kind,
+        "classification_value": suggestion.value,
+        "target_folder_path": suggestion.target_folder_path,
+    }
+    for field, suggestion_value in field_map.items():
+        if field in value and normalize_optional_text(value.get(field)) != normalize_optional_text(suggestion_value):
+            return False
+    if "target_tags" in value:
+        tags = tuple(str(tag) for tag in value.get("target_tags") or ())
+        if tags != suggestion.target_tags:
+            return False
+    return True
+
+
+def suggestion_key(suggestion: ClassificationSuggestion) -> tuple[object, ...]:
+    return (
+        suggestion.kind,
+        suggestion.value,
+        suggestion.target_folder_path,
+        tuple(suggestion.target_tags),
+    )
+
+
+def candidate_sender_domain(candidate: SortCandidate) -> str:
+    tokens = (
+        str(candidate.from_text or "")
+        .replace("<", " ")
+        .replace(">", " ")
+        .replace(",", " ")
+        .split()
+    )
+    for token in tokens:
+        value = token.strip().lower()
+        if "@" in value:
+            return value.rsplit("@", 1)[1].strip(" .;:")
+    return ""
+
+
+def normalize_optional_text(value: object) -> str:
+    return str(value or "").strip()
+
+
 def attach_headers(store: PostgresMailStore, candidates: list[SortCandidate]) -> None:
     if not candidates:
         return
@@ -245,22 +454,23 @@ def write_results(store: PostgresMailStore, results: list[CandidateResult]) -> N
                 result.candidate.message_id,
                 suggestion.kind,
                 suggestion.value,
-                CLASSIFIER_TYPE,
-                CLASSIFIER_VERSION,
+                suggestion.classifier_type,
+                suggestion.classifier_version,
             )
             store.connection.execute(
                 """
                 INSERT INTO millie_message_classifications (
-                    id, message_id, run_id, classifier_type, classifier_version,
+                    id, message_id, rule_id, run_id, classifier_type, classifier_version,
                     classification_kind, classification_value, target_folder_path,
                     target_tags, status, automation_level, confidence, reason_text,
                     evidence_json
                 )
                 VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                     'proposed', 'observe', %s, %s, %s
                 )
                 ON CONFLICT(id) DO UPDATE SET
+                    rule_id = excluded.rule_id,
                     run_id = excluded.run_id,
                     target_folder_path = excluded.target_folder_path,
                     target_tags = excluded.target_tags,
@@ -277,9 +487,10 @@ def write_results(store: PostgresMailStore, results: list[CandidateResult]) -> N
                 (
                     classification_id,
                     result.candidate.message_id,
+                    suggestion.rule_id,
                     run_id,
-                    CLASSIFIER_TYPE,
-                    CLASSIFIER_VERSION,
+                    suggestion.classifier_type,
+                    suggestion.classifier_version,
                     suggestion.kind,
                     suggestion.value,
                     suggestion.target_folder_path,
@@ -302,8 +513,21 @@ def write_results(store: PostgresMailStore, results: list[CandidateResult]) -> N
                     "target_tags": list(suggestion.target_tags),
                     "confidence": suggestion.confidence,
                     "reason": suggestion.reason,
+                    "classifier_type": suggestion.classifier_type,
+                    "classifier_version": suggestion.classifier_version,
+                    "rule_id": suggestion.rule_id,
                 },
             )
+            if suggestion.rule_id:
+                store.connection.execute(
+                    """
+                    UPDATE millie_brain_rules
+                    SET last_matched_at = now(),
+                        updated_at = now()
+                    WHERE id = %s
+                    """,
+                    (suggestion.rule_id,),
+                )
 
         for suggestion in result.unsubscribe_suggestions:
             target = suggestion.unsubscribe_mailto or suggestion.unsubscribe_url or ""
@@ -406,12 +630,16 @@ def print_summary(
     sample_size: int,
 ) -> None:
     classification_counts: Counter[str] = Counter()
+    classifier_counts: Counter[str] = Counter()
     unsubscribe_count = 0
+    blocked_count = 0
     sample_rows: list[str] = []
 
     for result in results:
+        blocked_count += result.blocked_classifications
         for suggestion in result.classifications:
             classification_counts[f"{suggestion.kind}:{suggestion.value}"] += 1
+            classifier_counts[suggestion.classifier_type] += 1
             if len(sample_rows) < sample_size:
                 sample_rows.append(
                     "  "
@@ -428,6 +656,12 @@ def print_summary(
     print(f"Classification suggestions: {sum(classification_counts.values())}")
     for key, count in sorted(classification_counts.items()):
         print(f"  {key}: {count}")
+    if classifier_counts:
+        print("Classifier sources:")
+        for key, count in sorted(classifier_counts.items()):
+            print(f"  {key}: {count}")
+    if blocked_count:
+        print(f"Suggestions suppressed by learned rules: {blocked_count}")
     print(f"Unsubscribe candidates: {unsubscribe_count}")
     if sample_rows:
         print("Sample suggestions:")

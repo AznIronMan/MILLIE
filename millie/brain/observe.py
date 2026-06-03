@@ -10,6 +10,8 @@ from typing import Iterable
 
 CLASSIFIER_TYPE = "heuristic"
 CLASSIFIER_VERSION = "observe-v1"
+LEARNED_RULE_CLASSIFIER_TYPE = "rule"
+LEARNED_RULE_CLASSIFIER_VERSION = "learned-v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +39,9 @@ class ClassificationSuggestion:
     confidence: float
     reason: str
     evidence: dict[str, object]
+    classifier_type: str = CLASSIFIER_TYPE
+    classifier_version: str = CLASSIFIER_VERSION
+    rule_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
