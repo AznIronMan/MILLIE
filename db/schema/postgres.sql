@@ -425,6 +425,266 @@ CREATE TABLE IF NOT EXISTS millie_protocol_clients (
 CREATE INDEX IF NOT EXISTS idx_millie_protocol_clients_identity
     ON millie_protocol_clients(identity_id, protocol);
 
+CREATE TABLE IF NOT EXISTS millie_automation_runs (
+    id TEXT PRIMARY KEY,
+    run_type TEXT NOT NULL CHECK (
+        run_type IN (
+            'sort_observe', 'sort_review', 'live_upkeep', 'retention_scan',
+            'unsubscribe_scan', 'manual_review', 'system'
+        )
+    ),
+    automation_level TEXT NOT NULL DEFAULT 'observe' CHECK (
+        automation_level IN ('observe', 'review', 'auto_internal', 'provider_write')
+    ),
+    status TEXT NOT NULL DEFAULT 'planned' CHECK (
+        status IN ('planned', 'running', 'completed', 'failed', 'cancelled')
+    ),
+    trigger_source TEXT NOT NULL DEFAULT 'cli' CHECK (
+        trigger_source IN ('cli', 'webmail', 'imap', 'scheduler', 'system')
+    ),
+    model_provider TEXT,
+    model_name TEXT,
+    started_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    messages_scanned INTEGER NOT NULL DEFAULT 0 CHECK (messages_scanned >= 0),
+    suggestions_created INTEGER NOT NULL DEFAULT 0 CHECK (suggestions_created >= 0),
+    actions_applied INTEGER NOT NULL DEFAULT 0 CHECK (actions_applied >= 0),
+    error_message TEXT,
+    metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_millie_automation_runs_status
+    ON millie_automation_runs(status, run_type, created_at);
+
+CREATE TABLE IF NOT EXISTS millie_brain_rules (
+    id TEXT PRIMARY KEY,
+    rule_name TEXT NOT NULL,
+    rule_type TEXT NOT NULL CHECK (
+        rule_type IN (
+            'folder', 'tag', 'spam', 'trash', 'unsubscribe',
+            'retention', 'priority', 'custom'
+        )
+    ),
+    rule_source TEXT NOT NULL DEFAULT 'system' CHECK (
+        rule_source IN ('system', 'user', 'heuristic', 'llm')
+    ),
+    status TEXT NOT NULL DEFAULT 'proposed' CHECK (
+        status IN ('proposed', 'active', 'disabled', 'superseded', 'retired')
+    ),
+    automation_level TEXT NOT NULL DEFAULT 'observe' CHECK (
+        automation_level IN ('observe', 'review', 'auto_internal', 'provider_write')
+    ),
+    priority INTEGER NOT NULL DEFAULT 100,
+    condition_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    action_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    confidence NUMERIC(5,4) NOT NULL DEFAULT 0 CHECK (
+        confidence >= 0 AND confidence <= 1
+    ),
+    evidence_count INTEGER NOT NULL DEFAULT 0 CHECK (evidence_count >= 0),
+    positive_feedback_count INTEGER NOT NULL DEFAULT 0 CHECK (positive_feedback_count >= 0),
+    negative_feedback_count INTEGER NOT NULL DEFAULT 0 CHECK (negative_feedback_count >= 0),
+    created_by_identity_id TEXT REFERENCES millie_identities(id) ON DELETE SET NULL,
+    created_by_run_id TEXT REFERENCES millie_automation_runs(id) ON DELETE SET NULL,
+    last_matched_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS idx_millie_brain_rules_status_type
+    ON millie_brain_rules(status, rule_type, priority);
+CREATE INDEX IF NOT EXISTS idx_millie_brain_rules_condition
+    ON millie_brain_rules USING GIN(condition_json);
+CREATE INDEX IF NOT EXISTS idx_millie_brain_rules_action
+    ON millie_brain_rules USING GIN(action_json);
+
+CREATE TABLE IF NOT EXISTS millie_message_classifications (
+    id TEXT PRIMARY KEY,
+    message_id TEXT NOT NULL REFERENCES mail_messages(id) ON DELETE CASCADE,
+    rule_id TEXT REFERENCES millie_brain_rules(id) ON DELETE SET NULL,
+    run_id TEXT REFERENCES millie_automation_runs(id) ON DELETE SET NULL,
+    classifier_type TEXT NOT NULL CHECK (
+        classifier_type IN ('heuristic', 'rule', 'llm', 'user', 'system')
+    ),
+    classifier_version TEXT NOT NULL DEFAULT '',
+    classification_kind TEXT NOT NULL CHECK (
+        classification_kind IN (
+            'folder', 'tag', 'spam', 'trash', 'unsubscribe',
+            'priority', 'retention', 'custom'
+        )
+    ),
+    classification_value TEXT NOT NULL,
+    target_folder_path TEXT,
+    target_tags TEXT[] NOT NULL DEFAULT '{}'::text[],
+    status TEXT NOT NULL DEFAULT 'proposed' CHECK (
+        status IN ('proposed', 'reviewed', 'approved', 'rejected', 'applied', 'expired', 'superseded')
+    ),
+    automation_level TEXT NOT NULL DEFAULT 'observe' CHECK (
+        automation_level IN ('observe', 'review', 'auto_internal', 'provider_write')
+    ),
+    confidence NUMERIC(5,4) NOT NULL DEFAULT 0 CHECK (
+        confidence >= 0 AND confidence <= 1
+    ),
+    reason_text TEXT,
+    evidence_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    reviewed_by_identity_id TEXT REFERENCES millie_identities(id) ON DELETE SET NULL,
+    reviewed_at TIMESTAMPTZ,
+    applied_at TIMESTAMPTZ,
+    expires_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS idx_millie_classifications_message
+    ON millie_message_classifications(message_id, status);
+CREATE INDEX IF NOT EXISTS idx_millie_classifications_rule
+    ON millie_message_classifications(rule_id);
+CREATE INDEX IF NOT EXISTS idx_millie_classifications_run
+    ON millie_message_classifications(run_id);
+CREATE INDEX IF NOT EXISTS idx_millie_classifications_kind_value
+    ON millie_message_classifications(classification_kind, classification_value);
+CREATE INDEX IF NOT EXISTS idx_millie_classifications_target_folder
+    ON millie_message_classifications(target_folder_path)
+    WHERE target_folder_path IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS millie_user_feedback_events (
+    id TEXT PRIMARY KEY,
+    identity_id TEXT REFERENCES millie_identities(id) ON DELETE SET NULL,
+    message_id TEXT REFERENCES mail_messages(id) ON DELETE CASCADE,
+    classification_id TEXT REFERENCES millie_message_classifications(id) ON DELETE SET NULL,
+    rule_id TEXT REFERENCES millie_brain_rules(id) ON DELETE SET NULL,
+    feedback_type TEXT NOT NULL CHECK (
+        feedback_type IN (
+            'approve_classification', 'reject_classification', 'move_message',
+            'mark_spam', 'mark_not_spam', 'mark_trash', 'mark_not_trash',
+            'create_rule', 'disable_rule', 'retention_override',
+            'unsubscribe_approve', 'unsubscribe_reject', 'custom'
+        )
+    ),
+    feedback_source TEXT NOT NULL DEFAULT 'webmail' CHECK (
+        feedback_source IN ('webmail', 'imap', 'cli', 'system')
+    ),
+    previous_value_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    new_value_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS idx_millie_feedback_message
+    ON millie_user_feedback_events(message_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_millie_feedback_classification
+    ON millie_user_feedback_events(classification_id);
+CREATE INDEX IF NOT EXISTS idx_millie_feedback_rule
+    ON millie_user_feedback_events(rule_id);
+CREATE INDEX IF NOT EXISTS idx_millie_feedback_type
+    ON millie_user_feedback_events(feedback_type, created_at);
+
+CREATE TABLE IF NOT EXISTS millie_retention_policies (
+    id TEXT PRIMARY KEY,
+    policy_name TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'proposed' CHECK (
+        status IN ('proposed', 'active', 'disabled', 'retired')
+    ),
+    target_kind TEXT NOT NULL CHECK (
+        target_kind IN ('classification', 'folder', 'tag', 'source', 'account', 'custom')
+    ),
+    target_value TEXT NOT NULL DEFAULT '',
+    hold_duration INTERVAL,
+    action TEXT NOT NULL DEFAULT 'no_action' CHECK (
+        action IN (
+            'no_action', 'hide_from_default_views',
+            'expire_internal_copy', 'delete_internal_copy'
+        )
+    ),
+    requires_review BOOLEAN NOT NULL DEFAULT TRUE,
+    condition_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_by_identity_id TEXT REFERENCES millie_identities(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS idx_millie_retention_status_target
+    ON millie_retention_policies(status, target_kind, target_value);
+CREATE INDEX IF NOT EXISTS idx_millie_retention_condition
+    ON millie_retention_policies USING GIN(condition_json);
+
+CREATE TABLE IF NOT EXISTS millie_unsubscribe_candidates (
+    id TEXT PRIMARY KEY,
+    message_id TEXT NOT NULL REFERENCES mail_messages(id) ON DELETE CASCADE,
+    run_id TEXT REFERENCES millie_automation_runs(id) ON DELETE SET NULL,
+    candidate_type TEXT NOT NULL CHECK (
+        candidate_type IN ('header_mailto', 'header_url', 'body_url', 'provider_api', 'browser')
+    ),
+    source_header TEXT,
+    unsubscribe_url TEXT,
+    unsubscribe_mailto TEXT,
+    status TEXT NOT NULL DEFAULT 'detected' CHECK (
+        status IN (
+            'detected', 'review_required', 'approved', 'attempting',
+            'succeeded', 'failed', 'ignored', 'unsafe'
+        )
+    ),
+    confidence NUMERIC(5,4) NOT NULL DEFAULT 0 CHECK (
+        confidence >= 0 AND confidence <= 1
+    ),
+    requires_browser BOOLEAN NOT NULL DEFAULT FALSE,
+    approved_by_identity_id TEXT REFERENCES millie_identities(id) ON DELETE SET NULL,
+    discovered_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    approved_at TIMESTAMPTZ,
+    attempted_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    result_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    error_message TEXT,
+    metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS idx_millie_unsubscribe_message
+    ON millie_unsubscribe_candidates(message_id, status);
+CREATE INDEX IF NOT EXISTS idx_millie_unsubscribe_run
+    ON millie_unsubscribe_candidates(run_id);
+CREATE INDEX IF NOT EXISTS idx_millie_unsubscribe_status
+    ON millie_unsubscribe_candidates(status, discovered_at);
+
+CREATE TABLE IF NOT EXISTS millie_automation_audit_log (
+    id TEXT PRIMARY KEY,
+    run_id TEXT REFERENCES millie_automation_runs(id) ON DELETE SET NULL,
+    identity_id TEXT REFERENCES millie_identities(id) ON DELETE SET NULL,
+    message_id TEXT REFERENCES mail_messages(id) ON DELETE SET NULL,
+    classification_id TEXT REFERENCES millie_message_classifications(id) ON DELETE SET NULL,
+    rule_id TEXT REFERENCES millie_brain_rules(id) ON DELETE SET NULL,
+    retention_policy_id TEXT REFERENCES millie_retention_policies(id) ON DELETE SET NULL,
+    unsubscribe_candidate_id TEXT REFERENCES millie_unsubscribe_candidates(id) ON DELETE SET NULL,
+    action_type TEXT NOT NULL CHECK (
+        action_type IN (
+            'suggest_classification', 'approve_classification', 'reject_classification',
+            'apply_internal_move', 'apply_internal_tag', 'block_provider_write',
+            'retention_evaluate', 'retention_apply', 'unsubscribe_detect',
+            'unsubscribe_attempt', 'provider_purge_manifest', 'custom'
+        )
+    ),
+    automation_level TEXT NOT NULL DEFAULT 'observe' CHECK (
+        automation_level IN ('observe', 'review', 'auto_internal', 'provider_write')
+    ),
+    status TEXT NOT NULL DEFAULT 'recorded' CHECK (
+        status IN ('recorded', 'blocked', 'applied', 'failed')
+    ),
+    before_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    after_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    error_message TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS idx_millie_audit_run
+    ON millie_automation_audit_log(run_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_millie_audit_message
+    ON millie_automation_audit_log(message_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_millie_audit_action
+    ON millie_automation_audit_log(action_type, status, created_at);
+
 CREATE OR REPLACE VIEW millie_v_mailbox_messages AS
 SELECT
     mb.owner_identity_id,

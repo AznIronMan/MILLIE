@@ -18,6 +18,7 @@ This repository has been reset for a fresh start. The prior version is archived 
 - Mail import status: duplicate-safe bulk PST and IMAP import tools available
 - Dedupe status: exact raw-message dedupe plus normalized duplicate fingerprints/reporting
 - Live sync status: runtime IMAP/OAuth checker available while MILLIE is running
+- Automation status: Postgres brain schema foundation and observe-only sorter available; review tooling not implemented yet
 - Mail service status: dormant Postgres identity/mailbox facade scaffolded
 - Dev IMAP status: development listener available for local/LAN browse and mailbox-copy mutation testing
 - Dev SMTP status: optional setup-only blackhole listener; MILLIE never sends outbound SMTP
@@ -153,6 +154,24 @@ python3 tools/millie_identity_plan.py --login geon@millie.cnbsk.cloud --display-
 ```
 
 The command generates bootstrap SQL only. It does not connect to Postgres or start an IMAP/webmail listener.
+
+## Automation And Learning
+
+MILLIE now has a dormant Postgres brain layer for future safe sorting and learning work. It stores automation runs, learned rules, message classification suggestions, user feedback events, retention policies, unsubscribe candidates, and audit log entries.
+
+The current default automation level is `observe`: write suggestions/audit records only. The observe sorter is dry-run by default:
+
+```sh
+.private/venv/bin/python tools/millie_sort_mail.py --observe --limit 250
+```
+
+To persist suggestions without moving or deleting anything:
+
+```sh
+.private/venv/bin/python tools/millie_sort_mail.py --observe --apply --limit 250
+```
+
+Review UI, internal move/tag automation, retention execution, and unsubscribe execution are planned follow-up work. Provider-side cleanup remains separate and must use the manifest-driven purge flow.
 
 ## Dev IMAP Listener
 

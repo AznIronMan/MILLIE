@@ -11,3 +11,4 @@ Internal planning, scratch notes, risks, credentials, fixtures, generated data, 
 - [Mail Service Facade](mail-service.md)
 - [PST Probe](pst.md)
 - [Webmail](webmail.md)
+- [Automation And Learning](automation.md)

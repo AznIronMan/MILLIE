@@ -16,6 +16,8 @@ All notable changes to MILLIE will be documented in this file.
 - Added a remote provider cleanup preparation tool that audits live IMAP/OAuth UIDs and tags protected MILLIE copies before any destructive provider-side purge can be considered.
 - Added a Gmail label alias reconciliation tool using `X-GM-MSGID` to map label UIDs without fetching duplicate raw messages.
 - Added a sync-cutoff remote purge snapshot tool and a manifest-driven provider purge executor that deletes only exact manifest IMAP UIDs.
+- Added a dormant Postgres brain schema foundation for safe sorting automation, learned rules, classifications, feedback, retention policies, unsubscribe candidates, automation runs, and audit logging.
+- Added an observe-only sorter CLI that proposes categories and unsubscribe candidates without moving, deleting, unsubscribing, or writing to source providers.
 
 ### Changed
 
