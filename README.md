@@ -143,7 +143,7 @@ For a sync-cutoff cleanup, create a manifest from source UIDs already copied int
   --manifest-id remote-purge-snapshot-YYYYMMDDTHHMMSSZ
 ```
 
-The provider purge executor only targets exact manifest UIDs and checks folder UIDVALIDITY before deletion, so mail arriving after the manifest snapshot is not selected.
+The provider purge executor only targets exact manifest UIDs and checks folder UIDVALIDITY before deletion, so mail arriving after the manifest snapshot is not selected. Execute mode is blocked unless `automation_level=provider_write`, `automation_provider_write_enabled=true`, and `--manifest-id` are present; blocked and executed attempts are recorded in `millie_automation_audit_log`.
 
 ## Dormant Mail Service Facade
 
@@ -173,7 +173,7 @@ To persist suggestions without moving or deleting anything:
 
 The sorter supports `--account`, `--folder`, `--message-id`, `--since`, and `--until` filters. Webmail shows pending suggestion badges, message-level suggestion panels, and a Review queue. Review actions write feedback, learned rule evidence, and audit rows only.
 
-Automation guardrails live in `millie.settings` as `automation_level` and `automation_provider_write_enabled`. Provider writes require both `automation_level=provider_write` and `automation_provider_write_enabled=true`; manifest-driven purge tools remain separate.
+Automation guardrails live in `millie.settings` as `automation_level` and `automation_provider_write_enabled`. Provider writes require both `automation_level=provider_write` and `automation_provider_write_enabled=true`. Remote provider purge execution also requires an explicit manifest id and writes provider-write audit rows; dry-runs remain available without provider-write settings.
 
 Reviewed unsubscribe candidates can be prepared without contacting providers:
 
@@ -218,6 +218,8 @@ Manage retention policies with:
 .private/venv/bin/python tools/millie_retention_policies.py list
 .private/venv/bin/python tools/millie_retention_policies.py activate --default-holds --execute
 ```
+
+The webmail **Policies** button can list, activate, disable, and edit retention policy names, hold durations, review requirements, and internal actions. These policy controls do not touch source providers.
 
 Run sync, dedupe backfill, observe sorting, retention scan, and safe internal apply checks in one runtime pass:
 
@@ -266,7 +268,7 @@ It opens the current `geon@millie.cnbsk.cloud` mailbox through the Postgres mail
 
 The message list loads only the selected folder and supports `25`, `50`, `100`, `250`, `500`, or `All` messages at a time. The selected size is remembered in browser local storage, folder counts use cheap count queries, and the active list can be refreshed from the webmail toolbar.
 
-The webmail view can review MILLIE brain suggestions and retention-eligible hold messages. Approve/reject/always/never controls persist classification decisions and learned rule evidence. Acknowledge/snooze controls persist retention review decisions. These controls do not move mail, expire mail, delete mail, or write back to source providers. Messages in hold folders show matching retention policy timing and eligibility in the reader.
+The webmail view can review MILLIE brain suggestions and retention-eligible hold messages. Approve/reject/always/never controls persist classification decisions and learned rule evidence. Acknowledge/snooze controls persist retention review decisions. The **Policies** button opens retention policy controls for hold durations, internal actions, active/disabled states, and review requirements. These controls do not move mail, expire mail, delete mail, or write back to source providers. Messages in hold folders show matching retention policy timing and eligibility in the reader.
 
 To have webmail check live IMAP/OAuth sources while the webmail process is running, add `--live-sync`. This does not install a macOS service:
 

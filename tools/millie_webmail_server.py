@@ -70,6 +70,9 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/unsubscribe":
             self.send_json(self.unsubscribe_payload(parsed))
             return
+        if parsed.path == "/api/retention/policies":
+            self.send_json(self.retention_policies_payload(parsed))
+            return
         if parsed.path in AUTODISCOVER_PATHS:
             self.send_xml(autodiscover_xml(self.server.settings, self.server.mailbox_address))
             return
@@ -90,6 +93,9 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/unsubscribe/action":
             self.send_json(self.unsubscribe_action_payload())
+            return
+        if parsed.path == "/api/retention/policies/action":
+            self.send_json(self.retention_policy_action_payload())
             return
         if parsed.path == "/api/retention/action":
             self.send_json(self.retention_action_payload())
@@ -202,6 +208,18 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
             )
         return {"candidates": candidates, "limit": limit, "statuses": statuses}
 
+    def retention_policies_payload(self, parsed: urllib.parse.ParseResult) -> dict[str, object]:
+        query = urllib.parse.parse_qs(parsed.query)
+        statuses = [
+            status
+            for value in query.get("status", [])
+            for status in value.split(",")
+            if status
+        ]
+        with self.store() as store:
+            policies = store.list_retention_policies(statuses=statuses or None)
+        return {"policies": policies, "statuses": statuses}
+
     def classification_action_payload(self) -> dict[str, object]:
         payload = self.read_json_body()
         classification_id = str(payload.get("classification_id") or "")
@@ -268,6 +286,44 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
                 raise BadRequestError(str(exc)) from exc
             store.connection.commit()
         return {"ok": True, "retention": result}
+
+    def retention_policy_action_payload(self) -> dict[str, object]:
+        payload = self.read_json_body()
+        policy_id = str(payload.get("policy_id") or "")
+        action = str(payload.get("action") or "").strip().lower()
+        if not policy_id or action not in {"activate", "disable", "update"}:
+            raise BadRequestError("policy_id and valid action are required")
+        updates: dict[str, object] = {}
+        if action == "update":
+            if "policy_name" in payload:
+                updates["policy_name"] = str(payload.get("policy_name") or "")
+            if "status" in payload:
+                updates["status"] = str(payload.get("status") or "")
+            if "policy_action" in payload:
+                updates["policy_action"] = str(payload.get("policy_action") or "")
+            if "requires_review" in payload:
+                updates["requires_review"] = bool(payload.get("requires_review"))
+            if "hold_duration_seconds" in payload:
+                try:
+                    updates["hold_duration_seconds"] = int(str(payload.get("hold_duration_seconds") or "0"))
+                except ValueError as exc:
+                    raise BadRequestError("hold_duration_seconds must be a number") from exc
+        with self.store() as store:
+            mailbox = store.mailbox_by_address(self.server.mailbox_address)
+            identity_id = str(mailbox["owner_identity_id"]) if mailbox else None
+            try:
+                policy = store.record_retention_policy_action(
+                    policy_id=policy_id,
+                    action=action,
+                    updates=updates,
+                    identity_id=identity_id,
+                )
+            except KeyError as exc:
+                raise NotFoundError(str(exc)) from exc
+            except ValueError as exc:
+                raise BadRequestError(str(exc)) from exc
+            store.connection.commit()
+        return {"ok": True, "policy": policy}
 
     def store(self) -> PostgresMailStore:
         return PostgresMailStore.connect(self.server.settings)
@@ -647,7 +703,7 @@ INDEX_HTML = r"""<!doctype html>
       color: var(--text);
       font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
-    button, input { font: inherit; }
+    button, input, select { font: inherit; }
     .app {
       display: grid;
       grid-template-rows: 56px minmax(0, 1fr);
@@ -655,7 +711,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     .topbar {
       display: grid;
-      grid-template-columns: 220px minmax(160px, 1fr) auto auto auto auto;
+      grid-template-columns: 220px minmax(160px, 1fr) auto auto auto auto auto;
       align-items: center;
       gap: 14px;
       padding: 0 18px;
@@ -1000,6 +1056,46 @@ INDEX_HTML = r"""<!doctype html>
       cursor: pointer;
     }
     .suggestion-actions button:hover { border-color: var(--accent); color: var(--accent); }
+    .policy-edit {
+      display: grid;
+      grid-template-columns: minmax(180px, 1fr) repeat(4, auto);
+      gap: 8px;
+      align-items: end;
+    }
+    .policy-edit label {
+      display: grid;
+      gap: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+    .policy-edit input,
+    .policy-edit select {
+      height: 30px;
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--text);
+      padding: 0 8px;
+      font-size: 12px;
+    }
+    .policy-edit .check-label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      height: 30px;
+    }
+    .policy-edit .check-label input {
+      width: 16px;
+      height: 16px;
+      padding: 0;
+    }
+    .policy-edit .duration-group {
+      display: grid;
+      grid-template-columns: 70px 82px;
+      gap: 6px;
+    }
     .review-list {
       display: grid;
       gap: 10px;
@@ -1017,6 +1113,7 @@ INDEX_HTML = r"""<!doctype html>
     @media (max-width: 980px) {
       .topbar { grid-template-columns: 160px minmax(120px, 1fr); grid-auto-flow: row; height: auto; padding: 10px 12px; }
       .themes, .account { grid-column: span 1; }
+      .policy-edit { grid-template-columns: 1fr 1fr; align-items: stretch; }
       .main { grid-template-columns: 76px minmax(260px, 38vw) minmax(320px, 1fr); }
       .folder { grid-template-columns: 1fr; justify-items: center; padding: 0 6px; }
       .folder .name { max-width: 54px; }
@@ -1034,6 +1131,7 @@ INDEX_HTML = r"""<!doctype html>
       <input id="search" class="search" type="search" placeholder="Search mail" autocomplete="off">
       <button id="reviewButton" class="review-button" type="button">Review</button>
       <button id="unsubscribeButton" class="review-button" type="button">Unsub</button>
+      <button id="policiesButton" class="review-button" type="button">Policies</button>
       <div class="themes" id="themes">
         <button type="button" data-theme="gmail">Gmail</button>
         <button type="button" data-theme="outlook">Outlook</button>
@@ -1460,6 +1558,25 @@ INDEX_HTML = r"""<!doctype html>
       renderUnsubscribeQueue(data.candidates || []);
     }
 
+    async function openPolicies() {
+      const data = await api("/api/retention/policies");
+      renderPolicyList(data.policies || []);
+    }
+
+    function durationParts(seconds) {
+      const normalized = Math.max(1, Number(seconds || 86400));
+      if (normalized % 604800 === 0) return { value: normalized / 604800, unit: "weeks" };
+      if (normalized % 86400 === 0) return { value: normalized / 86400, unit: "days" };
+      if (normalized % 3600 === 0) return { value: normalized / 3600, unit: "hours" };
+      return { value: normalized, unit: "seconds" };
+    }
+
+    function durationSeconds(value, unit) {
+      const amount = Math.max(1, Number(value || 1));
+      const multipliers = { seconds: 1, hours: 3600, days: 86400, weeks: 604800 };
+      return Math.round(amount * (multipliers[unit] || 86400));
+    }
+
     function renderReviewList(suggestions, retentionItems) {
       $("reader").innerHTML = `
         <div class="review-list">
@@ -1572,6 +1689,114 @@ INDEX_HTML = r"""<!doctype html>
       }
     }
 
+    function renderPolicyList(policies) {
+      $("reader").innerHTML = `
+        <div class="review-list">
+          <h1>Retention Policies</h1>
+          <div class="suggestion-meta"></div>
+          <div data-list="retention-policies"></div>
+        </div>
+      `;
+      $("reader").querySelector(".suggestion-meta").textContent =
+        `${policies.length} policies · provider mail is not changed by these controls`;
+      const list = $("reader").querySelector('[data-list="retention-policies"]');
+      if (!policies.length) {
+        list.innerHTML = `<div class="empty">No retention policies</div>`;
+        return;
+      }
+      policies.forEach((item) => {
+        const card = document.createElement("div");
+        card.className = "suggestion-card";
+        const parts = durationParts(item.hold_duration_seconds);
+        card.innerHTML = `
+          <div class="suggestion-top">
+            <div>
+              <div class="suggestion-title"></div>
+              <div class="suggestion-meta" data-field="policy-meta"></div>
+            </div>
+            <span class="suggestion-badge"></span>
+          </div>
+          <div class="policy-edit">
+            <label>Name
+              <input data-field="policy-name" type="text">
+            </label>
+            <label>Hold
+              <span class="duration-group">
+                <input data-field="policy-duration" type="number" min="1" step="1">
+                <select data-field="policy-duration-unit">
+                  <option value="hours">hours</option>
+                  <option value="days">days</option>
+                  <option value="weeks">weeks</option>
+                  <option value="seconds">seconds</option>
+                </select>
+              </span>
+            </label>
+            <label>Action
+              <select data-field="policy-action">
+                <option value="no_action">no action</option>
+                <option value="hide_from_default_views">hide from defaults</option>
+                <option value="expire_internal_copy">expire internal copy</option>
+                <option value="delete_internal_copy">delete internal copy</option>
+              </select>
+            </label>
+            <label>Status
+              <select data-field="policy-status">
+                <option value="proposed">proposed</option>
+                <option value="active">active</option>
+                <option value="disabled">disabled</option>
+                <option value="retired">retired</option>
+              </select>
+            </label>
+            <label class="check-label">
+              <input data-field="policy-review" type="checkbox">
+              review
+            </label>
+          </div>
+          <div class="suggestion-actions"></div>
+        `;
+        card.querySelector(".suggestion-title").textContent = item.policy_name || item.id;
+        card.querySelector('[data-field="policy-meta"]').textContent =
+          `${item.target_kind}:${item.target_value} · ${item.hold_duration_text} · ${item.policy_action}`;
+        card.querySelector(".suggestion-badge").textContent = item.status;
+        card.querySelector('[data-field="policy-name"]').value = item.policy_name || "";
+        card.querySelector('[data-field="policy-duration"]').value = parts.value;
+        card.querySelector('[data-field="policy-duration-unit"]').value = parts.unit;
+        card.querySelector('[data-field="policy-action"]').value = item.policy_action || "no_action";
+        card.querySelector('[data-field="policy-status"]').value = item.status || "proposed";
+        card.querySelector('[data-field="policy-review"]').checked = Boolean(item.requires_review);
+        const actions = card.querySelector(".suggestion-actions");
+        const saveButton = document.createElement("button");
+        saveButton.type = "button";
+        saveButton.textContent = "Save";
+        saveButton.addEventListener("click", async () => {
+          await savePolicy(card, item.id);
+          await openPolicies();
+        });
+        actions.appendChild(saveButton);
+        if (item.status !== "active") {
+          const activateButton = document.createElement("button");
+          activateButton.type = "button";
+          activateButton.textContent = "Activate";
+          activateButton.addEventListener("click", async () => {
+            await applyPolicyAction(item.id, "activate");
+            await openPolicies();
+          });
+          actions.appendChild(activateButton);
+        }
+        if (item.status !== "disabled") {
+          const disableButton = document.createElement("button");
+          disableButton.type = "button";
+          disableButton.textContent = "Disable";
+          disableButton.addEventListener("click", async () => {
+            await applyPolicyAction(item.id, "disable");
+            await openPolicies();
+          });
+          actions.appendChild(disableButton);
+        }
+        list.appendChild(card);
+      });
+    }
+
     function renderUnsubscribeQueue(candidates) {
       $("reader").innerHTML = `
         <div class="review-list">
@@ -1637,6 +1862,24 @@ INDEX_HTML = r"""<!doctype html>
       });
     }
 
+    async function applyPolicyAction(policyId, action) {
+      await postJson("/api/retention/policies/action", { policy_id: policyId, action });
+    }
+
+    async function savePolicy(card, policyId) {
+      const durationValue = card.querySelector('[data-field="policy-duration"]').value;
+      const durationUnit = card.querySelector('[data-field="policy-duration-unit"]').value;
+      await postJson("/api/retention/policies/action", {
+        policy_id: policyId,
+        action: "update",
+        policy_name: card.querySelector('[data-field="policy-name"]').value,
+        hold_duration_seconds: durationSeconds(durationValue, durationUnit),
+        policy_action: card.querySelector('[data-field="policy-action"]').value,
+        status: card.querySelector('[data-field="policy-status"]').value,
+        requires_review: card.querySelector('[data-field="policy-review"]').checked,
+      });
+    }
+
     function showError(error) {
       $("reader").innerHTML = `<div class="error"></div>`;
       $("reader").querySelector(".error").textContent = error.message || String(error);
@@ -1663,6 +1906,9 @@ INDEX_HTML = r"""<!doctype html>
     });
     $("unsubscribeButton").addEventListener("click", () => {
       openUnsubscribeQueue().catch(showError);
+    });
+    $("policiesButton").addEventListener("click", () => {
+      openPolicies().catch(showError);
     });
 
     setTheme(localStorage.getItem("millie.webmail.theme") || "gmail");

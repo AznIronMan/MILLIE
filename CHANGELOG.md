@@ -29,6 +29,8 @@ All notable changes to MILLIE will be documented in this file.
 - Added a live-upkeep runner that combines live sync, dedupe backfill, Gmail label aliasing, observe sorting, retention scan, and safe internal apply steps while MILLIE is running.
 - Added a safe unsubscribe review CLI for listing, preparing, ignoring, marking unsafe, and generating manual-assist checklists without clicking provider links.
 - Added a webmail unsubscribe queue for global candidate review.
+- Added webmail retention policy controls for listing, activating, disabling, and editing hold durations/actions with audit rows.
+- Added provider-write guardrails that block remote provider purge execution unless explicit provider-write settings and a manifest id are present.
 
 ### Changed
 

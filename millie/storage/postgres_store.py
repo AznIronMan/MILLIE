@@ -39,6 +39,16 @@ from .schema import load_schema
 
 
 RETENTION_REVIEW_DEFER_DURATION = timedelta(days=7)
+RETENTION_POLICY_STATUSES = {"proposed", "active", "disabled", "retired"}
+RETENTION_POLICY_ACTIONS = {
+    "no_action",
+    "hide_from_default_views",
+    "expire_internal_copy",
+    "delete_internal_copy",
+}
+RETENTION_POLICY_WEB_ACTIONS = {"activate", "disable", "update"}
+PROVIDER_WRITE_AUDIT_ACTIONS = {"provider_purge_manifest", "block_provider_write"}
+PROVIDER_WRITE_AUDIT_STATUSES = {"recorded", "blocked", "applied", "failed"}
 
 
 class PostgresMailStore:
@@ -1418,6 +1428,153 @@ class PostgresMailStore:
             for row in rows
         ]
 
+    def list_retention_policies(
+        self,
+        *,
+        statuses: list[str] | None = None,
+    ) -> list[dict[str, object]]:
+        status_filter = ""
+        params: list[object] = []
+        if statuses:
+            normalized = [
+                str(status).strip().lower()
+                for status in statuses
+                if str(status).strip().lower() in RETENTION_POLICY_STATUSES
+            ]
+            if not normalized:
+                return []
+            status_filter = f"WHERE status IN ({placeholders(normalized)})"
+            params.extend(normalized)
+        rows = self.connection.execute(
+            f"""
+            SELECT
+                id, policy_name, status, target_kind, target_value, hold_duration,
+                action, requires_review, condition_json, created_by_identity_id,
+                created_at, updated_at, metadata_json
+            FROM millie_retention_policies
+            {status_filter}
+            ORDER BY
+                CASE status
+                    WHEN 'active' THEN 0
+                    WHEN 'proposed' THEN 1
+                    WHEN 'disabled' THEN 2
+                    ELSE 3
+                END,
+                target_kind,
+                target_value,
+                policy_name
+            """,
+            tuple(params),
+        ).fetchall()
+        return [self._retention_policy_dict(row) for row in rows]
+
+    def record_retention_policy_action(
+        self,
+        *,
+        policy_id: str,
+        action: str,
+        updates: dict[str, object] | None = None,
+        identity_id: str | None = None,
+    ) -> dict[str, object]:
+        action = action.strip().lower()
+        if action not in RETENTION_POLICY_WEB_ACTIONS:
+            raise ValueError(f"Unsupported retention policy action: {action}")
+        before = self.load_retention_policy(policy_id)
+        if not before:
+            raise KeyError(f"Retention policy not found: {policy_id}")
+
+        values = dict(updates or {})
+        changes: dict[str, object] = {}
+        if action == "activate":
+            changes["status"] = "active"
+        elif action == "disable":
+            changes["status"] = "disabled"
+        elif action == "update":
+            if "policy_name" in values:
+                name = str(values["policy_name"] or "").strip()
+                if not name:
+                    raise ValueError("policy_name cannot be blank")
+                changes["policy_name"] = name
+            if "status" in values:
+                status = str(values["status"] or "").strip().lower()
+                if status not in RETENTION_POLICY_STATUSES:
+                    raise ValueError(f"Unsupported retention policy status: {status}")
+                changes["status"] = status
+            if "policy_action" in values:
+                policy_action = str(values["policy_action"] or "").strip()
+                if policy_action not in RETENTION_POLICY_ACTIONS:
+                    raise ValueError(f"Unsupported retention policy action: {policy_action}")
+                changes["action"] = policy_action
+            if "requires_review" in values:
+                changes["requires_review"] = bool(values["requires_review"])
+            if "hold_duration_seconds" in values:
+                seconds = int(values["hold_duration_seconds"] or 0)
+                if seconds <= 0:
+                    raise ValueError("hold_duration_seconds must be greater than zero")
+                changes["hold_duration"] = timedelta(seconds=seconds)
+
+        if not changes:
+            return before
+
+        assignments = [f"{column} = %s" for column in changes]
+        params = [*changes.values(), Jsonb({"managed_by": "millie_webmail"}), policy_id]
+        self.connection.execute(
+            f"""
+            UPDATE millie_retention_policies
+            SET {", ".join(assignments)},
+                updated_at = now(),
+                metadata_json = metadata_json || %s
+            WHERE id = %s
+            """,
+            tuple(params),
+        )
+        after = self.load_retention_policy(policy_id)
+        self._insert_automation_audit(
+            action_type="custom",
+            identity_id=identity_id,
+            retention_policy_id=policy_id,
+            before_json=before,
+            after_json={
+                "policy_change": action,
+                "policy_id": policy_id,
+                "policy": after,
+            },
+        )
+        return after
+
+    def load_retention_policy(self, policy_id: str) -> dict[str, object]:
+        row = self.connection.execute(
+            """
+            SELECT
+                id, policy_name, status, target_kind, target_value, hold_duration,
+                action, requires_review, condition_json, created_by_identity_id,
+                created_at, updated_at, metadata_json
+            FROM millie_retention_policies
+            WHERE id = %s
+            """,
+            (policy_id,),
+        ).fetchone()
+        return self._retention_policy_dict(row) if row else {}
+
+    def _retention_policy_dict(self, row: object) -> dict[str, object]:
+        hold_duration = row[5]
+        return {
+            "id": row[0],
+            "policy_name": row[1],
+            "status": row[2],
+            "target_kind": row[3],
+            "target_value": row[4],
+            "hold_duration_seconds": int(hold_duration.total_seconds()) if hold_duration is not None else None,
+            "hold_duration_text": human_duration(hold_duration),
+            "policy_action": row[6],
+            "requires_review": bool(row[7]),
+            "condition": row[8] or {},
+            "created_by_identity_id": row[9],
+            "created_at": row[10],
+            "updated_at": row[11],
+            "metadata": row[12] or {},
+        }
+
     def record_classification_feedback(
         self,
         *,
@@ -1865,6 +2022,39 @@ class PostgresMailStore:
                 action_type,
                 Jsonb(before_json or {}),
                 Jsonb(after_json or {}),
+            ),
+        )
+
+    def record_provider_write_audit(
+        self,
+        *,
+        action_type: str,
+        status: str,
+        before_json: dict[str, object] | None = None,
+        after_json: dict[str, object] | None = None,
+        error_message: str | None = None,
+        metadata_json: dict[str, object] | None = None,
+    ) -> None:
+        if action_type not in PROVIDER_WRITE_AUDIT_ACTIONS:
+            raise ValueError(f"Unsupported provider-write audit action: {action_type}")
+        if status not in PROVIDER_WRITE_AUDIT_STATUSES:
+            raise ValueError(f"Unsupported provider-write audit status: {status}")
+        self.connection.execute(
+            """
+            INSERT INTO millie_automation_audit_log (
+                id, action_type, automation_level, status,
+                before_json, after_json, error_message, metadata_json
+            )
+            VALUES (%s, %s, 'provider_write', %s, %s, %s, %s, %s)
+            """,
+            (
+                str(uuid.uuid4()),
+                action_type,
+                status,
+                Jsonb(before_json or {}),
+                Jsonb(after_json or {}),
+                error_message,
+                Jsonb(metadata_json or {}),
             ),
         )
 

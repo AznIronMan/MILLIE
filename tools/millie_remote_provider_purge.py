@@ -18,6 +18,7 @@ from psycopg.types.json import Jsonb
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from millie.brain.provider_guardrails import ProviderWriteBlocked, require_provider_write
 from millie.settings_loader import load_local_settings
 from millie.storage.postgres_store import PostgresMailStore
 from tools.millie_imap_bulk_import import (
@@ -146,6 +147,27 @@ def main() -> int:
             raise SystemExit(f"Manifest status does not allow purge: {manifest['status']}")
         if int(manifest["missing_source_uids"]) != 0:
             raise SystemExit("Manifest has missing_source_uids > 0.")
+        provider_write_decision = None
+        if args.execute:
+            try:
+                provider_write_decision = require_provider_write(
+                    settings,
+                    "provider_purge_manifest",
+                    manifest_id=args.manifest_id,
+                )
+            except ProviderWriteBlocked as exc:
+                store.record_provider_write_audit(
+                    action_type="block_provider_write",
+                    status="blocked",
+                    after_json={
+                        **exc.decision.audit_json(),
+                        "manifest_status": manifest["status"],
+                        "manifest_action": manifest["action"],
+                    },
+                    error_message=exc.decision.reason,
+                )
+                store.connection.commit()
+                raise SystemExit(f"Provider write blocked: {exc.decision.reason}") from exc
         uids = load_manifest_uids(
             store,
             manifest_id=args.manifest_id,
@@ -153,27 +175,57 @@ def main() -> int:
             folders=args.folder,
         )
         summary = PurgeSummary(manifest_id=args.manifest_id, dry_run=not args.execute)
+        if args.execute and provider_write_decision is not None:
+            store.record_provider_write_audit(
+                action_type="provider_purge_manifest",
+                status="recorded",
+                after_json={
+                    **provider_write_decision.audit_json(),
+                    "manifest_status": manifest["status"],
+                    "manifest_action": manifest["action"],
+                    "accounts": [account_label(account) for account in accounts],
+                    "folders": args.folder,
+                    "source_uids": len(uids),
+                },
+            )
+            store.connection.commit()
         print("MILLIE remote provider purge", flush=True)
         print(f"Mode: {'execute' if args.execute else 'dry-run'}", flush=True)
         print(f"Manifest: {args.manifest_id}", flush=True)
         print(f"Accounts: {len(accounts)} source_uids={len(uids)}", flush=True)
-        for account_name, account_uids in group_by_account(uids).items():
-            account = accounts_by_label.get(account_name.lower())
-            if account is None:
-                continue
-            account_summary = purge_account(
-                account,
-                account_uids,
-                settings=settings,
-                execute=args.execute,
-                timeout=args.imap_timeout,
-                batch_size=args.batch_size,
-                require_uidplus=args.require_uidplus,
-                stop_on_error=args.stop_on_error,
-            )
-            summary.folders.extend(account_summary)
+        try:
+            for account_name, account_uids in group_by_account(uids).items():
+                account = accounts_by_label.get(account_name.lower())
+                if account is None:
+                    continue
+                account_summary = purge_account(
+                    account,
+                    account_uids,
+                    settings=settings,
+                    execute=args.execute,
+                    timeout=args.imap_timeout,
+                    batch_size=args.batch_size,
+                    require_uidplus=args.require_uidplus,
+                    stop_on_error=args.stop_on_error,
+                )
+                summary.folders.extend(account_summary)
+        except Exception as exc:
+            if args.execute:
+                store.record_provider_write_audit(
+                    action_type="provider_purge_manifest",
+                    status="failed",
+                    after_json=summary_audit_json(summary),
+                    error_message=f"{type(exc).__name__}: {exc}",
+                )
+                store.connection.commit()
+            raise
         if args.execute:
             update_manifest_after_execute(store, summary)
+            store.record_provider_write_audit(
+                action_type="provider_purge_manifest",
+                status="failed" if summary.failed_folders else "applied",
+                after_json=summary_audit_json(summary),
+            )
             store.connection.commit()
     finally:
         store.close()
@@ -552,6 +604,31 @@ def update_manifest_after_execute(store: PostgresMailStore, summary: PurgeSummar
         """,
         (status, now, now, Jsonb(metadata), summary.manifest_id),
     )
+
+
+def summary_audit_json(summary: PurgeSummary) -> dict[str, Any]:
+    return {
+        "manifest_id": summary.manifest_id,
+        "dry_run": summary.dry_run,
+        "manifest_uids": summary.manifest_uids,
+        "found_uids": summary.found_uids,
+        "deleted_uids": summary.deleted_uids,
+        "already_absent_uids": summary.absent_uids,
+        "failed_folders": summary.failed_folders,
+        "folders": [
+            {
+                "account": item.account,
+                "folder": item.folder,
+                "manifest_uids": item.manifest_uids,
+                "found_uids": item.found_uids,
+                "deleted_uids": item.deleted_uids,
+                "already_absent_uids": item.already_absent_uids,
+                "failed": item.failed,
+                "error": item.error,
+            }
+            for item in summary.folders
+        ],
+    }
 
 
 def print_summary(summary: PurgeSummary) -> None:

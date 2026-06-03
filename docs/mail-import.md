@@ -158,6 +158,8 @@ Then dry-run and execute provider-side cleanup from that exact manifest:
   --manifest-id remote-purge-snapshot-YYYYMMDDTHHMMSSZ
 ```
 
+Dry-run mode does not require provider-write settings. Execute mode is blocked unless `automation_level=provider_write`, `automation_provider_write_enabled=true`, and `--manifest-id` are all present. Blocked and executed attempts are written to `millie_automation_audit_log`.
+
 The executor sends IMAP `UID STORE +FLAGS.SILENT (\Deleted)` plus `UID EXPUNGE` only for source UIDs listed in the manifest. It requires UIDPLUS by default and checks each folder's UIDVALIDITY before deleting, which prevents the same numeric UID from being applied after a provider UID reset. It does not search for or delete provider mail that arrived after the snapshot.
 
 For Gmail `[Gmail]/All Mail`, the executor uses Gmail `UID MOVE` into `[Gmail]/Trash` and then performs a final Trash delete by `X-GM-MSGID`. That removes the manifest messages from Gmail's archive without selecting unrelated messages that may have arrived after the snapshot.

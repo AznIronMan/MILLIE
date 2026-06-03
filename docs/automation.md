@@ -9,7 +9,7 @@ Automation levels are:
 - `observe`: create suggestions and audit entries only.
 - `review`: require a user decision before an action is applied.
 - `auto_internal`: allow approved internal MILLIE mailbox changes only.
-- `provider_write`: reserved for future provider-side actions and disabled by default.
+- `provider_write`: allow explicitly approved provider-side actions, still blocked by a second switch by default.
 
 Provider cleanup remains separate from sorting. Remote provider cleanup must use the manifest purge flow, which targets exact provider UIDs from a sync cutoff.
 
@@ -18,7 +18,13 @@ The settings database exposes two guardrails:
 - `automation_level`: maximum autonomous level, defaulting to `observe`.
 - `automation_provider_write_enabled`: second switch for future provider-side automation, defaulting to `false`.
 
-Future provider writes require both `automation_level=provider_write` and `automation_provider_write_enabled=true`. Manifest-driven purge tools remain a separate explicit workflow.
+Provider writes require both `automation_level=provider_write` and `automation_provider_write_enabled=true`. Remote provider purge execution additionally requires an explicit manifest id and records provider-write audit rows. Dry-runs remain available without provider-write settings.
+
+## Provider Write Boundary
+
+The only provider-side destructive path currently implemented is the manifest-driven remote provider purge executor. It targets exact source UIDs from `mail_remote_purge_manifest_messages`, checks UIDVALIDITY before deletion, and does not select mail that arrived after the manifest snapshot.
+
+Automatic browser unsubscribe execution remains disabled even when provider-write settings are enabled. Manual-assist unsubscribe checklists are the current safe path for provider unsubscribe links.
 
 ## Brain Data
 
@@ -157,6 +163,8 @@ Create or update folder policies:
 ```
 
 Mutating policy commands require `--execute` and write audit rows. Supported policy actions are `no_action`, `hide_from_default_views`, `expire_internal_copy`, and `delete_internal_copy`, but only `no_action` and `hide_from_default_views` are currently executable by `tools/millie_apply_retention.py`.
+
+The webmail **Policies** button can also list, activate, disable, and edit retention policy names, hold durations, review requirements, statuses, and internal actions. These controls write audit rows and do not touch source providers.
 
 Run a dry scan:
 

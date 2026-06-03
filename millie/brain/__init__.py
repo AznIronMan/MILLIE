@@ -13,6 +13,12 @@ from .observe import (
     classify_candidate,
     extract_unsubscribe_suggestions,
 )
+from .provider_guardrails import (
+    ProviderWriteBlocked,
+    ProviderWriteDecision,
+    provider_write_decision,
+    require_provider_write,
+)
 from .retention import (
     HeldMessage,
     RetentionCandidate,
@@ -31,11 +37,15 @@ __all__ = [
     "RetentionStatus",
     "SortCandidate",
     "UnsubscribeSuggestion",
+    "ProviderWriteBlocked",
+    "ProviderWriteDecision",
     "automation_level",
     "automation_level_allows",
     "classify_candidate",
     "extract_unsubscribe_suggestions",
     "provider_write_allowed",
+    "provider_write_decision",
+    "require_provider_write",
     "retention_candidate",
     "retention_status",
 ]
