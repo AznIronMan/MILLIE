@@ -83,3 +83,24 @@ Execution requires `automation_level=auto_internal` or higher:
 The apply command creates missing MILLIE folders and maps approved messages into those folders. It does not expunge existing MILLIE folder mappings and does not write to source providers.
 
 Retention execution and unsubscribe execution are planned follow-up work.
+
+## Retention Holds
+
+MILLIE can seed proposed no-action retention policies for hold folders:
+
+```sh
+.private/venv/bin/python tools/millie_retention_scan.py --seed-defaults
+```
+
+Defaults:
+
+- `Hold/Trash`: review after 30 days, `no_action`, review required.
+- `Hold/Spam`: review after 14 days, `no_action`, review required.
+
+Run a dry scan:
+
+```sh
+.private/venv/bin/python tools/millie_retention_scan.py --limit 100
+```
+
+The scanner reports held messages and retention-eligible messages. It does not hide, expire, delete, unsubscribe, or write to source providers. With `--record-scan`, it records a `retention_scan` run and `retention_evaluate` audit rows only.

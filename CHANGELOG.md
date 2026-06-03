@@ -21,6 +21,7 @@ All notable changes to MILLIE will be documented in this file.
 - Added webmail review controls for MILLIE brain classification suggestions and unsubscribe candidates.
 - Added automation-level guardrail settings and helper checks, including a separate provider-write switch.
 - Added a dry-run-first approved-suggestion apply tool for internal MILLIE folder mappings.
+- Added proposed no-action retention defaults and a dry-run retention scanner for MILLIE hold folders.
 
 ### Changed
 

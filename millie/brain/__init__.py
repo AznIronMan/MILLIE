@@ -13,10 +13,19 @@ from .observe import (
     classify_candidate,
     extract_unsubscribe_suggestions,
 )
+from .retention import (
+    HeldMessage,
+    RetentionCandidate,
+    RetentionPolicy,
+    retention_candidate,
+)
 
 __all__ = [
     "AUTOMATION_LEVELS",
     "ClassificationSuggestion",
+    "HeldMessage",
+    "RetentionCandidate",
+    "RetentionPolicy",
     "SortCandidate",
     "UnsubscribeSuggestion",
     "automation_level",
@@ -24,4 +33,5 @@ __all__ = [
     "classify_candidate",
     "extract_unsubscribe_suggestions",
     "provider_write_allowed",
+    "retention_candidate",
 ]

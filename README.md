@@ -185,6 +185,15 @@ Execution requires `automation_level=auto_internal` or higher. It creates missin
 
 Retention execution and unsubscribe execution are planned follow-up work. Provider-side cleanup remains separate and must use the manifest-driven purge flow.
 
+Retention hold policies can be seeded and scanned without deleting anything:
+
+```sh
+.private/venv/bin/python tools/millie_retention_scan.py --seed-defaults
+.private/venv/bin/python tools/millie_retention_scan.py --limit 100
+```
+
+Default policies are proposed, review-required, and `no_action`: `Hold/Trash` reviews after 30 days and `Hold/Spam` reviews after 14 days.
+
 ## Dev IMAP Listener
 
 After importing samples, start the temporary IMAP listener:
