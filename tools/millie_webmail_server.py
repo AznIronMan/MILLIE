@@ -155,6 +155,7 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
             "size": detail["size"],
             "classifications": detail["classifications"],
             "unsubscribe_candidates": detail["unsubscribe_candidates"],
+            "retention_status": detail["retention_status"],
         }
 
     def review_payload(self, parsed: urllib.parse.ParseResult) -> dict[str, object]:
@@ -1227,6 +1228,10 @@ INDEX_HTML = r"""<!doctype html>
             <h2>Unsubscribe Candidates</h2>
             <div data-list="unsubscribe"></div>
           </div>
+          <div class="review-panel" data-panel="retention" hidden>
+            <h2>Retention</h2>
+            <div data-list="retention"></div>
+          </div>
           <div class="body"></div>
           <div class="attachments"></div>
         </div>
@@ -1247,6 +1252,7 @@ INDEX_HTML = r"""<!doctype html>
       });
       renderClassificationPanel(message.classifications || []);
       renderUnsubscribePanel(message.unsubscribe_candidates || []);
+      renderRetentionPanel(message.retention_status || []);
     }
 
     function renderClassificationPanel(classifications) {
@@ -1329,6 +1335,37 @@ INDEX_HTML = r"""<!doctype html>
             actions.appendChild(button);
           });
         }
+        list.appendChild(card);
+      });
+    }
+
+    function renderRetentionPanel(policies) {
+      const panel = $("reader").querySelector('[data-panel="retention"]');
+      const list = $("reader").querySelector('[data-list="retention"]');
+      if (!panel || !list || !policies.length) return;
+      panel.hidden = false;
+      list.innerHTML = "";
+      policies.forEach((item) => {
+        const card = document.createElement("div");
+        card.className = "suggestion-card";
+        const due = item.eligible_at ? `eligible ${formatDate(item.eligible_at)}` : "no eligibility date";
+        const review = item.requires_review ? "review required" : "review not required";
+        card.innerHTML = `
+          <div class="suggestion-top">
+            <div>
+              <div class="suggestion-title"></div>
+              <div class="suggestion-meta"></div>
+            </div>
+            <span class="suggestion-badge"></span>
+          </div>
+          <div class="suggestion-meta" data-field="timing"></div>
+        `;
+        card.querySelector(".suggestion-title").textContent = `${item.policy_name} · ${item.target_value}`;
+        card.querySelector(".suggestion-meta").textContent =
+          `${item.hold_duration_text} hold · ${item.action} · ${review}`;
+        card.querySelector(".suggestion-badge").textContent = item.is_eligible ? "eligible" : item.status;
+        card.querySelector('[data-field="timing"]').textContent =
+          `${due} · copied ${formatDate(item.copied_at)}`;
         list.appendChild(card);
       });
     }

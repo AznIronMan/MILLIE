@@ -16,6 +16,13 @@ from psycopg import Connection
 from psycopg.pq import TransactionStatus
 from psycopg.types.json import Jsonb
 
+from millie.brain.retention import (
+    HeldMessage,
+    RetentionPolicy,
+    human_duration,
+    normalize_folder,
+    retention_status,
+)
 from millie.importing.models import NormalizedAddress, NormalizedMessage, stable_id
 from millie.importing.normalize import normalize_email
 from millie.service.auth import (
@@ -937,7 +944,9 @@ class PostgresMailStore:
                 m.body_html,
                 m.has_attachments,
                 m.raw_mime_size_bytes,
-                r.content_blob
+                r.content_blob,
+                mm.id,
+                mm.copied_at
             FROM millie_mailbox_messages mm
             JOIN millie_mailbox_folders mf ON mf.id = mm.folder_id
             JOIN mail_messages m ON m.id = mm.message_id
@@ -953,10 +962,14 @@ class PostgresMailStore:
         if not row:
             return None
         message_id = row[3]
+        mailbox_message_id = str(row[13])
+        copied_at = row[14] or row[2] or datetime.now(timezone.utc)
         return {
             "uid": int(row[0]),
             "flags": list(row[1] or []),
             "internal_date": row[2],
+            "mailbox_message_id": mailbox_message_id,
+            "copied_at": copied_at,
             "message_id": message_id,
             "internet_message_id": row[4],
             "subject": row[5],
@@ -971,7 +984,88 @@ class PostgresMailStore:
             "attachments": self.message_attachments(message_id),
             "classifications": self.message_classifications(message_id),
             "unsubscribe_candidates": self.message_unsubscribe_candidates(message_id),
+            "retention_status": self.message_retention_status(
+                folder_path=folder_path,
+                mailbox_message_id=mailbox_message_id,
+                message_id=str(message_id),
+                uid=uid,
+                copied_at=copied_at,
+                subject=str(row[5] or ""),
+            ),
         }
+
+    def message_retention_status(
+        self,
+        *,
+        folder_path: str,
+        mailbox_message_id: str,
+        message_id: str,
+        uid: int,
+        copied_at: datetime,
+        subject: str,
+    ) -> list[dict[str, object]]:
+        normalized_folder = normalize_folder(folder_path)
+        rows = self.connection.execute(
+            """
+            SELECT id, policy_name, status, target_kind, target_value, hold_duration,
+                   action, requires_review
+            FROM millie_retention_policies
+            WHERE target_kind = 'folder'
+              AND status IN ('proposed', 'active')
+              AND (target_value = %s OR target_value = %s)
+            ORDER BY
+                CASE status WHEN 'active' THEN 0 WHEN 'proposed' THEN 1 ELSE 2 END,
+                policy_name
+            """,
+            (folder_path, normalized_folder),
+        ).fetchall()
+        if not rows:
+            return []
+        message = HeldMessage(
+            mailbox_message_id=mailbox_message_id,
+            message_id=message_id,
+            folder_path=folder_path,
+            imap_uid=uid,
+            copied_at=copied_at,
+            subject=subject,
+        )
+        now = datetime.now(timezone.utc)
+        statuses: list[dict[str, object]] = []
+        for row in rows:
+            policy = RetentionPolicy(
+                id=str(row[0]),
+                name=str(row[1]),
+                status=str(row[2]),
+                target_kind=str(row[3]),
+                target_value=str(row[4]),
+                hold_duration=row[5],
+                action=str(row[6]),
+                requires_review=bool(row[7]),
+            )
+            status = retention_status(policy, message, now=now)
+            if status is None:
+                continue
+            hold_duration = policy.hold_duration
+            statuses.append(
+                {
+                    "id": policy.id,
+                    "policy_name": policy.name,
+                    "status": policy.status,
+                    "target_kind": policy.target_kind,
+                    "target_value": policy.target_value,
+                    "hold_duration_seconds": (
+                        int(hold_duration.total_seconds()) if hold_duration is not None else None
+                    ),
+                    "hold_duration_text": human_duration(hold_duration),
+                    "action": policy.action,
+                    "requires_review": policy.requires_review,
+                    "copied_at": status.message.copied_at,
+                    "eligible_at": status.eligible_at,
+                    "is_eligible": status.is_eligible,
+                    "age_seconds": status.age_seconds,
+                }
+            )
+        return statuses
 
     def message_classifications(self, message_id: str) -> list[dict[str, object]]:
         rows = self.connection.execute(

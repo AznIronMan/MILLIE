@@ -68,6 +68,8 @@ The webmail view includes a **Review** queue and message-level suggestion panels
 
 Unsubscribe candidates can be approved or ignored, but approval does not execute an unsubscribe yet.
 
+Messages opened from hold folders with matching retention policies show a read-only retention panel in webmail. The panel shows the policy status, hold duration, target action, review requirement, copied date, and eligibility date. It does not hide, expire, delete, or otherwise change messages.
+
 Approved folder/spam/trash suggestions can be applied to the internal MILLIE mailbox facade with a dry-run-first command:
 
 ```sh

@@ -17,7 +17,9 @@ from .retention import (
     HeldMessage,
     RetentionCandidate,
     RetentionPolicy,
+    RetentionStatus,
     retention_candidate,
+    retention_status,
 )
 
 __all__ = [
@@ -26,6 +28,7 @@ __all__ = [
     "HeldMessage",
     "RetentionCandidate",
     "RetentionPolicy",
+    "RetentionStatus",
     "SortCandidate",
     "UnsubscribeSuggestion",
     "automation_level",
@@ -34,4 +37,5 @@ __all__ = [
     "extract_unsubscribe_suggestions",
     "provider_write_allowed",
     "retention_candidate",
+    "retention_status",
 ]

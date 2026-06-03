@@ -36,6 +36,48 @@ class RetentionCandidate:
     age_seconds: int
 
 
+@dataclass(frozen=True, slots=True)
+class RetentionStatus:
+    policy: RetentionPolicy
+    message: HeldMessage
+    eligible_at: datetime | None
+    age_seconds: int
+    is_eligible: bool
+
+
+def retention_status(
+    policy: RetentionPolicy,
+    message: HeldMessage,
+    *,
+    now: datetime | None = None,
+) -> RetentionStatus | None:
+    """Return retention timing for a matching policy/message pair."""
+
+    if policy.target_kind != "folder":
+        return None
+    if normalize_folder(policy.target_value) != normalize_folder(message.folder_path):
+        return None
+    current_time = now or datetime.now(timezone.utc)
+    copied_at = ensure_aware(message.copied_at)
+    age_seconds = max(int((current_time - copied_at).total_seconds()), 0)
+    if policy.hold_duration is None:
+        return RetentionStatus(
+            policy=policy,
+            message=message,
+            eligible_at=None,
+            age_seconds=age_seconds,
+            is_eligible=False,
+        )
+    eligible_at = copied_at + policy.hold_duration
+    return RetentionStatus(
+        policy=policy,
+        message=message,
+        eligible_at=eligible_at,
+        age_seconds=age_seconds,
+        is_eligible=current_time >= eligible_at,
+    )
+
+
 def retention_candidate(
     policy: RetentionPolicy,
     message: HeldMessage,
@@ -44,22 +86,14 @@ def retention_candidate(
 ) -> RetentionCandidate | None:
     """Return a candidate if the message has reached the policy hold duration."""
 
-    if policy.target_kind != "folder":
-        return None
-    if normalize_folder(policy.target_value) != normalize_folder(message.folder_path):
-        return None
-    if policy.hold_duration is None:
-        return None
-    current_time = now or datetime.now(timezone.utc)
-    copied_at = ensure_aware(message.copied_at)
-    eligible_at = copied_at + policy.hold_duration
-    if current_time < eligible_at:
+    status = retention_status(policy, message, now=now)
+    if not status or not status.is_eligible or status.eligible_at is None:
         return None
     return RetentionCandidate(
         policy=policy,
         message=message,
-        eligible_at=eligible_at,
-        age_seconds=max(int((current_time - copied_at).total_seconds()), 0),
+        eligible_at=status.eligible_at,
+        age_seconds=status.age_seconds,
     )
 
 

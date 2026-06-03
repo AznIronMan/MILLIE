@@ -22,6 +22,7 @@ All notable changes to MILLIE will be documented in this file.
 - Added automation-level guardrail settings and helper checks, including a separate provider-write switch.
 - Added a dry-run-first approved-suggestion apply tool for internal MILLIE folder mappings.
 - Added proposed no-action retention defaults and a dry-run retention scanner for MILLIE hold folders.
+- Added webmail retention policy visibility for messages opened from hold folders.
 
 ### Changed
 
