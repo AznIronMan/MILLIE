@@ -202,6 +202,25 @@ Acknowledged retention decisions can be applied internally with a dry-run-first 
 
 Execution requires `automation_level=auto_internal` or higher. The command only supports `no_action` audit application and non-destructive `hide_from_default_views`, which hides matching `INBOX` and `All Mail` facade rows while keeping hold/source folders and provider mail intact.
 
+Manage retention policies with:
+
+```sh
+.private/venv/bin/python tools/millie_retention_policies.py list
+.private/venv/bin/python tools/millie_retention_policies.py activate --default-holds --execute
+```
+
+Run sync, dedupe backfill, observe sorting, retention scan, and safe internal apply checks in one runtime pass:
+
+```sh
+.private/venv/bin/python tools/millie_live_upkeep.py --once
+```
+
+For a runtime loop that stops when the command stops:
+
+```sh
+.private/venv/bin/python tools/millie_live_upkeep.py --interval 900
+```
+
 ## Dev IMAP Listener
 
 After importing samples, start the temporary IMAP listener:

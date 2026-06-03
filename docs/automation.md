@@ -115,6 +115,26 @@ Defaults:
 - `Hold/Trash`: review after 30 days, `no_action`, review required.
 - `Hold/Spam`: review after 14 days, `no_action`, review required.
 
+Retention policies can be listed and edited with a dry-run-first policy manager:
+
+```sh
+.private/venv/bin/python tools/millie_retention_policies.py list
+.private/venv/bin/python tools/millie_retention_policies.py activate --default-holds
+.private/venv/bin/python tools/millie_retention_policies.py activate --default-holds --execute
+```
+
+Create or update folder policies:
+
+```sh
+.private/venv/bin/python tools/millie_retention_policies.py create \
+  --name "Hide reviewed trash from default views" \
+  --folder Hold/Trash \
+  --duration 30d \
+  --action hide_from_default_views
+```
+
+Mutating policy commands require `--execute` and write audit rows. Supported policy actions are `no_action`, `hide_from_default_views`, `expire_internal_copy`, and `delete_internal_copy`, but only `no_action` and `hide_from_default_views` are currently executable by `tools/millie_apply_retention.py`.
+
 Run a dry scan:
 
 ```sh
@@ -122,3 +142,27 @@ Run a dry scan:
 ```
 
 The scanner reports held messages and retention-eligible messages. It does not hide, expire, delete, unsubscribe, or write to source providers. With `--record-scan`, it records a `retention_scan` run and `retention_evaluate` audit rows only.
+
+## Live Upkeep
+
+Run one live upkeep pass:
+
+```sh
+.private/venv/bin/python tools/millie_live_upkeep.py --once
+```
+
+By default, one upkeep pass runs live sync, duplicate fingerprint backfill, observe sorting with persisted suggestions, retention scanning, and safe internal apply commands. Internal apply commands execute only when `automation_level` allows `auto_internal`; otherwise they run as dry-run reports. Gmail label aliasing is available when exact folders are supplied:
+
+```sh
+.private/venv/bin/python tools/millie_live_upkeep.py \
+  --once \
+  --gmail-label-folder "[Gmail]/All Mail"
+```
+
+For a runtime loop that stops when the command stops:
+
+```sh
+.private/venv/bin/python tools/millie_live_upkeep.py --interval 900
+```
+
+Each upkeep pass records a `live_upkeep` automation run with step return codes and timings. This is runtime behavior only; it does not install a macOS service.

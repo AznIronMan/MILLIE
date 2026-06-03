@@ -25,6 +25,8 @@ All notable changes to MILLIE will be documented in this file.
 - Added webmail retention policy visibility for messages opened from hold folders.
 - Added retention-eligible hold messages to the webmail Review queue with acknowledge and seven-day snooze feedback actions.
 - Added a dry-run-first retention apply command for acknowledged active policies, including non-destructive internal hide-from-default-views support.
+- Added a dry-run-first retention policy manager for listing, creating, activating, disabling, and editing policies with audit rows.
+- Added a live-upkeep runner that combines live sync, dedupe backfill, Gmail label aliasing, observe sorting, retention scan, and safe internal apply steps while MILLIE is running.
 
 ### Changed
 
