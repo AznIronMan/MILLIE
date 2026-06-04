@@ -12,9 +12,9 @@ CLASSIFIER_TYPE = "heuristic"
 CLASSIFIER_VERSION = "observe-v1"
 LEARNED_RULE_CLASSIFIER_TYPE = "rule"
 LEARNED_RULE_CLASSIFIER_VERSION = "learned-v1"
-TRASH_REEVALUATION_FOLDER = "Hold/Reevaluate/Trash"
-SPAM_REEVALUATION_FOLDER = "Hold/Reevaluate/Spam"
-BULK_REEVALUATION_FOLDER = "Hold/Reevaluate/Bulk"
+TRASH_REEVALUATION_FOLDER = "Trash_Hold/Trash"
+SPAM_REEVALUATION_FOLDER = "Trash_Hold/Spam"
+BULK_REEVALUATION_FOLDER = "Trash_Hold/Bulk"
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,7 +74,7 @@ KEYWORD_GROUPS: tuple[tuple[str, str, tuple[str, ...], str, float], ...] = (
             "turbotax",
             "quickbooks",
         ),
-        "Archive/Taxes/{year}",
+        "Archive/Personal/Taxes/{year}",
         0.82,
     ),
     (
@@ -94,7 +94,7 @@ KEYWORD_GROUPS: tuple[tuple[str, str, tuple[str, ...], str, float], ...] = (
             "amazon",
             "apple",
         ),
-        "Archive/Receipts/{year}",
+        "Receipts/{year}",
         0.76,
     ),
     (
@@ -111,8 +111,25 @@ KEYWORD_GROUPS: tuple[tuple[str, str, tuple[str, ...], str, float], ...] = (
             "rental car",
             "trip",
         ),
-        "Archive/Travel/{year}",
+        "Archive/Personal/Travel/{year}",
         0.74,
+    ),
+    (
+        "folder",
+        "education",
+        (
+            "blackboard",
+            "canvas",
+            "class",
+            "course",
+            "ecpi",
+            "education",
+            "school",
+            "student",
+            "tuition",
+        ),
+        "Archive/Education/{year}",
+        0.7,
     ),
     (
         "folder",

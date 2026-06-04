@@ -1,6 +1,6 @@
 # MILLIE
 
-Version: 1.3.5
+Version: 1.3.6
 
 MILLIE stands for Mail Ingestion, Library, Lookup, Indexing, and Exchange.
 
@@ -8,7 +8,7 @@ This repository has been reset for a fresh start. The prior version is archived 
 
 ## Status
 
-- Current baseline: `1.3.5`
+- Current baseline: `1.3.6`
 - Reset date: 2026-05-31
 - Runtime setup: not defined yet beyond temporary tools and dormant scaffolds
 - Application structure: early dormant import, storage, identity, and mailbox service scaffolds
@@ -20,7 +20,7 @@ This repository has been reset for a fresh start. The prior version is archived 
 - Mail import status: duplicate-safe bulk PST and IMAP import tools available
 - Dedupe status: exact raw-message dedupe plus normalized duplicate fingerprints/reporting
 - Live sync status: runtime IMAP/OAuth checker with persisted per-folder sync health while MILLIE is running
-- Automation status: Postgres brain schema foundation, observe-only sorter, active learned-rule matching, rule proposal seeding, taxonomy proposals, manual aggregate-only LLM taxonomy assistance, proposal review activation, classification review bucket folders, webmail review feedback, grouped sorting workbench, and learning metrics available
+- Automation status: Postgres brain schema foundation, observe-only sorter, active learned-rule matching, rule proposal seeding, taxonomy proposals, manual aggregate-only LLM taxonomy assistance, proposal review activation, classification review bucket folders, primary internal taxonomy folders, webmail review feedback, grouped sorting workbench, and learning metrics available
 - Mail service status: dormant Postgres identity/mailbox facade scaffolded
 - Dev IMAP status: development listener available for local/LAN browse and mailbox-copy mutation testing
 - Dev SMTP status: optional setup-only blackhole listener; MILLIE never sends outbound SMTP
@@ -183,7 +183,7 @@ To persist suggestions without moving or deleting anything:
 .private/venv/bin/python tools/millie_sort_mail.py --observe --apply --limit 250
 ```
 
-The sorter supports `--account`, `--folder`, `--message-id`, `--since`, `--until`, and `--unsubscribe-lookback-days` filters. Unsubscribe candidates are limited to the last 183 days by default, while trash, spam, and bulk-mail suggestions go into separate `Hold/Reevaluate/*` buckets for later review. Active learned rules can propose or suppress future sorting suggestions in observe mode. Webmail shows pending suggestion badges, message-level suggestion panels, a Review queue, grouped Workbench, Proposal Review, Rules, and Metrics. Metrics includes rule candidates with bounded evidence previews, review-only taxonomy proposals, and a manual **Ask LLM** taxonomy assistant. The assistant sends aggregate proposal data only and returns advisory JSON; it does not apply changes. Proposal Review lists saved proposal rules with status counts, filters, single-row actions, bulk activate/disable/retire controls, and an observe dry-run preview. Review actions write feedback, learned rule evidence, proposed rules, and audit rows only.
+The sorter supports `--account`, `--folder`, `--message-id`, `--since`, `--until`, and `--unsubscribe-lookback-days` filters. Unsubscribe candidates are limited to the last 183 days by default, while trash, spam, and bulk-mail suggestions go into separate `Trash_Hold/*` buckets for later review. Active learned rules can propose or suppress future sorting suggestions in observe mode. Webmail shows pending suggestion badges, message-level suggestion panels, a Review queue, grouped Workbench, Proposal Review, Rules, and Metrics. Metrics includes rule candidates with bounded evidence previews, review-only taxonomy proposals, and a manual **Ask LLM** taxonomy assistant. The assistant sends aggregate proposal data only and returns advisory JSON; it does not apply changes. Proposal Review lists saved proposal rules with status counts, filters, single-row actions, bulk activate/disable/retire controls, and an observe dry-run preview. Review actions write feedback, learned rule evidence, proposed rules, and audit rows only.
 
 Proposed classifications can also be materialized as internal review folders so large review queues can be navigated from webmail or IMAP without changing suggestion status:
 
@@ -193,6 +193,15 @@ Proposed classifications can also be materialized as internal review folders so 
 ```
 
 The default folder root is `Review/Classification`. Messages are mapped into roll-up buckets such as `Approve Likely`, `Reject Likely`, and `Needs Skim`, plus target/domain subfolders. This only changes MILLIE's internal mailbox facade; it does not approve, reject, apply, delete, unsubscribe, or write to source providers.
+
+The primary MILLIE mailbox taxonomy can be materialized from approved/applied suggestions, approve-likely proposed suggestions, and copied source-folder context:
+
+```sh
+.private/venv/bin/python tools/millie_taxonomy_folders.py
+.private/venv/bin/python tools/millie_taxonomy_folders.py --apply --clear-existing --retire-legacy
+```
+
+The managed top-level folders are `Archive`, `CNB`, `Personal`, `Important`, `Receipts`, and `Trash_Hold`. `Archive` has managed subroots for `Personal`, `Work`, `Education`, and `Misc`; roll-up mappings let users browse broad sections or narrower year/category folders. This only changes MILLIE internal mailbox navigation and never writes to source providers.
 
 Automation guardrails live in `millie.settings` as `automation_level` and `automation_provider_write_enabled`. Provider writes require both `automation_level=provider_write` and `automation_provider_write_enabled=true`. Remote provider purge execution also requires an explicit manifest id and writes provider-write audit rows; dry-runs remain available without provider-write settings.
 
@@ -223,7 +232,7 @@ Retention hold policies can be seeded and scanned without deleting anything:
 .private/venv/bin/python tools/millie_retention_scan.py --limit 100
 ```
 
-Default policies are proposed, review-required, and `no_action`: `Hold/Reevaluate/Trash` reviews after 30 days, while `Hold/Reevaluate/Spam` and `Hold/Reevaluate/Bulk` review after 14 days.
+Default policies are proposed, review-required, and `no_action`: `Trash_Hold/Trash` reviews after 30 days, while `Trash_Hold/Spam` and `Trash_Hold/Bulk` review after 14 days.
 
 Acknowledged retention decisions can be applied internally with a dry-run-first command:
 

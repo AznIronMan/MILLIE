@@ -72,8 +72,22 @@ class BrainObserveTest(unittest.TestCase):
 
         self.assertEqual(suggestions[0].kind, "folder")
         self.assertEqual(suggestions[0].value, "receipts")
-        self.assertEqual(suggestions[0].target_folder_path, "Archive/Receipts/2025")
+        self.assertEqual(suggestions[0].target_folder_path, "Receipts/2025")
         self.assertIn("receipt", suggestions[0].evidence["matched_keywords"])
+
+    def test_education_message_gets_archive_education_bucket(self) -> None:
+        suggestions = classify_candidate(
+            SortCandidate(
+                message_id="message-education",
+                subject="Blackboard course reminder",
+                from_text="teacher@example.test",
+                received_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            )
+        )
+
+        self.assertEqual(suggestions[0].kind, "folder")
+        self.assertEqual(suggestions[0].value, "education")
+        self.assertEqual(suggestions[0].target_folder_path, "Archive/Education/2026")
 
     def test_list_unsubscribe_header_requires_review(self) -> None:
         suggestions = extract_unsubscribe_suggestions(
@@ -191,14 +205,14 @@ class BrainObserveTest(unittest.TestCase):
                         "sender_domain": "example.test",
                         "classification_kind": "folder",
                         "classification_value": "receipts",
-                        "target_folder_path": "Archive/Receipts/2026",
+                        "target_folder_path": "Receipts/2026",
                         "target_tags": ["receipts", "2026"],
                     },
                     rule_action={
                         "action": "block_suggestion",
                         "classification_kind": "folder",
                         "classification_value": "receipts",
-                        "target_folder_path": "Archive/Receipts/2026",
+                        "target_folder_path": "Receipts/2026",
                         "target_tags": ["receipts", "2026"],
                     },
                     confidence=0.76,

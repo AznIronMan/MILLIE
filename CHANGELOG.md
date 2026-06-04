@@ -6,6 +6,18 @@ All notable changes to MILLIE will be documented in this file.
 
 No unreleased changes.
 
+## [1.3.6] - 2026-06-04
+
+### Added
+
+- Added a primary internal taxonomy materializer for `Archive`, `CNB`, `Personal`, `Important`, `Receipts`, and `Trash_Hold` mailbox navigation.
+- Added tests for taxonomy target normalization, roll-up folders, and source-folder mapping.
+
+### Changed
+
+- Routed new receipt, tax, travel, education, work, trash, spam, and bulk suggestions into the refreshed taxonomy targets.
+- Retired empty legacy internal folder mappings after applying the new taxonomy.
+
 ## [1.3.5] - 2026-06-04
 
 ### Added

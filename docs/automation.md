@@ -69,9 +69,9 @@ Unsubscribe detection is also scoped by message age. By default, `tools/millie_s
 
 Trash, spam, and bulk-mail hints are held in separate reevaluation buckets so they can be reviewed independently:
 
-- `Hold/Reevaluate/Trash`: messages copied from source trash/deleted folders.
-- `Hold/Reevaluate/Spam`: messages copied from source spam/junk folders.
-- `Hold/Reevaluate/Bulk`: messages with spam or bulk-mail language that need review.
+- `Trash_Hold/Trash`: messages copied from source trash/deleted folders.
+- `Trash_Hold/Spam`: messages copied from source spam/junk folders.
+- `Trash_Hold/Bulk`: messages with spam or bulk-mail language that need review.
 
 The webmail view includes a **Review** queue and message-level suggestion panels. Classification actions currently persist review decisions only:
 
@@ -90,6 +90,15 @@ Large proposed-classification queues can be materialized as internal MILLIE revi
 ```
 
 The default root is `Review/Classification`. The tool maps proposed messages into `Approve Likely`, `Reject Likely`, and `Needs Skim` roll-ups, then into target/domain subfolders such as `Review/Classification/Approve Likely/Archive/Work/2017/charlestonent.com`. These folders are navigation aids only. The tool does not change classification status, apply suggestions, delete mail, unsubscribe, or write to source providers.
+
+The primary MILLIE taxonomy can be materialized separately:
+
+```sh
+.private/venv/bin/python tools/millie_taxonomy_folders.py
+.private/venv/bin/python tools/millie_taxonomy_folders.py --apply --clear-existing --retire-legacy
+```
+
+This creates and maps internal roll-up folders under `Archive`, `CNB`, `Personal`, `Important`, `Receipts`, and `Trash_Hold`. The `Archive` root has managed `Personal`, `Work`, `Education`, and `Misc` subroots. The tool uses approved/applied classifications, approve-likely proposed classifications, and copied source-folder context, then retires old internal facade mappings such as `Archive/Receipts/*`, `Archive/Taxes/*`, `Archive/Travel/*`, `Hold/Reevaluate/*`, and `trash-hold` when `--retire-legacy` is supplied. It does not approve suggestions, delete messages, unsubscribe, or write to source providers.
 
 Active learned rules are now used by the observe sorter. **Always** rules can create future proposed classifications when their message context matches. **Never** rules can suppress matching proposed classifications. Rule conditions can include the suggested target, sender domain, current source folder, and message year. This is still observe-only behavior: rule matches write proposed classifications and audit data only.
 
@@ -216,9 +225,9 @@ MILLIE can seed proposed no-action retention policies for hold folders:
 
 Defaults:
 
-- `Hold/Reevaluate/Trash`: review after 30 days, `no_action`, review required.
-- `Hold/Reevaluate/Spam`: review after 14 days, `no_action`, review required.
-- `Hold/Reevaluate/Bulk`: review after 14 days, `no_action`, review required.
+- `Trash_Hold/Trash`: review after 30 days, `no_action`, review required.
+- `Trash_Hold/Spam`: review after 14 days, `no_action`, review required.
+- `Trash_Hold/Bulk`: review after 14 days, `no_action`, review required.
 
 Retention policies can be listed and edited with a dry-run-first policy manager:
 
@@ -233,7 +242,7 @@ Create or update folder policies:
 ```sh
 .private/venv/bin/python tools/millie_retention_policies.py create \
   --name "Hide reviewed trash from default views" \
-  --folder Hold/Reevaluate/Trash \
+  --folder Trash_Hold/Trash \
   --duration 30d \
   --action hide_from_default_views
 ```
