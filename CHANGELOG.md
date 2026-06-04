@@ -6,6 +6,13 @@ All notable changes to MILLIE will be documented in this file.
 
 No unreleased changes.
 
+## [1.3.5] - 2026-06-04
+
+### Added
+
+- Added a classification review bucket tool that materializes proposed suggestions into internal `Review/Classification/*` navigation folders without approving, rejecting, applying, deleting, unsubscribing, or writing to source providers.
+- Added tests for review-bucket triage and generated folder paths.
+
 ## [1.3.4] - 2026-06-04
 
 ### Added

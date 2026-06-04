@@ -82,6 +82,15 @@ The webmail view includes a **Review** queue and message-level suggestion panels
 
 The webmail **Workbench** groups proposed sorting suggestions by suggested target, sender domain, current folder, and message year. Batch actions use the same feedback and audit semantics as individual review actions, but apply them to the visible group so MILLIE can collect rule evidence faster. The workbench still only changes MILLIE review state and learned rule evidence; it does not move mail or write to source providers.
 
+Large proposed-classification queues can be materialized as internal MILLIE review folders:
+
+```sh
+.private/venv/bin/python tools/millie_classification_review_buckets.py
+.private/venv/bin/python tools/millie_classification_review_buckets.py --apply --clear-existing
+```
+
+The default root is `Review/Classification`. The tool maps proposed messages into `Approve Likely`, `Reject Likely`, and `Needs Skim` roll-ups, then into target/domain subfolders such as `Review/Classification/Approve Likely/Archive/Work/2017/charlestonent.com`. These folders are navigation aids only. The tool does not change classification status, apply suggestions, delete mail, unsubscribe, or write to source providers.
+
 Active learned rules are now used by the observe sorter. **Always** rules can create future proposed classifications when their message context matches. **Never** rules can suppress matching proposed classifications. Rule conditions can include the suggested target, sender domain, current source folder, and message year. This is still observe-only behavior: rule matches write proposed classifications and audit data only.
 
 Unsubscribe candidates can be approved or ignored. Approval does not click links, submit forms, send mail, or contact providers by itself.
