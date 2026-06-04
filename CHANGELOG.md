@@ -6,6 +6,17 @@ All notable changes to MILLIE will be documented in this file.
 
 No unreleased changes.
 
+## [1.3.2] - 2026-06-04
+
+### Added
+
+- Added a dry-run-first Postgres search document rebuild tool for recovered MILLIE archives.
+- Added tests for search rebuild text helpers and UTF-8 truncation behavior.
+
+### Changed
+
+- Documented controlled search regeneration for recovered archives and the 2026-06-04 runtime recovery outcome.
+
 ## [1.3.1] - 2026-06-04
 
 ### Added

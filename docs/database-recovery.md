@@ -41,6 +41,19 @@ Known recovery counts from the containment event:
 
 The original loaded message count was about 161061, so the known loss is about 47 records, roughly 0.03 percent.
 
+After the 2026-06-04 controlled search rebuild, `mail_search_documents` contained 161000 rows. Fourteen recovered `mail_messages` rows could not produce derived search rows and should be treated as damaged/skipped records until a clean successor rebuild.
+
+## Derived Search Rebuild
+
+Rebuild search documents only after a fresh safety export or backup exists:
+
+```sh
+.private/venv/bin/python tools/millie_rebuild_search_documents.py
+.private/venv/bin/python tools/millie_rebuild_search_documents.py --apply --batch-size 2000
+```
+
+The rebuild tool is dry-run by default. Apply mode fills missing `mail_search_documents` rows from `mail_messages`, `mail_message_addresses`, and `mail_message_metadata`. It does not read raw MIME, inspect message parts, contact providers, move mail, or write provider state. Damaged recovered records are skipped instead of aborting the full rebuild.
+
 ## Clean Successor Plan
 
 The safer long-term fix is a staged clean rebuild:

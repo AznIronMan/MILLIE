@@ -92,6 +92,17 @@ The webmail **Proposals** panel reviews saved proposals from rule candidates and
 
 The **Proposals** panel also has an **Observe** preview. It runs `tools/millie_sort_mail.py --observe` without `--apply` and prints a bounded dry-run summary. Use it after activating proposal rules to see what the current active brain rules would suggest before any suggestions are persisted or applied.
 
+## Search Rebuild
+
+`mail_search_documents` is derived data. If a recovery or clean rebuild leaves it empty, rebuild it from recovered message, address, and metadata rows:
+
+```sh
+.private/venv/bin/python tools/millie_rebuild_search_documents.py
+.private/venv/bin/python tools/millie_rebuild_search_documents.py --apply --batch-size 2000
+```
+
+The command is dry-run by default. Apply mode writes only `mail_search_documents`, commits in batches, and skips damaged recovered rows that fail during search regeneration. It does not read source providers, move mail, write provider state, or touch raw MIME.
+
 Reviewed unsubscribe candidates can be listed and prepared with a dry-run-first command:
 
 ```sh

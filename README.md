@@ -1,6 +1,6 @@
 # MILLIE
 
-Version: 1.3.1
+Version: 1.3.2
 
 MILLIE stands for Mail Ingestion, Library, Lookup, Indexing, and Exchange.
 
@@ -8,12 +8,13 @@ This repository has been reset for a fresh start. The prior version is archived 
 
 ## Status
 
-- Current baseline: `1.3.1`
+- Current baseline: `1.3.2`
 - Reset date: 2026-05-31
 - Runtime setup: not defined yet beyond temporary tools and dormant scaffolds
 - Application structure: early dormant import, storage, identity, and mailbox service scaffolds
 - Settings store: local root `millie.settings` SQLite3 database, ignored by Git
 - Postgres archive status: recovered archive isolated on `10.0.10.81:55432/millie`; the old main-cluster `millie` database remains quarantined and must not be reused
+- Search recovery status: derived search documents can be rebuilt safely with `tools/millie_rebuild_search_documents.py`
 - Service mail domain: configured in `millie.settings`; current default is `millie.cnbsk.cloud` with local `MILLIE` aliases
 - PST import status: read-only probe and duplicate-safe bulk importer available
 - Mail import status: duplicate-safe bulk PST and IMAP import tools available
@@ -146,6 +147,15 @@ For a sync-cutoff cleanup, create a manifest from source UIDs already copied int
 ```
 
 The provider purge executor only targets exact manifest UIDs and checks folder UIDVALIDITY before deletion, so mail arriving after the manifest snapshot is not selected. Execute mode is blocked unless `automation_level=provider_write`, `automation_provider_write_enabled=true`, and `--manifest-id` are present; blocked and executed attempts are recorded in `millie_automation_audit_log`.
+
+Derived Postgres search documents can be rebuilt from recovered message, address, and metadata rows without touching raw MIME or provider state:
+
+```sh
+.private/venv/bin/python tools/millie_rebuild_search_documents.py
+.private/venv/bin/python tools/millie_rebuild_search_documents.py --apply --batch-size 2000
+```
+
+The command is dry-run by default, commits in batches when applied, and skips damaged recovered rows that fail during rebuild.
 
 ## Dormant Mail Service Facade
 
