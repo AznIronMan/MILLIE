@@ -172,6 +172,31 @@ The webmail **Apply** panel can also run the retention apply command in dry-run 
 
 Automatic unsubscribe execution is planned follow-up work. Manual-assist preparation is available, but browser automation and provider form submission are not enabled.
 
+## Empty Metadata Cleanup
+
+MILLIE can report empty internal metadata without contacting source providers:
+
+```sh
+.private/venv/bin/python tools/millie_cleanup_empty.py
+```
+
+The cleanup command reports:
+
+- empty custom MILLIE mailbox leaf folders
+- empty canonical source-folder metadata leaves
+- blank address rows
+- non-running import jobs with no attached messages
+- source definitions with no messages, folders, aliases, cursors, jobs, or bindings
+- optional report-only derived MIME part containers with `--include-derived-parts-report`
+
+Execution is separated by category and blocked unless `automation_level` allows `auto_internal`:
+
+```sh
+.private/venv/bin/python tools/millie_cleanup_empty.py --execute-mailbox-folders
+```
+
+Mailbox folder execution only deletes custom leaf folders with no message mappings and no child folders. It does not delete canonical messages, source provider mail, source accounts, source folders, addresses, import jobs, or MIME parts unless their specific execute flags are supplied. Derived MIME part containers are report-only because raw MIME remains the canonical recall source.
+
 ## Retention Holds
 
 MILLIE can seed proposed no-action retention policies for hold folders:
@@ -231,6 +256,14 @@ By default, one upkeep pass runs live sync, duplicate fingerprint backfill, obse
   --once \
   --gmail-label-folder "[Gmail]/All Mail"
 ```
+
+Add an empty metadata report to a runtime upkeep pass with:
+
+```sh
+.private/venv/bin/python tools/millie_live_upkeep.py --once --empty-cleanup
+```
+
+With `automation_level=auto_internal`, `--empty-cleanup --empty-cleanup-execute` also deletes empty custom mailbox leaf folders.
 
 For a runtime loop that stops when the command stops:
 

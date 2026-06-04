@@ -1,6 +1,6 @@
 # MILLIE
 
-Version: 1.3.3
+Version: 1.3.4
 
 MILLIE stands for Mail Ingestion, Library, Lookup, Indexing, and Exchange.
 
@@ -8,7 +8,7 @@ This repository has been reset for a fresh start. The prior version is archived 
 
 ## Status
 
-- Current baseline: `1.3.3`
+- Current baseline: `1.3.4`
 - Reset date: 2026-05-31
 - Runtime setup: not defined yet beyond temporary tools and dormant scaffolds
 - Application structure: early dormant import, storage, identity, and mailbox service scaffolds
@@ -244,6 +244,14 @@ For a runtime loop that stops when the command stops:
 ```sh
 .private/venv/bin/python tools/millie_live_upkeep.py --interval 900
 ```
+
+Empty internal metadata can be reported with:
+
+```sh
+.private/venv/bin/python tools/millie_cleanup_empty.py
+```
+
+Execution requires `automation_level=auto_internal` or higher and separate execute flags. Empty mailbox folder cleanup only removes custom leaf folders with no message mappings and no child folders. Source providers and canonical messages are not touched.
 
 ## Dev IMAP Listener
 

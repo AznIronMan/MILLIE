@@ -6,6 +6,13 @@ All notable changes to MILLIE will be documented in this file.
 
 No unreleased changes.
 
+## [1.3.4] - 2026-06-04
+
+### Added
+
+- Added a dry-run-first empty metadata cleanup tool for internal mailbox folders, source-folder metadata, blank address rows, empty import jobs, and empty source definitions.
+- Added an optional live-upkeep empty cleanup report step with guarded empty mailbox-folder execution.
+
 ## [1.3.3] - 2026-06-04
 
 ### Changed

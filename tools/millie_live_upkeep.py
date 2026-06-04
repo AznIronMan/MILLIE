@@ -51,7 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Run one or more MILLIE live-upkeep passes: live IMAP/OAuth sync, dedupe "
             "backfill, optional Gmail label aliasing, observe sorting, retention scan, "
-            "and safe internal apply tools."
+            "safe internal apply tools, and optional empty metadata cleanup."
         )
     )
     parser.add_argument("--once", action="store_true", help="Run one upkeep pass and exit.")
@@ -63,6 +63,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-sort", action="store_true")
     parser.add_argument("--skip-retention", action="store_true")
     parser.add_argument("--skip-internal-apply", action="store_true")
+    parser.add_argument("--empty-cleanup", action="store_true", help="Run the empty metadata cleanup report.")
+    parser.add_argument(
+        "--empty-cleanup-execute",
+        action="store_true",
+        help="With --empty-cleanup and auto_internal automation, delete empty mailbox leaf folders.",
+    )
+    parser.add_argument("--empty-cleanup-limit", type=int, default=50)
     parser.add_argument("--gmail-label-folder", action="append", default=[], help="Exact Gmail label folder to alias.")
     parser.add_argument("--sort-limit", type=int, default=250)
     parser.add_argument("--retention-limit", type=int, default=100)
@@ -115,6 +122,7 @@ def run_upkeep_pass(args: argparse.Namespace, settings: dict[str, str]) -> Upkee
 def build_steps(args: argparse.Namespace, settings: dict[str, str]) -> list[Step]:
     steps: list[Step] = []
     python = sys.executable
+    internal_execute = automation_level_allows(settings, "auto_internal")
 
     if not args.skip_sync:
         command = [
@@ -192,7 +200,6 @@ def build_steps(args: argparse.Namespace, settings: dict[str, str]) -> list[Step
         )
 
     if not args.skip_internal_apply:
-        internal_execute = automation_level_allows(settings, "auto_internal")
         suggestion_command = [
             python,
             str(PROJECT_ROOT / "tools" / "millie_apply_suggestions.py"),
@@ -210,6 +217,17 @@ def build_steps(args: argparse.Namespace, settings: dict[str, str]) -> list[Step
             retention_command.append("--execute")
         steps.append(Step("apply_suggestions", suggestion_command))
         steps.append(Step("apply_retention", retention_command))
+
+    if args.empty_cleanup:
+        cleanup_command = [
+            python,
+            str(PROJECT_ROOT / "tools" / "millie_cleanup_empty.py"),
+            "--limit",
+            str(args.empty_cleanup_limit),
+        ]
+        if args.empty_cleanup_execute and internal_execute:
+            cleanup_command.append("--execute-mailbox-folders")
+        steps.append(Step("empty_cleanup", cleanup_command))
 
     return steps
 
