@@ -1,6 +1,6 @@
 # MILLIE
 
-Version: 1.3.0
+Version: 1.3.1
 
 MILLIE stands for Mail Ingestion, Library, Lookup, Indexing, and Exchange.
 
@@ -8,11 +8,12 @@ This repository has been reset for a fresh start. The prior version is archived 
 
 ## Status
 
-- Current baseline: `1.3.0`
+- Current baseline: `1.3.1`
 - Reset date: 2026-05-31
 - Runtime setup: not defined yet beyond temporary tools and dormant scaffolds
 - Application structure: early dormant import, storage, identity, and mailbox service scaffolds
 - Settings store: local root `millie.settings` SQLite3 database, ignored by Git
+- Postgres archive status: recovered archive isolated on `10.0.10.81:55432/millie`; the old main-cluster `millie` database remains quarantined and must not be reused
 - Service mail domain: configured in `millie.settings`; current default is `millie.cnbsk.cloud` with local `MILLIE` aliases
 - PST import status: read-only probe and duplicate-safe bulk importer available
 - Mail import status: duplicate-safe bulk PST and IMAP import tools available
@@ -32,6 +33,7 @@ This repository has been reset for a fresh start. The prior version is archived 
 - Keep generated mail data, local databases, exports, logs, secrets, and scratch work out of Git.
 - `.private/`, `.tasks/`, `/data/`, `/logs/`, `*.settings`, and `*.millie` are ignored.
 - Update `CHANGELOG.md` for meaningful changes.
+- Database recovery and containment rules live in `docs/database-recovery.md`. Runtime Postgres connections refuse the known quarantined endpoint `10.0.10.81:5432/millie`.
 
 ## Temporary Settings Editor
 

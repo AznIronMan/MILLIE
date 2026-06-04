@@ -6,6 +6,17 @@ All notable changes to MILLIE will be documented in this file.
 
 No unreleased changes.
 
+## [1.3.1] - 2026-06-04
+
+### Added
+
+- Added database recovery and containment documentation for the dedicated MILLIE Postgres recovery cluster.
+- Added a runtime Postgres safety guard that refuses the known quarantined main-cluster MILLIE endpoint.
+
+### Changed
+
+- Updated settings, README, and agent guidance to keep MILLIE pointed at `10.0.10.81:55432/millie` and away from `10.0.10.81:5432/millie`.
+
 ## [1.3.0] - 2026-06-03
 
 ### Added

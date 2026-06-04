@@ -40,6 +40,7 @@ from millie.service.auth import (
 from millie.service.mailbox import default_mailbox_folders
 
 from .schema import load_schema
+from .postgres_safety import validate_postgres_settings
 
 
 RETENTION_REVIEW_DEFER_DURATION = timedelta(days=7)
@@ -72,12 +73,13 @@ class PostgresMailStore:
 
     @classmethod
     def connect(cls, settings: dict[str, str]) -> "PostgresMailStore":
+        host, port, dbname = validate_postgres_settings(settings)
         connection = psycopg.connect(
-            host=settings["postgres_host_ip"],
-            port=int(settings.get("postgres_port") or 5432),
+            host=host,
+            port=port,
             user=settings["postgres_username"],
             password=settings["postgres_password"],
-            dbname=settings["postgres_database"],
+            dbname=dbname,
             connect_timeout=10,
         )
         return cls(connection, settings=settings)

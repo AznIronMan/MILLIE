@@ -35,3 +35,14 @@ This repository was reset for a fresh 1.0.0 start on 2026-05-31. The previous im
 - Production-facing work must have a clear HTTPS/TLS story before real mail data is loaded.
 - If a web or API listener is introduced, document its bind address, port, authentication state, and development versus production behavior.
 - Sanitize HTML email before display whenever message rendering is implemented.
+
+## Database Recovery Safety
+
+- The recovered MILLIE archive must stay on the dedicated Postgres recovery cluster: `10.0.10.81:55432/millie`.
+- Do not point MILLIE clients, importers, sync jobs, webmail, IMAP, automation, or maintenance scripts at Phoebe/Jazmine's main Postgres port `10.0.10.81:5432`.
+- The old main-cluster `millie` database is quarantined and must stay connection-disabled. Do not re-enable it and do not import MILLIE back into the main Jazmine database cluster.
+- Treat the recovered archive as read-mostly until a clean successor database exists.
+- Avoid `VACUUM FULL`, broad `ANALYZE`, `pg_amcheck`, large index rebuilds, and aggressive autovacuum against the large MILLIE mail tables unless the user explicitly approves a staged rebuild or maintenance plan.
+- Keep autovacuum disabled on the dedicated MILLIE recovery cluster until the archive is rebuilt into a clean successor database.
+- Before any future MILLIE database maintenance, take a fresh backup/snapshot and use `/data/backup/millie/` or `/data/backups/` as the work area.
+- The safe long-term fix is a staged clean rebuild: create a fresh MILLIE DB, copy only readable rows in batches, skip damaged records, rebuild derived search data, validate counts, then switch MILLIE over.

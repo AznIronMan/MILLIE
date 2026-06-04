@@ -12,3 +12,4 @@ Internal planning, scratch notes, risks, credentials, fixtures, generated data, 
 - [PST Probe](pst.md)
 - [Webmail](webmail.md)
 - [Automation And Learning](automation.md)
+- [Database Recovery And Containment](database-recovery.md)

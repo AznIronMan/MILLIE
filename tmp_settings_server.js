@@ -513,6 +513,7 @@ function saveSettings(payload) {
 
   const currentRows = readSettings();
   const byKey = new Map(currentRows.map((row) => [row.setting_key, row]));
+  const nextSettings = new Map(currentRows.map((row) => [row.setting_key, row.setting_value || ""]));
   const statements = [];
 
   for (const [key, rawValue] of Object.entries(values)) {
@@ -534,6 +535,7 @@ function saveSettings(payload) {
 
     const nextValue = clearSecrets.has(key) ? "" : value;
     validateValue(row, nextValue);
+    nextSettings.set(key, nextValue);
     const storedValue = isSecret && nextValue !== ""
       ? protectSecret(nextValue, settingSecretContext(key))
       : nextValue;
@@ -548,6 +550,8 @@ WHERE setting_key = ${sqlQuote(key)};
   if (Array.isArray(payload?.accounts)) {
     statements.push(...buildMailAccountStatements(payload.accounts));
   }
+
+  validatePostgresSafety(nextSettings);
 
   if (statements.length > 0) {
     sqlite(`BEGIN;\n${statements.join("\n")}\nCOMMIT;`);
@@ -583,6 +587,25 @@ function validateValue(row, value) {
     if (aliases.some((alias) => !isValidDomainToken(alias))) {
       throw httpError(400, "service_mail_domain_aliases must be comma-separated domain tokens.");
     }
+  }
+}
+
+function validatePostgresSafety(settings) {
+  const mode = String(settings.get("database_mode") || "").trim().toLowerCase();
+  if (mode !== "postgres") {
+    return;
+  }
+
+  const host = String(settings.get("postgres_host_ip") || "").trim().toLowerCase();
+  const rawPort = String(settings.get("postgres_port") || "5432").trim() || "5432";
+  const port = /^[0-9]+$/.test(rawPort) ? String(Number(rawPort)) : rawPort;
+  const database = String(settings.get("postgres_database") || "").trim().toLowerCase();
+
+  if (host === "10.0.10.81" && port === "5432" && database === "millie") {
+    throw httpError(
+      400,
+      "Refusing quarantined MILLIE Postgres endpoint 10.0.10.81:5432/millie. Use 10.0.10.81:55432/millie."
+    );
   }
 }
 
