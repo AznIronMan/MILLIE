@@ -17,6 +17,11 @@ from psycopg.types.json import Jsonb
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from millie.brain.observe import (  # noqa: E402
+    BULK_REEVALUATION_FOLDER,
+    SPAM_REEVALUATION_FOLDER,
+    TRASH_REEVALUATION_FOLDER,
+)
 from millie.brain.retention import (  # noqa: E402
     HeldMessage,
     RetentionCandidate,
@@ -32,18 +37,25 @@ from millie.storage.postgres_store import PostgresMailStore  # noqa: E402
 
 DEFAULT_POLICIES = (
     {
-        "name": "Default Hold/Trash review",
-        "target": "Hold/Trash",
+        "name": "Default trash reevaluation hold",
+        "target": TRASH_REEVALUATION_FOLDER,
         "duration": timedelta(days=30),
         "action": "no_action",
-        "description": "Review messages held in Hold/Trash after 30 days. No deletion by default.",
+        "description": "Review messages held in trash reevaluation after 30 days. No deletion by default.",
     },
     {
-        "name": "Default Hold/Spam review",
-        "target": "Hold/Spam",
+        "name": "Default spam reevaluation hold",
+        "target": SPAM_REEVALUATION_FOLDER,
         "duration": timedelta(days=14),
         "action": "no_action",
-        "description": "Review messages held in Hold/Spam after 14 days. No deletion by default.",
+        "description": "Review messages held in spam reevaluation after 14 days. No deletion by default.",
+    },
+    {
+        "name": "Default bulk reevaluation hold",
+        "target": BULK_REEVALUATION_FOLDER,
+        "duration": timedelta(days=14),
+        "action": "no_action",
+        "description": "Review messages held in bulk reevaluation after 14 days. No deletion by default.",
     },
 )
 
@@ -67,7 +79,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--seed-defaults",
         action="store_true",
-        help="Create proposed no-action retention policies for Hold/Trash and Hold/Spam.",
+        help="Create proposed no-action retention policies for reevaluation hold buckets.",
     )
     parser.add_argument(
         "--record-scan",

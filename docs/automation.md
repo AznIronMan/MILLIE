@@ -65,6 +65,14 @@ The sorter can be scoped by account, folder, message id, and date:
   --until 2026-06-03
 ```
 
+Unsubscribe detection is also scoped by message age. By default, `tools/millie_sort_mail.py` only creates unsubscribe candidates for messages from the last 183 days. Use `--unsubscribe-lookback-days 0` only for a deliberate full-archive unsubscribe review.
+
+Trash, spam, and bulk-mail hints are held in separate reevaluation buckets so they can be reviewed independently:
+
+- `Hold/Reevaluate/Trash`: messages copied from source trash/deleted folders.
+- `Hold/Reevaluate/Spam`: messages copied from source spam/junk folders.
+- `Hold/Reevaluate/Bulk`: messages with spam or bulk-mail language that need review.
+
 The webmail view includes a **Review** queue and message-level suggestion panels. Classification actions currently persist review decisions only:
 
 - **Approve** marks a suggestion approved.
@@ -174,8 +182,9 @@ MILLIE can seed proposed no-action retention policies for hold folders:
 
 Defaults:
 
-- `Hold/Trash`: review after 30 days, `no_action`, review required.
-- `Hold/Spam`: review after 14 days, `no_action`, review required.
+- `Hold/Reevaluate/Trash`: review after 30 days, `no_action`, review required.
+- `Hold/Reevaluate/Spam`: review after 14 days, `no_action`, review required.
+- `Hold/Reevaluate/Bulk`: review after 14 days, `no_action`, review required.
 
 Retention policies can be listed and edited with a dry-run-first policy manager:
 
@@ -190,7 +199,7 @@ Create or update folder policies:
 ```sh
 .private/venv/bin/python tools/millie_retention_policies.py create \
   --name "Hide reviewed trash from default views" \
-  --folder Hold/Trash \
+  --folder Hold/Reevaluate/Trash \
   --duration 30d \
   --action hide_from_default_views
 ```

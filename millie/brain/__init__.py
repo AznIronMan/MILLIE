@@ -7,8 +7,11 @@ from .automation import (
     provider_write_allowed,
 )
 from .observe import (
+    BULK_REEVALUATION_FOLDER,
     ClassificationSuggestion,
     SortCandidate,
+    SPAM_REEVALUATION_FOLDER,
+    TRASH_REEVALUATION_FOLDER,
     UnsubscribeSuggestion,
     classify_candidate,
     extract_unsubscribe_suggestions,
@@ -30,12 +33,15 @@ from .retention import (
 
 __all__ = [
     "AUTOMATION_LEVELS",
+    "BULK_REEVALUATION_FOLDER",
     "ClassificationSuggestion",
     "HeldMessage",
     "RetentionCandidate",
     "RetentionPolicy",
     "RetentionStatus",
+    "SPAM_REEVALUATION_FOLDER",
     "SortCandidate",
+    "TRASH_REEVALUATION_FOLDER",
     "UnsubscribeSuggestion",
     "ProviderWriteBlocked",
     "ProviderWriteDecision",

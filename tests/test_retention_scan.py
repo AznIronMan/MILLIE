@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timedelta, timezone
 
+from millie.brain.observe import TRASH_REEVALUATION_FOLDER
 from millie.brain.retention import (
     HeldMessage,
     RetentionPolicy,
@@ -15,7 +16,10 @@ from millie.brain.retention import (
 
 class RetentionScanTest(unittest.TestCase):
     def test_folder_normalization(self) -> None:
-        self.assertEqual(normalize_folder("/Hold//Trash/"), "Hold/Trash")
+        self.assertEqual(
+            normalize_folder(f"/{TRASH_REEVALUATION_FOLDER.replace('/', '//')}/"),
+            TRASH_REEVALUATION_FOLDER,
+        )
 
     def test_message_becomes_candidate_after_hold_duration(self) -> None:
         policy = RetentionPolicy(
@@ -23,7 +27,7 @@ class RetentionScanTest(unittest.TestCase):
             name="Trash review",
             status="proposed",
             target_kind="folder",
-            target_value="Hold/Trash",
+            target_value=TRASH_REEVALUATION_FOLDER,
             hold_duration=timedelta(days=30),
             action="no_action",
             requires_review=True,
@@ -31,7 +35,7 @@ class RetentionScanTest(unittest.TestCase):
         message = HeldMessage(
             mailbox_message_id="mailbox-message-1",
             message_id="message-1",
-            folder_path="Hold/Trash",
+            folder_path=TRASH_REEVALUATION_FOLDER,
             imap_uid=1,
             copied_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
             subject="Old message",
@@ -53,7 +57,7 @@ class RetentionScanTest(unittest.TestCase):
             name="Trash review",
             status="proposed",
             target_kind="folder",
-            target_value="Hold/Trash",
+            target_value=TRASH_REEVALUATION_FOLDER,
             hold_duration=timedelta(days=30),
             action="no_action",
             requires_review=True,
@@ -61,7 +65,7 @@ class RetentionScanTest(unittest.TestCase):
         message = HeldMessage(
             mailbox_message_id="mailbox-message-1",
             message_id="message-1",
-            folder_path="Hold/Trash",
+            folder_path=TRASH_REEVALUATION_FOLDER,
             imap_uid=1,
             copied_at=datetime(2026, 1, 15, tzinfo=timezone.utc),
             subject="Recent message",
@@ -81,7 +85,7 @@ class RetentionScanTest(unittest.TestCase):
             name="Trash review",
             status="proposed",
             target_kind="folder",
-            target_value="Hold/Trash",
+            target_value=TRASH_REEVALUATION_FOLDER,
             hold_duration=timedelta(days=30),
             action="no_action",
             requires_review=True,
@@ -89,7 +93,7 @@ class RetentionScanTest(unittest.TestCase):
         message = HeldMessage(
             mailbox_message_id="mailbox-message-1",
             message_id="message-1",
-            folder_path="Hold/Trash",
+            folder_path=TRASH_REEVALUATION_FOLDER,
             imap_uid=1,
             copied_at=datetime(2026, 1, 15, tzinfo=timezone.utc),
             subject="Recent message",

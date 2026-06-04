@@ -8,6 +8,7 @@ from millie.brain.apply import (
     provider_like_target,
 )
 from millie.brain.automation import automation_level_allows
+from millie.brain.observe import SPAM_REEVALUATION_FOLDER
 
 
 class ApplySuggestionsTest(unittest.TestCase):
@@ -47,7 +48,10 @@ class ApplySuggestionsTest(unittest.TestCase):
         self.assertTrue(automation_level_allows({"automation_level": "auto_internal"}, "auto_internal"))
 
     def test_normalize_target_folder_removes_empty_parts(self) -> None:
-        self.assertEqual(normalize_target_folder("/Hold//Spam/"), "Hold/Spam")
+        self.assertEqual(
+            normalize_target_folder(f"/{SPAM_REEVALUATION_FOLDER.replace('/', '//')}/"),
+            SPAM_REEVALUATION_FOLDER,
+        )
 
 
 if __name__ == "__main__":

@@ -6,6 +6,14 @@ All notable changes to MILLIE will be documented in this file.
 
 No unreleased changes.
 
+## [1.3.3] - 2026-06-04
+
+### Changed
+
+- Routed trash, spam, and bulk-mail suggestions into separate `Hold/Reevaluate/*` buckets for later review.
+- Limited new unsubscribe candidate detection to the last 183 days by default.
+- Updated default hold retention policies to cover trash, spam, and bulk reevaluation buckets.
+
 ## [1.3.2] - 2026-06-04
 
 ### Added

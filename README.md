@@ -1,6 +1,6 @@
 # MILLIE
 
-Version: 1.3.2
+Version: 1.3.3
 
 MILLIE stands for Mail Ingestion, Library, Lookup, Indexing, and Exchange.
 
@@ -8,7 +8,7 @@ This repository has been reset for a fresh start. The prior version is archived 
 
 ## Status
 
-- Current baseline: `1.3.2`
+- Current baseline: `1.3.3`
 - Reset date: 2026-05-31
 - Runtime setup: not defined yet beyond temporary tools and dormant scaffolds
 - Application structure: early dormant import, storage, identity, and mailbox service scaffolds
@@ -183,7 +183,7 @@ To persist suggestions without moving or deleting anything:
 .private/venv/bin/python tools/millie_sort_mail.py --observe --apply --limit 250
 ```
 
-The sorter supports `--account`, `--folder`, `--message-id`, `--since`, and `--until` filters. Active learned rules can propose or suppress future sorting suggestions in observe mode. Webmail shows pending suggestion badges, message-level suggestion panels, a Review queue, grouped Workbench, Proposal Review, Rules, and Metrics. Metrics includes rule candidates with bounded evidence previews, review-only taxonomy proposals, and a manual **Ask LLM** taxonomy assistant. The assistant sends aggregate proposal data only and returns advisory JSON; it does not apply changes. Proposal Review lists saved proposal rules with status counts, filters, single-row actions, bulk activate/disable/retire controls, and an observe dry-run preview. Review actions write feedback, learned rule evidence, proposed rules, and audit rows only.
+The sorter supports `--account`, `--folder`, `--message-id`, `--since`, `--until`, and `--unsubscribe-lookback-days` filters. Unsubscribe candidates are limited to the last 183 days by default, while trash, spam, and bulk-mail suggestions go into separate `Hold/Reevaluate/*` buckets for later review. Active learned rules can propose or suppress future sorting suggestions in observe mode. Webmail shows pending suggestion badges, message-level suggestion panels, a Review queue, grouped Workbench, Proposal Review, Rules, and Metrics. Metrics includes rule candidates with bounded evidence previews, review-only taxonomy proposals, and a manual **Ask LLM** taxonomy assistant. The assistant sends aggregate proposal data only and returns advisory JSON; it does not apply changes. Proposal Review lists saved proposal rules with status counts, filters, single-row actions, bulk activate/disable/retire controls, and an observe dry-run preview. Review actions write feedback, learned rule evidence, proposed rules, and audit rows only.
 
 Automation guardrails live in `millie.settings` as `automation_level` and `automation_provider_write_enabled`. Provider writes require both `automation_level=provider_write` and `automation_provider_write_enabled=true`. Remote provider purge execution also requires an explicit manifest id and writes provider-write audit rows; dry-runs remain available without provider-write settings.
 
@@ -214,7 +214,7 @@ Retention hold policies can be seeded and scanned without deleting anything:
 .private/venv/bin/python tools/millie_retention_scan.py --limit 100
 ```
 
-Default policies are proposed, review-required, and `no_action`: `Hold/Trash` reviews after 30 days and `Hold/Spam` reviews after 14 days.
+Default policies are proposed, review-required, and `no_action`: `Hold/Reevaluate/Trash` reviews after 30 days, while `Hold/Reevaluate/Spam` and `Hold/Reevaluate/Bulk` review after 14 days.
 
 Acknowledged retention decisions can be applied internally with a dry-run-first command:
 

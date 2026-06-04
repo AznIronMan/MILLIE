@@ -4,16 +4,24 @@ import unittest
 from datetime import datetime, timezone
 
 from millie.brain.observe import (
+    BULK_REEVALUATION_FOLDER,
     LEARNED_RULE_CLASSIFIER_TYPE,
+    SPAM_REEVALUATION_FOLDER,
     SortCandidate,
+    TRASH_REEVALUATION_FOLDER,
     classify_candidate,
     extract_unsubscribe_suggestions,
 )
-from tools.millie_sort_mail import LearnedRule, classify_with_learned_rules, parse_filter_datetime
+from tools.millie_sort_mail import (
+    LearnedRule,
+    classify_with_learned_rules,
+    parse_filter_datetime,
+    unsubscribe_within_scope,
+)
 
 
 class BrainObserveTest(unittest.TestCase):
-    def test_trash_source_folder_goes_to_hold_trash(self) -> None:
+    def test_trash_source_folder_goes_to_reevaluation_hold_bucket(self) -> None:
         suggestions = classify_candidate(
             SortCandidate(
                 message_id="message-1",
@@ -23,7 +31,34 @@ class BrainObserveTest(unittest.TestCase):
         )
 
         self.assertEqual(suggestions[0].kind, "trash")
-        self.assertEqual(suggestions[0].target_folder_path, "Hold/Trash")
+        self.assertEqual(suggestions[0].target_folder_path, TRASH_REEVALUATION_FOLDER)
+        self.assertEqual(suggestions[0].target_tags, ("trash", "hold", "reevaluate"))
+
+    def test_spam_source_folder_goes_to_spam_reevaluation_bucket(self) -> None:
+        suggestions = classify_candidate(
+            SortCandidate(
+                message_id="message-spam",
+                subject="Bulk message",
+                folder_path="Junk Email",
+            )
+        )
+
+        self.assertEqual(suggestions[0].kind, "spam")
+        self.assertEqual(suggestions[0].value, "likely_spam")
+        self.assertEqual(suggestions[0].target_folder_path, SPAM_REEVALUATION_FOLDER)
+
+    def test_spam_language_goes_to_bulk_reevaluation_bucket(self) -> None:
+        suggestions = classify_candidate(
+            SortCandidate(
+                message_id="message-bulk",
+                subject="Limited time offer",
+                body_preview="Unsubscribe from this list at any time.",
+            )
+        )
+
+        self.assertEqual(suggestions[0].kind, "spam")
+        self.assertEqual(suggestions[0].value, "possible_spam")
+        self.assertEqual(suggestions[0].target_folder_path, BULK_REEVALUATION_FOLDER)
 
     def test_receipt_message_gets_year_bucket(self) -> None:
         suggestions = classify_candidate(
@@ -62,6 +97,44 @@ class BrainObserveTest(unittest.TestCase):
         self.assertEqual(
             parse_filter_datetime("2026-06-03", end_of_day=True).isoformat(),
             "2026-06-03T23:59:59+00:00",
+        )
+
+    def test_unsubscribe_candidates_are_limited_to_recent_messages(self) -> None:
+        now = datetime(2026, 6, 4, tzinfo=timezone.utc)
+
+        self.assertTrue(
+            unsubscribe_within_scope(
+                SortCandidate(
+                    message_id="recent",
+                    received_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                ),
+                lookback_days=183,
+                now=now,
+            )
+        )
+        self.assertFalse(
+            unsubscribe_within_scope(
+                SortCandidate(
+                    message_id="old",
+                    received_at=datetime(2025, 6, 1, tzinfo=timezone.utc),
+                ),
+                lookback_days=183,
+                now=now,
+            )
+        )
+        self.assertFalse(
+            unsubscribe_within_scope(
+                SortCandidate(message_id="undated"),
+                lookback_days=183,
+                now=now,
+            )
+        )
+        self.assertTrue(
+            unsubscribe_within_scope(
+                SortCandidate(message_id="unscoped"),
+                lookback_days=0,
+                now=now,
+            )
         )
 
     def test_active_learned_rule_suggests_matching_candidate(self) -> None:

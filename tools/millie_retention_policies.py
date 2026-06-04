@@ -17,6 +17,11 @@ from psycopg.types.json import Jsonb
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from millie.brain.observe import (  # noqa: E402
+    BULK_REEVALUATION_FOLDER,
+    SPAM_REEVALUATION_FOLDER,
+    TRASH_REEVALUATION_FOLDER,
+)
 from millie.importing.models import stable_id  # noqa: E402
 from millie.service.auth import default_service_login  # noqa: E402
 from millie.settings_loader import load_local_settings  # noqa: E402
@@ -30,7 +35,11 @@ POLICY_ACTIONS = {
     "expire_internal_copy",
     "delete_internal_copy",
 }
-DEFAULT_HOLD_FOLDERS = ("Hold/Trash", "Hold/Spam")
+DEFAULT_HOLD_FOLDERS = (
+    TRASH_REEVALUATION_FOLDER,
+    SPAM_REEVALUATION_FOLDER,
+    BULK_REEVALUATION_FOLDER,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,7 +71,11 @@ def build_parser() -> argparse.ArgumentParser:
     activate_parser = subparsers.add_parser("activate", help="Activate proposed or disabled policies.")
     activate_parser.add_argument("--policy-id", action="append", default=[])
     activate_parser.add_argument("--folder", action="append", default=[])
-    activate_parser.add_argument("--default-holds", action="store_true", help="Activate Hold/Trash and Hold/Spam policies.")
+    activate_parser.add_argument(
+        "--default-holds",
+        action="store_true",
+        help="Activate default reevaluation hold policies.",
+    )
     activate_parser.add_argument("--execute", action="store_true", help="Write the status change.")
 
     disable_parser = subparsers.add_parser("disable", help="Disable active or proposed policies.")

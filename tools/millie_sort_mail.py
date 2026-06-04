@@ -8,7 +8,7 @@ import sys
 import uuid
 from collections import Counter
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +33,9 @@ from millie.brain.automation import automation_level_allows  # noqa: E402
 from millie.importing.models import stable_id  # noqa: E402
 from millie.settings_loader import load_local_settings  # noqa: E402
 from millie.storage.postgres_store import PostgresMailStore  # noqa: E402
+
+
+DEFAULT_UNSUBSCRIBE_LOOKBACK_DAYS = 183
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +82,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--since", default="", help="Only inspect messages on or after this ISO date/datetime.")
     parser.add_argument("--until", default="", help="Only inspect messages on or before this ISO date/datetime.")
     parser.add_argument(
+        "--unsubscribe-lookback-days",
+        type=int,
+        default=DEFAULT_UNSUBSCRIBE_LOOKBACK_DAYS,
+        help=(
+            "Only create unsubscribe candidates for messages from the last N days. "
+            "Use 0 to disable this date scope."
+        ),
+    )
+    parser.add_argument(
         "--include-classified",
         action="store_true",
         help="Include messages that already have observe-v1 heuristic or learned-v1 rule classifications.",
@@ -111,7 +123,14 @@ def main() -> int:
                 CandidateResult(
                     candidate=candidate,
                     classifications=classifications,
-                    unsubscribe_suggestions=extract_unsubscribe_suggestions(candidate.headers),
+                    unsubscribe_suggestions=(
+                        extract_unsubscribe_suggestions(candidate.headers)
+                        if unsubscribe_within_scope(
+                            candidate,
+                            lookback_days=args.unsubscribe_lookback_days,
+                        )
+                        else []
+                    ),
                     blocked_classifications=blocked_count,
                 )
             )
@@ -687,6 +706,25 @@ def parse_filter_datetime(value: str, *, end_of_day: bool) -> datetime:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed
+
+
+def unsubscribe_within_scope(
+    candidate: SortCandidate,
+    *,
+    lookback_days: int = DEFAULT_UNSUBSCRIBE_LOOKBACK_DAYS,
+    now: datetime | None = None,
+) -> bool:
+    if lookback_days <= 0:
+        return True
+    message_date = candidate.received_at or candidate.sent_at
+    if message_date is None:
+        return False
+    if message_date.tzinfo is None:
+        message_date = message_date.replace(tzinfo=timezone.utc)
+    reference = now or datetime.now(timezone.utc)
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=timezone.utc)
+    return message_date >= reference - timedelta(days=lookback_days)
 
 
 if __name__ == "__main__":

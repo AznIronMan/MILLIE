@@ -12,6 +12,9 @@ CLASSIFIER_TYPE = "heuristic"
 CLASSIFIER_VERSION = "observe-v1"
 LEARNED_RULE_CLASSIFIER_TYPE = "rule"
 LEARNED_RULE_CLASSIFIER_VERSION = "learned-v1"
+TRASH_REEVALUATION_FOLDER = "Hold/Reevaluate/Trash"
+SPAM_REEVALUATION_FOLDER = "Hold/Reevaluate/Spam"
+BULK_REEVALUATION_FOLDER = "Hold/Reevaluate/Bulk"
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,10 +157,10 @@ def classify_candidate(candidate: SortCandidate) -> list[ClassificationSuggestio
             ClassificationSuggestion(
                 kind="trash",
                 value="likely_trash",
-                target_folder_path="Hold/Trash",
-                target_tags=("trash",),
+                target_folder_path=TRASH_REEVALUATION_FOLDER,
+                target_tags=("trash", "hold", "reevaluate"),
                 confidence=0.9,
-                reason="Message is already in a trash/deleted source folder.",
+                reason="Message is already in a trash/deleted source folder and should be held for reevaluation.",
                 evidence={"folder_path": candidate.folder_path},
             )
         ]
@@ -167,10 +170,10 @@ def classify_candidate(candidate: SortCandidate) -> list[ClassificationSuggestio
             ClassificationSuggestion(
                 kind="spam",
                 value="likely_spam",
-                target_folder_path="Hold/Spam",
-                target_tags=("spam",),
+                target_folder_path=SPAM_REEVALUATION_FOLDER,
+                target_tags=("spam", "hold", "reevaluate"),
                 confidence=0.9,
-                reason="Message is already in a spam/junk source folder.",
+                reason="Message is already in a spam/junk source folder and should be held for reevaluation.",
                 evidence={"folder_path": candidate.folder_path},
             )
         ]
@@ -180,10 +183,10 @@ def classify_candidate(candidate: SortCandidate) -> list[ClassificationSuggestio
             ClassificationSuggestion(
                 kind="spam",
                 value="possible_spam",
-                target_folder_path="Hold/Spam",
-                target_tags=("spam", "review"),
+                target_folder_path=BULK_REEVALUATION_FOLDER,
+                target_tags=("spam", "bulk", "hold", "reevaluate"),
                 confidence=0.58,
-                reason="Message contains common spam or bulk-mail language.",
+                reason="Message contains common spam or bulk-mail language and should be held for reevaluation.",
                 evidence={"matched_hints": matched_keywords(text, SPAM_HINTS)},
             )
         ]
