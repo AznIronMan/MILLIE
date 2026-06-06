@@ -49,6 +49,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="delete",
         help="Future provider-side action recorded in the manifest.",
     )
+    parser.add_argument(
+        "--limit-source-uids",
+        type=int,
+        default=0,
+        help="Maximum source UIDs to include in this manifest. Default is unlimited.",
+    )
     return parser
 
 
@@ -68,6 +74,8 @@ def main() -> int:
     try:
         store.initialize()
         candidates = load_snapshot_candidates(store, accounts, cutoff)
+        if args.limit_source_uids > 0:
+            candidates = candidates[: args.limit_source_uids]
         summary = {
             "accounts": [account_label(account) for account in accounts],
             "folders": len({(candidate.source_account, candidate.source_folder) for candidate in candidates}),
@@ -120,6 +128,15 @@ def load_snapshot_candidates(
             WHERE s.source_type = %s
               AND s.source_uri LIKE %s
               AND m.created_at <= %s
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM mail_remote_purge_manifest_messages pm
+                  JOIN mail_remote_purge_manifests p
+                    ON p.id = pm.manifest_id
+                  WHERE p.status = 'provider_purged'
+                    AND pm.source_id = s.id
+                    AND pm.source_message_id = m.source_message_id
+              )
             UNION ALL
             SELECT
                 s.id, s.source_type, s.source_uri,
@@ -130,6 +147,16 @@ def load_snapshot_candidates(
             WHERE s.source_type = %s
               AND s.source_uri LIKE %s
               AND a.created_at <= %s
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM mail_remote_purge_manifest_messages pm
+                  JOIN mail_remote_purge_manifests p
+                    ON p.id = pm.manifest_id
+                  WHERE p.status = 'provider_purged'
+                    AND pm.source_id = s.id
+                    AND pm.source_message_id = a.source_message_id
+              )
+            ORDER BY source_uri, source_message_id
             """,
             (
                 source_type,

@@ -47,6 +47,7 @@ Systemd units:
 - `millie-imap.service`: IMAP TLS on `0.0.0.0:993`, internal plain IMAP on `0.0.0.0:22143`, auto folder mode for compact iOS/mobile access and full macOS Mail folder access.
 - `millie-smtp.service`: setup-only SMTP TLS blackhole on `0.0.0.0:465`, internal plain submission on `0.0.0.0:22587`.
 - `millie-webmail.service`: authenticated webmail/admin UI on `0.0.0.0:22001` with live sync enabled.
+- `millie-provider-purge.timer`: hourly guarded cleanup for the configured online IMAP/OAuth accounts. It leaves source UIDs copied into MILLIE within the last 24 hours untouched, creates and dry-runs an exact manifest, then deletes only verified provider UIDs when provider-write settings allow it.
 
 All production services use the dedicated recovered Postgres archive at `10.0.10.81:55432/millie`; do not repoint them to the quarantined main-cluster port.
 

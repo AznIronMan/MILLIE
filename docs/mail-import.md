@@ -166,6 +166,24 @@ The executor sends IMAP `UID STORE +FLAGS.SILENT (\Deleted)` plus `UID EXPUNGE` 
 
 For Gmail `[Gmail]/All Mail`, the executor uses Gmail `UID MOVE` into `[Gmail]/Trash` and then performs a final Trash delete by `X-GM-MSGID`. That removes the manifest messages from Gmail's archive without selecting unrelated messages that may have arrived after the snapshot.
 
+### Hourly Provider Cleanup
+
+Production can run a guarded hourly cleanup wrapper:
+
+```sh
+.private/venv/bin/python tools/millie_hourly_provider_purge.py --execute
+```
+
+The wrapper defaults to the configured online accounts for Gmail/clarktribe, CNB, iCloud, and Gmail/gclark82. Each run:
+
+- leaves source UIDs copied into MILLIE within the last 24 hours untouched;
+- creates a manifest only from source UIDs already represented by canonical `mail_messages` or `mail_source_message_aliases` rows;
+- excludes source UIDs already completed by a prior `provider_purged` manifest;
+- dry-runs the exact manifest first;
+- executes provider-side deletion only when `automation_level=provider_write`, `automation_provider_write_enabled=true`, and the manifest id is explicit.
+
+The default hourly cap is 5,000 source UIDs per run so old online mail drains gradually instead of issuing one very large provider delete pass.
+
 ## Dry-Run Planning
 
 Use the planner to inspect how a source would flow through the dormant pipeline:
