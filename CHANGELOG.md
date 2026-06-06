@@ -15,6 +15,7 @@ All notable changes to MILLIE will be documented in this file.
 - Changed the IMAP listener to default to compact folder mode for mobile stability, answer `CHECK`, and serve `STATUS`/range `FETCH` requests without loading entire large archive folders.
 - Fixed IMAP `SEARCH` criteria handling for iOS Mail UID and sequence-set probes so the client receives bounded results instead of the full mailbox on every search.
 - Documented the production deployment target on `10.0.10.118:/srv/millie`, including systemd service ownership and the requirement to deploy runtime-affecting repo changes to production.
+- Added an IMAP `auto` folder mode so production can keep iOS/mobile clients on the compact folder set while exposing the full archive folder tree to desktop macOS Mail clients.
 
 ## [1.3.6] - 2026-06-04
 

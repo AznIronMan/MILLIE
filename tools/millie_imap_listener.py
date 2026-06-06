@@ -46,7 +46,7 @@ DEFAULT_LOG_FILE = PROJECT_ROOT / ".private" / "local" / "millie_imap_listener.l
 DEFAULT_MAX_DB_CONNECTIONS = 8
 DEFAULT_DB_SLOT_TIMEOUT_SECONDS = 10
 DEFAULT_IMAP_FOLDER_MODE = "compact"
-IMAP_FOLDER_MODES = {"compact", "all"}
+IMAP_FOLDER_MODES = {"compact", "all", "auto"}
 COMPACT_IMAP_FOLDERS = {"INBOX", "Archive", "Sent", "Drafts", "Trash", "Junk"}
 
 
@@ -60,6 +60,7 @@ class MillieImapHandler(socketserver.StreamRequestHandler):
         self.identity_id: str | None = None
         self.mailbox_id: str | None = None
         self.selected_folder = "INBOX"
+        self.client_folder_mode: str | None = None
         self.client = f"{self.client_address[0]}:{self.client_address[1]}"
         if PostgresMailStore is None or psycopg is None:
             raise RuntimeError("psycopg is required to run the MILLIE IMAP listener")
@@ -127,6 +128,7 @@ class MillieImapHandler(socketserver.StreamRequestHandler):
         elif upper == "NOOP":
             self.send_ok(tag, "NOOP completed")
         elif upper == "ID":
+            self.remember_client_id(rest)
             self.send_line('* ID ("name" "MILLIE" "version" "1.0.0")')
             self.send_ok(tag, "ID completed")
         elif upper == "LOGOUT":
@@ -263,11 +265,29 @@ class MillieImapHandler(socketserver.StreamRequestHandler):
             self.send_line(
                 f'* {command} ({attributes}) "/" {imap_quote(str(folder["path"]))}'
             )
-        self.log_event("list_folders", count=count, mode=self.server.imap_folder_mode)
+        self.log_event(
+            "list_folders",
+            count=count,
+            mode=self.effective_folder_mode(),
+            server_mode=self.server.imap_folder_mode,
+        )
         self.send_ok(tag, f"{command} completed")
 
     def folder_visible(self, folder: str) -> bool:
-        return imap_folder_visible(folder, mode=self.server.imap_folder_mode)
+        return imap_folder_visible(folder, mode=self.effective_folder_mode())
+
+    def effective_folder_mode(self) -> str:
+        if self.server.imap_folder_mode == "auto":
+            return self.client_folder_mode or "compact"
+        return self.server.imap_folder_mode
+
+    def remember_client_id(self, value: str) -> None:
+        mode = detect_client_folder_mode(value)
+        if mode is None:
+            self.log_event("client_id", folder_mode=self.effective_folder_mode(), id=safe_log_text(value))
+            return
+        self.client_folder_mode = mode
+        self.log_event("client_id", folder_mode=mode, id=safe_log_text(value))
 
     def create_folder(self, tag: str, rest: str) -> None:
         folder = normalize_folder_name(rest)
@@ -319,7 +339,7 @@ class MillieImapHandler(socketserver.StreamRequestHandler):
     def select_folder(self, tag: str, rest: str, *, readonly: bool) -> None:
         folder = normalize_folder_name(rest)
         if not self.folder_visible(folder):
-            self.log_event("folder_hidden", command="SELECT", folder=folder, mode=self.server.imap_folder_mode)
+            self.log_event("folder_hidden", command="SELECT", folder=folder, mode=self.effective_folder_mode())
             self.send_no(tag, "Folder is hidden by the current IMAP folder mode")
             return
         summary = self.store.imap_status_summary(self.mailbox_id, folder)
@@ -757,6 +777,23 @@ def imap_folder_visible(folder: str, *, mode: str) -> bool:
     if mode == "all":
         return True
     return normalize_folder_name(folder) in COMPACT_IMAP_FOLDERS
+
+
+def detect_client_folder_mode(client_id: str) -> str | None:
+    """Choose a folder surface from IMAP ID text without trusting unknown clients."""
+
+    text = client_id.lower()
+    mobile_tokens = ("iphone", "ipad", "ipod", "ios", "ipados")
+    if any(token in text for token in mobile_tokens):
+        return "compact"
+    desktop_tokens = ("mac os", "macos", "macintosh", "os x")
+    if any(token in text for token in desktop_tokens):
+        return "all"
+    return None
+
+
+def safe_log_text(value: str, *, limit: int = 160) -> str:
+    return " ".join(str(value).replace("\r", " ").replace("\n", " ").split())[:limit]
 
 
 def parse_simple_message_set_range(value: str) -> tuple[int, int] | None:
@@ -1225,7 +1262,9 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_IMAP_FOLDER_MODE,
         help=(
             "Folder surface exposed to IMAP clients. 'compact' limits clients to core mail "
-            "folders for mobile stability; 'all' exposes the full archive taxonomy."
+            "folders for mobile stability; 'all' exposes the full archive taxonomy; "
+            "'auto' keeps mobile clients compact and exposes all folders to desktop clients "
+            "that identify as macOS Mail."
         ),
     )
     return parser

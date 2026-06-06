@@ -44,7 +44,7 @@ Production runs from `/srv/millie` on `10.0.10.118` as user `jazmine`, with admi
 
 Systemd units:
 
-- `millie-imap.service`: IMAP TLS on `0.0.0.0:993`, internal plain IMAP on `0.0.0.0:22143`, compact folder mode.
+- `millie-imap.service`: IMAP TLS on `0.0.0.0:993`, internal plain IMAP on `0.0.0.0:22143`, auto folder mode for compact iOS/mobile access and full macOS Mail folder access.
 - `millie-smtp.service`: setup-only SMTP TLS blackhole on `0.0.0.0:465`, internal plain submission on `0.0.0.0:22587`.
 - `millie-webmail.service`: authenticated webmail/admin UI on `0.0.0.0:22001` with live sync enabled.
 

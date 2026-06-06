@@ -104,6 +104,17 @@ class ImapListenerTest(unittest.TestCase):
         self.assertFalse(imap_listener.imap_folder_visible("Archive/Personal", mode="compact"))
         self.assertTrue(imap_listener.imap_folder_visible("Archive/Personal", mode="all"))
 
+    def test_auto_imap_folder_mode_detects_mobile_and_desktop_clients(self) -> None:
+        self.assertEqual(
+            imap_listener.detect_client_folder_mode('("name" "iPhone Mail" "os" "iOS")'),
+            "compact",
+        )
+        self.assertEqual(
+            imap_listener.detect_client_folder_mode('("name" "Mail" "os" "macOS")'),
+            "all",
+        )
+        self.assertIsNone(imap_listener.detect_client_folder_mode('("name" "unknown")'))
+
     def test_simple_message_set_range_parser(self) -> None:
         self.assertEqual(imap_listener.parse_simple_message_set_range("10"), (10, 10))
         self.assertEqual(imap_listener.parse_simple_message_set_range("20:10"), (10, 20))
