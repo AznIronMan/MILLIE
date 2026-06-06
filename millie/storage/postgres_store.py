@@ -4698,6 +4698,24 @@ class PostgresMailStore:
             for sequence, row in enumerate(rows, start=start)
         ]
 
+    def list_imap_uids(self, mailbox_id: str, folder_path: str) -> list[int]:
+        folder_id = self.folder_id(mailbox_id, folder_path)
+        if not folder_id:
+            return []
+        rows = self.connection.execute(
+            """
+            SELECT imap_uid
+            FROM millie_mailbox_messages
+            WHERE mailbox_id = %s
+              AND folder_id = %s
+              AND is_expunged = FALSE
+              AND metadata_json->>'retention_hidden_from_default_views' IS DISTINCT FROM 'true'
+            ORDER BY imap_uid
+            """,
+            (mailbox_id, folder_id),
+        ).fetchall()
+        return [int(row[0]) for row in rows]
+
     def list_imap_messages_by_uid_range(
         self,
         mailbox_id: str,

@@ -78,7 +78,7 @@ The listener exposes:
 
 IMAP write operations update `millie_*` mailbox facade rows and imported `mail_*` records for messages appended directly into MILLIE. They do not write back to source IMAP accounts, Exchange mailboxes, or PST files.
 
-The development listener limits concurrent Postgres-backed IMAP sessions with `--max-db-connections` so aggressive client indexing does not exhaust the dedicated recovery database. It defaults to `--imap-folder-mode compact`, which exposes only `INBOX`, `Sent`, `Drafts`, `Trash`, and `Junk` to avoid mobile clients indexing the full archive taxonomy. Use `--imap-folder-mode all` only when a desktop/archive client needs every MILLIE folder. If an archived raw MIME row is unreadable because the recovered Postgres payload is corrupt, the listener quarantines that message and returns a small placeholder instead of ending the client sync.
+The development listener limits concurrent Postgres-backed IMAP sessions with `--max-db-connections` so aggressive client indexing does not exhaust the dedicated recovery database. It defaults to `--imap-folder-mode compact`, which exposes only `INBOX`, `Archive`, `Sent`, `Drafts`, `Trash`, and `Junk` to avoid mobile clients indexing the full archive taxonomy. Use `--imap-folder-mode all` only when a desktop/archive client needs every MILLIE folder. If an archived raw MIME row is unreadable because the recovered Postgres payload is corrupt, the listener quarantines that message and returns a small placeholder instead of ending the client sync.
 
 Some mail clients require an outgoing mail server during account setup. Start the temporary SMTP setup shim only when needed:
 

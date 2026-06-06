@@ -47,7 +47,7 @@ DEFAULT_MAX_DB_CONNECTIONS = 8
 DEFAULT_DB_SLOT_TIMEOUT_SECONDS = 10
 DEFAULT_IMAP_FOLDER_MODE = "compact"
 IMAP_FOLDER_MODES = {"compact", "all"}
-COMPACT_IMAP_FOLDERS = {"INBOX", "Sent", "Drafts", "Trash", "Junk"}
+COMPACT_IMAP_FOLDERS = {"INBOX", "Archive", "Sent", "Drafts", "Trash", "Junk"}
 
 
 class MillieImapHandler(socketserver.StreamRequestHandler):
@@ -355,12 +355,15 @@ class MillieImapHandler(socketserver.StreamRequestHandler):
         self.send_ok(tag, "CHECK completed")
 
     def search(self, tag: str, rest: str, *, uid_mode: bool) -> None:
-        messages = self.messages(self.selected_folder)
-        if uid_mode:
-            values = [str(message["uid"]) for message in messages]
-        else:
-            values = [str(index) for index, _ in enumerate(messages, start=1)]
-        self.log_event("search", folder=self.selected_folder, uid_mode=uid_mode, count=len(values))
+        uids = self.store.list_imap_uids(self.mailbox_id, self.selected_folder)
+        values = search_values(rest, uids, uid_mode=uid_mode)
+        self.log_event(
+            "search",
+            folder=self.selected_folder,
+            uid_mode=uid_mode,
+            count=len(values),
+            request=rest,
+        )
         self.send_line("* SEARCH " + " ".join(values))
         self.send_ok(tag, "SEARCH completed")
 
@@ -776,6 +779,78 @@ def fetch_needs_literal(item_text: str) -> bool:
     return "BODY[" in upper or "BODY.PEEK[" in upper or (
         "RFC822" in upper and "RFC822.SIZE" not in upper
     )
+
+
+def search_values(rest: str, uids: list[int], *, uid_mode: bool) -> list[str]:
+    text = rest.strip()
+    upper = text.upper()
+    selected_sequences: list[int]
+    selected_uids: list[int]
+    if not text or upper == "ALL":
+        selected_sequences = list(range(1, len(uids) + 1))
+        selected_uids = uids
+    elif upper.startswith("UID "):
+        uid_set = text.split(None, 1)[1].strip()
+        selected_uids = select_uids_from_set(uids, uid_set)
+        sequence_by_uid = {uid: sequence for sequence, uid in enumerate(uids, start=1)}
+        selected_sequences = [
+            sequence_by_uid[uid]
+            for uid in selected_uids
+            if uid in sequence_by_uid
+        ]
+    elif is_message_set(text):
+        selected_sequences = select_sequences_from_set(len(uids), text)
+        selected_uids = [
+            uids[sequence - 1]
+            for sequence in selected_sequences
+            if 1 <= sequence <= len(uids)
+        ]
+    else:
+        selected_sequences = list(range(1, len(uids) + 1))
+        selected_uids = uids
+    values = selected_uids if uid_mode else selected_sequences
+    return [str(value) for value in values]
+
+
+def is_message_set(value: str) -> bool:
+    return bool(re.fullmatch(r"[0-9*]+(?::[0-9*]+)?(?:,[0-9*]+(?::[0-9*]+)?)*", value.strip()))
+
+
+def select_sequences_from_set(max_sequence: int, value: str) -> list[int]:
+    if max_sequence <= 0:
+        return []
+    selected = expand_set(value, max_value=max_sequence)
+    return sorted(sequence for sequence in selected if 1 <= sequence <= max_sequence)
+
+
+def select_uids_from_set(uids: list[int], value: str) -> list[int]:
+    if not uids:
+        return []
+    existing = set(uids)
+    max_uid = max(uids)
+    selected: set[int] = set()
+    for part in value.split(","):
+        text = part.strip()
+        if not text:
+            continue
+        if text == "*":
+            selected.add(max_uid)
+            continue
+        if ":" not in text:
+            if text.isdigit():
+                selected.add(int(text))
+            continue
+        left, right = text.split(":", 1)
+        start = max_uid if left == "*" else int(left) if left.isdigit() else None
+        end = max_uid if right == "*" else int(right) if right.isdigit() else None
+        if start is None or end is None:
+            continue
+        if start > end:
+            if right == "*":
+                continue
+            start, end = end, start
+        selected.update(range(start, end + 1))
+    return [uid for uid in uids if uid in existing and uid in selected]
 
 
 def parse_store_operation(rest: str) -> StoreOperation | None:
