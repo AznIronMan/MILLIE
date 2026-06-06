@@ -14,6 +14,9 @@ This repository was reset for a fresh 1.0.0 start on 2026-05-31. The previous im
 - `.tasks/` is local-only and ignored by Git. Use it for scratch task files only when helpful; do not rely on it for committed project state.
 - Commit intentional MILLIE-scoped changes after they are verified.
 - Push `main` to the MILLIE remote when credentials are available.
+- Production runtime lives on `10.0.10.118:/srv/millie` and runs as user `jazmine` under systemd. Any code, config, documentation, or dependency change in this repo that affects runtime behavior must also be deployed to that production instance, or explicitly reported as not deployed, as part of the same task.
+- Do not assume pushing `main` updates production. After runtime-affecting changes, update `/srv/millie`, keep the remote worktree clean, and restart or reload the affected `millie-*.service` units when needed.
+- Keep `/srv/millie` owned for production service use by `jazmine` with admin group access through `local_admins`.
 - Do not rewrite GitHub history or force-push unless the user explicitly asks for that operation.
 
 ## Credentials And Sensitive Data

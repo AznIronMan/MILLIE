@@ -10,7 +10,7 @@ This repository has been reset for a fresh start. The prior version is archived 
 
 - Current baseline: `1.3.6`
 - Reset date: 2026-05-31
-- Runtime setup: not defined yet beyond temporary tools and dormant scaffolds
+- Runtime setup: production service host is `10.0.10.118:/srv/millie`, running as `jazmine` under systemd
 - Application structure: early dormant import, storage, identity, and mailbox service scaffolds
 - Settings store: local root `millie.settings` SQLite3 database, ignored by Git
 - Postgres archive status: recovered archive isolated on `10.0.10.81:55432/millie`; the old main-cluster `millie` database remains quarantined and must not be reused
@@ -22,10 +22,10 @@ This repository has been reset for a fresh start. The prior version is archived 
 - Dedupe status: exact raw-message dedupe plus normalized duplicate fingerprints/reporting
 - Live sync status: runtime IMAP/OAuth checker with persisted per-folder sync health while MILLIE is running
 - Automation status: Postgres brain schema foundation, observe-only sorter, active learned-rule matching, rule proposal seeding, taxonomy proposals, manual aggregate-only LLM taxonomy assistance, proposal review activation, classification review bucket folders, primary internal taxonomy folders, webmail review feedback, grouped sorting workbench, and learning metrics available
-- Mail service status: dormant Postgres identity/mailbox facade scaffolded
-- Dev IMAP status: development listener available for local/LAN browse and mailbox-copy mutation testing
-- Dev SMTP status: optional setup-only blackhole listener; MILLIE never sends outbound SMTP
-- Dev webmail status: authenticated browser/admin view available for local/LAN testing, with explicit `--no-auth` override
+- Mail service status: Postgres identity/mailbox facade active for IMAP and webmail access
+- IMAP status: compact-folder listener available for LAN/production mail clients
+- SMTP status: setup-only blackhole listener; MILLIE never sends outbound SMTP
+- Webmail status: authenticated browser/admin view available for LAN/production operation, with explicit `--no-auth` development override
 
 ## Development Notes
 
@@ -36,6 +36,19 @@ This repository has been reset for a fresh start. The prior version is archived 
 - `.private/`, `.tasks/`, `/data/`, `/logs/`, `*.settings`, and `*.millie` are ignored.
 - Update `CHANGELOG.md` for meaningful changes.
 - Database recovery and containment rules live in `docs/database-recovery.md`. Runtime Postgres connections refuse the known quarantined endpoint `10.0.10.81:5432/millie`.
+- Runtime-affecting changes made in this repo must also be deployed to `10.0.10.118:/srv/millie`, with affected `millie-*.service` units restarted or reloaded as needed.
+
+## Production Runtime
+
+Production runs from `/srv/millie` on `10.0.10.118` as user `jazmine`, with admin group access through `local_admins`. Runtime secrets stay outside Git in `millie.settings` and `.private/secrets/`.
+
+Systemd units:
+
+- `millie-imap.service`: IMAP TLS on `0.0.0.0:993`, internal plain IMAP on `0.0.0.0:22143`, compact folder mode.
+- `millie-smtp.service`: setup-only SMTP TLS blackhole on `0.0.0.0:465`, internal plain submission on `0.0.0.0:22587`.
+- `millie-webmail.service`: authenticated webmail/admin UI on `0.0.0.0:22001` with live sync enabled.
+
+All production services use the dedicated recovered Postgres archive at `10.0.10.81:55432/millie`; do not repoint them to the quarantined main-cluster port.
 
 ## Temporary Settings Editor
 
