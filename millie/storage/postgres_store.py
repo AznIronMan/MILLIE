@@ -56,6 +56,14 @@ PROVIDER_WRITE_AUDIT_ACTIONS = {"provider_purge_manifest", "block_provider_write
 PROVIDER_WRITE_AUDIT_STATUSES = {"recorded", "blocked", "applied", "failed"}
 BRAIN_RULE_STATUSES = {"proposed", "active", "disabled", "superseded", "retired"}
 BRAIN_RULE_ACTIONS = {"activate", "disable", "retire", "update"}
+RAW_MIME_QUARANTINED_KEY = "raw_mime_quarantined"
+RAW_MIME_QUARANTINE_METADATA_KEYS = (
+    RAW_MIME_QUARANTINED_KEY,
+    "raw_mime_quarantine_reason",
+    "raw_mime_quarantine_source",
+    "raw_mime_quarantined_at",
+    "raw_mime_quarantine_details",
+)
 
 
 class PostgresMailStore:
@@ -1251,13 +1259,18 @@ class PostgresMailStore:
                 m.body_html,
                 m.has_attachments,
                 m.raw_mime_size_bytes,
-                r.content_blob,
                 mm.id,
-                mm.copied_at
+                mm.copied_at,
+                EXISTS (
+                    SELECT 1
+                    FROM mail_message_metadata q
+                    WHERE q.message_id = m.id
+                      AND q.metadata_key = 'raw_mime_quarantined'
+                      AND lower(q.value_text) IN ('true', '1', 'yes')
+                ) AS raw_mime_quarantined
             FROM millie_mailbox_messages mm
             JOIN millie_mailbox_folders mf ON mf.id = mm.folder_id
             JOIN mail_messages m ON m.id = mm.message_id
-            LEFT JOIN mail_raw_mime r ON r.message_id = m.id
             WHERE mm.mailbox_id = %s
               AND mf.folder_path = %s
               AND mm.imap_uid = %s
@@ -1270,8 +1283,25 @@ class PostgresMailStore:
         if not row:
             return None
         message_id = row[3]
-        mailbox_message_id = str(row[13])
-        copied_at = row[14] or row[2] or datetime.now(timezone.utc)
+        mailbox_message_id = str(row[12])
+        copied_at = row[13] or row[2] or datetime.now(timezone.utc)
+        raw_mime = None
+        if not bool(row[14]):
+            try:
+                raw_mime = self.get_raw_mime_by_message_id(str(message_id))
+            except psycopg.errors.DataCorrupted as exc:
+                self.connection.rollback()
+                self.mark_raw_mime_quarantined(
+                    str(message_id),
+                    reason="postgres_data_corrupted",
+                    source="webmail_message_fetch",
+                    details={
+                        "folder_path": folder_path,
+                        "uid": uid,
+                        "error": str(exc),
+                    },
+                )
+                self.connection.commit()
         return {
             "uid": int(row[0]),
             "flags": list(row[1] or []),
@@ -1287,7 +1317,8 @@ class PostgresMailStore:
             "body_html": row[9],
             "has_attachments": bool(row[10]),
             "size": int(row[11] or 0),
-            "raw_mime": bytes(row[12]) if row[12] is not None else None,
+            "raw_mime": raw_mime,
+            "raw_mime_quarantined": bool(row[14]),
             "addresses": self.message_addresses(message_id),
             "attachments": self.message_attachments(message_id),
             "classifications": self.message_classifications(message_id),
@@ -4561,7 +4592,14 @@ class PostgresMailStore:
                 m.id,
                 m.subject,
                 m.raw_mime_size_bytes,
-                m.raw_mime_sha256
+                m.raw_mime_sha256,
+                EXISTS (
+                    SELECT 1
+                    FROM mail_message_metadata q
+                    WHERE q.message_id = m.id
+                      AND q.metadata_key = 'raw_mime_quarantined'
+                      AND lower(q.value_text) IN ('true', '1', 'yes')
+                ) AS raw_mime_quarantined
             FROM millie_mailbox_messages mm
             JOIN millie_mailbox_folders mf ON mf.id = mm.folder_id
             JOIN mail_messages m ON m.id = mm.message_id
@@ -4582,9 +4620,28 @@ class PostgresMailStore:
                 "subject": row[4],
                 "size": int(row[5] or 0),
                 "sha256": row[6],
+                "raw_mime_quarantined": bool(row[7]),
             }
             for row in rows
         ]
+
+    def get_raw_mime_by_message_id(self, message_id: str) -> bytes | None:
+        row = self.connection.execute(
+            """
+            SELECT r.content_blob
+            FROM mail_raw_mime r
+            WHERE r.message_id = %s
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM mail_message_metadata q
+                  WHERE q.message_id = r.message_id
+                    AND q.metadata_key = 'raw_mime_quarantined'
+                    AND lower(q.value_text) IN ('true', '1', 'yes')
+              )
+            """,
+            (message_id,),
+        ).fetchone()
+        return bytes(row[0]) if row else None
 
     def get_raw_mime_by_uid(
         self,
@@ -4604,10 +4661,85 @@ class PostgresMailStore:
               AND mm.imap_uid = %s
               AND mm.is_expunged = FALSE
               AND mm.metadata_json->>'retention_hidden_from_default_views' IS DISTINCT FROM 'true'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM mail_message_metadata q
+                  WHERE q.message_id = mm.message_id
+                    AND q.metadata_key = 'raw_mime_quarantined'
+                    AND lower(q.value_text) IN ('true', '1', 'yes')
+              )
             """,
             (mailbox_id, folder_path, uid),
         ).fetchone()
         return bytes(row[0]) if row else None
+
+    def mark_raw_mime_quarantined(
+        self,
+        message_id: str,
+        *,
+        reason: str,
+        source: str,
+        details: dict[str, object] | None = None,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        clean_details = _sanitize_metadata(details or {})
+        values = {
+            RAW_MIME_QUARANTINED_KEY: "true",
+            "raw_mime_quarantine_reason": reason,
+            "raw_mime_quarantine_source": source,
+            "raw_mime_quarantined_at": now,
+            "raw_mime_quarantine_details": json.dumps(clean_details, sort_keys=True),
+        }
+        with self.connection.cursor() as cursor:
+            cursor.executemany(
+                """
+                INSERT INTO mail_message_metadata (message_id, metadata_key, value_text)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (message_id, metadata_key) DO UPDATE SET
+                    value_text = excluded.value_text
+                """,
+                [(message_id, key, value) for key, value in values.items()],
+            )
+        self.connection.execute(
+            """
+            UPDATE mail_messages
+            SET metadata_json = metadata_json || %s,
+                updated_at = now()
+            WHERE id = %s
+            """,
+            (
+                Jsonb(
+                    {
+                        "raw_mime_quarantined": True,
+                        "raw_mime_quarantine_reason": reason,
+                        "raw_mime_quarantine_source": source,
+                        "raw_mime_quarantined_at": now,
+                    }
+                ),
+                message_id,
+            ),
+        )
+        self.connection.execute(
+            """
+            INSERT INTO millie_automation_audit_log (
+                id, message_id, action_type, automation_level, status,
+                error_message, metadata_json
+            )
+            VALUES (%s, %s, 'custom', 'observe', 'recorded', %s, %s)
+            """,
+            (
+                str(uuid.uuid4()),
+                message_id,
+                reason,
+                Jsonb(
+                    {
+                        "custom_action": "raw_mime_quarantine",
+                        "source": source,
+                        "details": clean_details,
+                    }
+                ),
+            ),
+        )
 
     def get_email_message_by_uid(
         self,

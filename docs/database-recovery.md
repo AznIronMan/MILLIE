@@ -54,6 +54,34 @@ Rebuild search documents only after a fresh safety export or backup exists:
 
 The rebuild tool is dry-run by default. Apply mode fills missing `mail_search_documents` rows from `mail_messages`, `mail_message_addresses`, and `mail_message_metadata`. It does not read raw MIME, inspect message parts, contact providers, move mail, or write provider state. Damaged recovered records are skipped instead of aborting the full rebuild.
 
+## Raw MIME Quarantine
+
+Some recovered rows may contain damaged compressed Postgres payloads. When IMAP or webmail hits one of those rows, MILLIE now rolls back the failed read, records `raw_mime_quarantined=true` in `mail_message_metadata`, and serves a small placeholder message so clients can keep syncing.
+
+To proactively probe a bounded set without writing:
+
+```sh
+.private/venv/bin/python tools/millie_quarantine_corrupt_raw_mime.py --limit 1000
+```
+
+To mark damaged rows found by the probe:
+
+```sh
+.private/venv/bin/python tools/millie_quarantine_corrupt_raw_mime.py --apply --limit 1000
+```
+
+Deleting the damaged `mail_raw_mime` row is a separate explicit step and is size guarded by default:
+
+```sh
+.private/venv/bin/python tools/millie_quarantine_corrupt_raw_mime.py \
+  --apply \
+  --delete-raw-row \
+  --max-delete-bytes 1000000 \
+  --limit 1000
+```
+
+Use `--force-large-delete` only after reviewing the JSONL report under `.private/local/`. Keep larger damaged records as case-by-case decisions until the clean successor rebuild is complete.
+
 ## Clean Successor Plan
 
 The safer long-term fix is a staged clean rebuild:

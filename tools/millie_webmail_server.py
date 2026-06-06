@@ -357,6 +357,7 @@ class MillieWebmailHandler(BaseHTTPRequestHandler):
             "attachments": detail["attachments"],
             "has_attachments": detail["has_attachments"],
             "size": detail["size"],
+            "raw_mime_quarantined": bool(detail.get("raw_mime_quarantined")),
             "classifications": detail["classifications"],
             "unsubscribe_candidates": detail["unsubscribe_candidates"],
             "retention_status": detail["retention_status"],

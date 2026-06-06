@@ -80,6 +80,22 @@ class ImapListenerTest(unittest.TestCase):
 
         self.assertEqual(imap_listener.expunge_sequence_numbers(messages, [10, 12]), [1, 2])
 
+    def test_quarantined_raw_mime_is_parseable_placeholder(self) -> None:
+        raw = imap_listener.quarantined_raw_mime(
+            {
+                "uid": 42,
+                "message_id": "message/with spaces",
+                "subject": "Broken\r\nSubject",
+            },
+            reason="raw MIME storage is damaged",
+        )
+
+        parsed = imap_listener.BytesParser(policy=imap_listener.policy.default).parsebytes(raw)
+        self.assertEqual(parsed.get_content_type(), "text/plain")
+        self.assertIn("[MILLIE quarantined] Broken Subject", parsed["Subject"])
+        self.assertIn("message-with-spaces", parsed["Message-ID"])
+        self.assertIn("IMAP UID: 42", parsed.get_content())
+
     def test_imap_bulk_import_parses_quoted_folder_names(self) -> None:
         folder = imap_bulk_import.parse_list_response(
             b'(\\HasNoChildren \\Sent) "/" "[Gmail]/Sent Mail"'

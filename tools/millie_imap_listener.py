@@ -30,8 +30,10 @@ from millie.service.imap_protocol import body_literal_name, imap_capabilities, s
 from millie.settings_loader import load_local_settings
 
 try:
+    import psycopg
     from millie.storage.postgres_store import PostgresMailStore
 except ModuleNotFoundError:
+    psycopg = None  # type: ignore[assignment]
     PostgresMailStore = None  # type: ignore[assignment]
 
 
@@ -41,6 +43,8 @@ DEFAULT_TLS_PORT = 22993
 CERT_DIR = PROJECT_ROOT / ".private" / "local" / "imap_tls"
 DEFAULT_PID_FILE = PROJECT_ROOT / ".private" / "local" / "millie_imap_listener.pid"
 DEFAULT_LOG_FILE = PROJECT_ROOT / ".private" / "local" / "millie_imap_listener.log"
+DEFAULT_MAX_DB_CONNECTIONS = 8
+DEFAULT_DB_SLOT_TIMEOUT_SECONDS = 10
 
 
 class MillieImapHandler(socketserver.StreamRequestHandler):
@@ -48,13 +52,26 @@ class MillieImapHandler(socketserver.StreamRequestHandler):
 
     def setup(self) -> None:
         super().setup()
-        if PostgresMailStore is None:
-            raise RuntimeError("psycopg is required to run the MILLIE IMAP listener")
-        self.store = PostgresMailStore.connect(self.server.settings)
+        self.connection_slot_acquired = False
+        self.store = None
         self.identity_id: str | None = None
         self.mailbox_id: str | None = None
         self.selected_folder = "INBOX"
         self.client = f"{self.client_address[0]}:{self.client_address[1]}"
+        if PostgresMailStore is None or psycopg is None:
+            raise RuntimeError("psycopg is required to run the MILLIE IMAP listener")
+        if not self.server.connection_slots.acquire(timeout=self.server.db_slot_timeout_seconds):
+            self.wfile.write(b"* BYE MILLIE IMAP connection limit reached\r\n")
+            self.wfile.flush()
+            self.log_event("connection_rejected", reason="db_connection_limit")
+            raise RuntimeError("MILLIE IMAP database connection limit reached")
+        self.connection_slot_acquired = True
+        try:
+            self.store = PostgresMailStore.connect(self.server.settings)
+        except Exception:
+            self.server.connection_slots.release()
+            self.connection_slot_acquired = False
+            raise
         self.log_event("connect", mode="tls" if self.server.implicit_tls else "plain")
 
     def finish(self) -> None:
@@ -63,6 +80,9 @@ class MillieImapHandler(socketserver.StreamRequestHandler):
             store = getattr(self, "store", None)
             if store:
                 store.close()
+            if getattr(self, "connection_slot_acquired", False):
+                self.server.connection_slots.release()
+                self.connection_slot_acquired = False
         finally:
             super().finish()
 
@@ -474,11 +494,7 @@ class MillieImapHandler(socketserver.StreamRequestHandler):
 
     def fetch_one(self, sequence: int, message: dict[str, Any], item_text: str, *, uid_mode: bool) -> None:
         upper = item_text.upper()
-        raw = self.store.get_raw_mime_by_uid(
-            mailbox_id=self.mailbox_id,
-            folder_path=self.selected_folder,
-            uid=int(message["uid"]),
-        ) or b""
+        raw = self.raw_mime_for_fetch(message)
         attrs: list[str] = []
         if uid_mode or "UID" in upper:
             attrs.append(f"UID {message['uid']}")
@@ -511,6 +527,40 @@ class MillieImapHandler(socketserver.StreamRequestHandler):
             return
 
         self.send_line(f"* {sequence} FETCH ({' '.join(attrs)})")
+
+    def raw_mime_for_fetch(self, message: dict[str, Any]) -> bytes:
+        if bool(message.get("raw_mime_quarantined")):
+            return quarantined_raw_mime(message, reason="raw MIME is quarantined")
+        try:
+            return self.store.get_raw_mime_by_uid(
+                mailbox_id=self.mailbox_id,
+                folder_path=self.selected_folder,
+                uid=int(message["uid"]),
+            ) or b""
+        except psycopg.errors.DataCorrupted as exc:
+            message_id = str(message.get("message_id") or "")
+            self.store.connection.rollback()
+            if message_id:
+                self.store.mark_raw_mime_quarantined(
+                    message_id,
+                    reason="postgres_data_corrupted",
+                    source="imap_fetch",
+                    details={
+                        "folder_path": self.selected_folder,
+                        "uid": int(message["uid"]),
+                        "error": str(exc),
+                    },
+                )
+                self.store.connection.commit()
+                message["raw_mime_quarantined"] = True
+            self.log_event(
+                "raw_mime_quarantined",
+                folder=self.selected_folder,
+                uid=message.get("uid"),
+                message_id=message_id or "unknown",
+                reason="postgres_data_corrupted",
+            )
+            return quarantined_raw_mime(message, reason="raw MIME storage is damaged")
 
     def messages(self, folder: str) -> list[dict[str, Any]]:
         return self.store.list_imap_messages(self.mailbox_id, folder)
@@ -575,10 +625,14 @@ class MillieImapServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         settings: dict[str, str],
         implicit_tls: bool,
         ssl_context: ssl.SSLContext,
+        max_db_connections: int = DEFAULT_MAX_DB_CONNECTIONS,
+        db_slot_timeout_seconds: int = DEFAULT_DB_SLOT_TIMEOUT_SECONDS,
     ) -> None:
         self.settings = settings
         self.implicit_tls = implicit_tls
         self.ssl_context = ssl_context
+        self.connection_slots = threading.BoundedSemaphore(max(1, max_db_connections))
+        self.db_slot_timeout_seconds = max(1, db_slot_timeout_seconds)
         super().__init__(server_address, handler_class)
 
     def get_request(self):
@@ -820,6 +874,41 @@ def fetch_literal(item_text: str, raw: bytes) -> tuple[str | None, bytes]:
     return None, b""
 
 
+def quarantined_raw_mime(message: dict[str, Any], *, reason: str) -> bytes:
+    subject = safe_header_value(str(message.get("subject") or "MILLIE quarantined message"))
+    message_id = safe_message_id_token(str(message.get("message_id") or "unknown"))
+    uid = str(message.get("uid") or "unknown")
+    body = (
+        "MILLIE could not read this message's original raw MIME bytes from the "
+        "recovered Postgres archive.\r\n\r\n"
+        f"Reason: {reason}\r\n"
+        f"MILLIE message id: {message_id}\r\n"
+        f"IMAP UID: {uid}\r\n\r\n"
+        "The message metadata remains available, but the damaged raw payload has "
+        "been quarantined so IMAP clients can continue syncing.\r\n"
+    )
+    return (
+        "From: MILLIE Archive <postmaster@millie.local>\r\n"
+        "To: geon@millie.cnbsk.cloud\r\n"
+        f"Subject: [MILLIE quarantined] {subject}\r\n"
+        f"Date: {email.utils.format_datetime(datetime.now(timezone.utc))}\r\n"
+        f"Message-ID: <millie-quarantine-{message_id}@millie.local>\r\n"
+        "MIME-Version: 1.0\r\n"
+        "Content-Type: text/plain; charset=utf-8\r\n"
+        "Content-Transfer-Encoding: 8bit\r\n"
+        "\r\n"
+        f"{body}"
+    ).encode("utf-8", errors="replace")
+
+
+def safe_header_value(value: str) -> str:
+    return re.sub(r"[\r\n]+", " ", value).strip()[:180] or "MILLIE quarantined message"
+
+
+def safe_message_id_token(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]", "-", value).strip(".-")[:120] or "unknown"
+
+
 def selected_headers(raw: bytes, item_text: str) -> bytes:
     match = re.search(r"HEADER\.FIELDS\s*\(([^)]*)\)", item_text, flags=re.I)
     names = [name.lower() for name in re.split(r"\s+", match.group(1).strip())] if match else []
@@ -951,6 +1040,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--daemon", action="store_true", help="Detach into the background.")
     parser.add_argument("--pid-file", type=Path, default=DEFAULT_PID_FILE)
     parser.add_argument("--log-file", type=Path, default=DEFAULT_LOG_FILE)
+    parser.add_argument(
+        "--max-db-connections",
+        type=int,
+        default=DEFAULT_MAX_DB_CONNECTIONS,
+        help="Maximum concurrent Postgres connections used by IMAP client sessions.",
+    )
+    parser.add_argument(
+        "--db-slot-timeout",
+        type=int,
+        default=DEFAULT_DB_SLOT_TIMEOUT_SECONDS,
+        help="Seconds an IMAP client waits for a database connection slot before being rejected.",
+    )
     return parser
 
 
@@ -989,6 +1090,8 @@ def serve(args: argparse.Namespace) -> None:
         settings=settings,
         implicit_tls=False,
         ssl_context=context,
+        max_db_connections=args.max_db_connections,
+        db_slot_timeout_seconds=args.db_slot_timeout,
     )
     tls_server = MillieImapServer(
         (args.host, args.tls_port),
@@ -996,6 +1099,8 @@ def serve(args: argparse.Namespace) -> None:
         settings=settings,
         implicit_tls=True,
         ssl_context=context,
+        max_db_connections=args.max_db_connections,
+        db_slot_timeout_seconds=args.db_slot_timeout,
     )
     threads = [
         threading.Thread(target=plain_server.serve_forever, daemon=True),

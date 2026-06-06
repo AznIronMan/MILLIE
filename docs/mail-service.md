@@ -64,6 +64,7 @@ Start the minimal listener:
   --host 0.0.0.0 \
   --plain-port 22143 \
   --tls-port 22993 \
+  --max-db-connections 8 \
   --daemon
 ```
 
@@ -75,6 +76,8 @@ The listener exposes:
 - Write operations against the MILLIE mailbox copy: folder create/delete/rename/subscribe, `APPEND`, flag updates, copy/move, and delete/expunge.
 
 IMAP write operations update `millie_*` mailbox facade rows and imported `mail_*` records for messages appended directly into MILLIE. They do not write back to source IMAP accounts, Exchange mailboxes, or PST files.
+
+The development listener limits concurrent Postgres-backed IMAP sessions with `--max-db-connections` so aggressive client indexing does not exhaust the dedicated recovery database. If an archived raw MIME row is unreadable because the recovered Postgres payload is corrupt, the listener quarantines that message and returns a small placeholder instead of ending the client sync.
 
 Some mail clients require an outgoing mail server during account setup. Start the temporary SMTP setup shim only when needed:
 
@@ -133,6 +136,7 @@ To start webmail and have it check configured IMAP/OAuth accounts while webmail 
   --host 0.0.0.0 \
   --port 22001 \
   --live-sync \
+  --sync-fetch-batch-size 5 \
   --sync-interval 900
 ```
 

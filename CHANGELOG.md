@@ -4,7 +4,14 @@ All notable changes to MILLIE will be documented in this file.
 
 ## Unreleased
 
-No unreleased changes.
+### Added
+
+- Added a dry-run-first raw MIME quarantine tool for identifying recovered Postgres rows with corrupt compressed payloads, marking damaged messages, and optionally deleting only explicitly approved small raw rows.
+
+### Changed
+
+- Made IMAP and webmail raw-message reads quarantine corrupt raw MIME rows and return a safe placeholder instead of breaking client sessions.
+- Added an IMAP database connection limit to reduce pressure on the dedicated MILLIE recovery cluster during Mail app indexing.
 
 ## [1.3.6] - 2026-06-04
 

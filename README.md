@@ -14,6 +14,7 @@ This repository has been reset for a fresh start. The prior version is archived 
 - Application structure: early dormant import, storage, identity, and mailbox service scaffolds
 - Settings store: local root `millie.settings` SQLite3 database, ignored by Git
 - Postgres archive status: recovered archive isolated on `10.0.10.81:55432/millie`; the old main-cluster `millie` database remains quarantined and must not be reused
+- Raw MIME recovery status: corrupt recovered raw-message payloads are quarantined on fetch and can be probed with `tools/millie_quarantine_corrupt_raw_mime.py`
 - Search recovery status: derived search documents can be rebuilt safely with `tools/millie_rebuild_search_documents.py`
 - Service mail domain: configured in `millie.settings`; current default is `millie.cnbsk.cloud` with local `MILLIE` aliases
 - PST import status: read-only probe and duplicate-safe bulk importer available
@@ -104,6 +105,13 @@ For a runtime loop that stops when the command stops:
 
 ```sh
 .private/venv/bin/python tools/millie_live_sync.py --interval 900
+```
+
+Recovered raw MIME rows can be probed and quarantined without deleting mail:
+
+```sh
+.private/venv/bin/python tools/millie_quarantine_corrupt_raw_mime.py --limit 1000
+.private/venv/bin/python tools/millie_quarantine_corrupt_raw_mime.py --apply --limit 1000
 ```
 
 Duplicate fingerprints can be backfilled and reported without merging or deleting messages:
