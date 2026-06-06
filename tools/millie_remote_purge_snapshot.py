@@ -55,6 +55,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=0,
         help="Maximum source UIDs to include in this manifest. Default is unlimited.",
     )
+    parser.add_argument(
+        "--initialize-schema",
+        action="store_true",
+        help="Run schema initialization before snapshotting. Production scheduled jobs should leave this off.",
+    )
     return parser
 
 
@@ -72,7 +77,8 @@ def main() -> int:
     manifest_id = args.manifest_id or default_manifest_id()
     store = PostgresMailStore.connect(settings)
     try:
-        store.initialize()
+        if args.initialize_schema:
+            store.initialize()
         candidates = load_snapshot_candidates(store, accounts, cutoff)
         if args.limit_source_uids > 0:
             candidates = candidates[: args.limit_source_uids]
