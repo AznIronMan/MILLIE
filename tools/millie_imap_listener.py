@@ -45,6 +45,9 @@ DEFAULT_PID_FILE = PROJECT_ROOT / ".private" / "local" / "millie_imap_listener.p
 DEFAULT_LOG_FILE = PROJECT_ROOT / ".private" / "local" / "millie_imap_listener.log"
 DEFAULT_MAX_DB_CONNECTIONS = 8
 DEFAULT_DB_SLOT_TIMEOUT_SECONDS = 10
+DEFAULT_IMAP_FOLDER_MODE = "compact"
+IMAP_FOLDER_MODES = {"compact", "all"}
+COMPACT_IMAP_FOLDERS = {"INBOX", "Sent", "Drafts", "Trash", "Junk"}
 
 
 class MillieImapHandler(socketserver.StreamRequestHandler):
@@ -144,6 +147,8 @@ class MillieImapHandler(socketserver.StreamRequestHandler):
             self.require_auth(tag) and self.select_folder(tag, rest, readonly=(upper == "EXAMINE"))
         elif upper == "STATUS":
             self.require_auth(tag) and self.status(tag, rest)
+        elif upper == "CHECK":
+            self.require_selected(tag) and self.check_mailbox(tag)
         elif upper == "CREATE":
             self.require_auth(tag) and self.create_folder(tag, rest)
         elif upper == "DELETE":
@@ -249,13 +254,20 @@ class MillieImapHandler(socketserver.StreamRequestHandler):
     def list_folders(self, tag: str, command: str, rest: str) -> None:
         count = 0
         for folder in self.store.list_folders(self.mailbox_id):
+            if command == "LSUB" and not bool(folder["subscribed"]):
+                continue
+            if not self.folder_visible(str(folder["path"])):
+                continue
             count += 1
             attributes = "\\HasNoChildren" if folder["selectable"] else "\\Noselect"
             self.send_line(
                 f'* {command} ({attributes}) "/" {imap_quote(str(folder["path"]))}'
             )
-        self.log_event("list_folders", count=count)
+        self.log_event("list_folders", count=count, mode=self.server.imap_folder_mode)
         self.send_ok(tag, f"{command} completed")
+
+    def folder_visible(self, folder: str) -> bool:
+        return imap_folder_visible(folder, mode=self.server.imap_folder_mode)
 
     def create_folder(self, tag: str, rest: str) -> None:
         folder = normalize_folder_name(rest)
@@ -306,31 +318,41 @@ class MillieImapHandler(socketserver.StreamRequestHandler):
 
     def select_folder(self, tag: str, rest: str, *, readonly: bool) -> None:
         folder = normalize_folder_name(rest)
-        messages = self.messages(folder)
-        uid_next = max([int(message["uid"]) for message in messages], default=0) + 1
+        if not self.folder_visible(folder):
+            self.log_event("folder_hidden", command="SELECT", folder=folder, mode=self.server.imap_folder_mode)
+            self.send_no(tag, "Folder is hidden by the current IMAP folder mode")
+            return
+        summary = self.store.imap_status_summary(self.mailbox_id, folder)
         self.selected_folder = folder
-        self.log_event("select", folder=folder, messages=len(messages), readonly=readonly)
+        self.log_event("select", folder=folder, messages=summary["messages"], readonly=readonly)
         self.send_line("* FLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft)")
         self.send_line("* OK [PERMANENTFLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft \\*)]")
-        self.send_line(f"* {len(messages)} EXISTS")
+        self.send_line(f"* {summary['messages']} EXISTS")
         self.send_line("* 0 RECENT")
         self.send_line("* OK [UIDVALIDITY 1] UIDs valid")
-        self.send_line(f"* OK [UIDNEXT {uid_next}] Predicted next UID")
+        self.send_line(f"* OK [UIDNEXT {summary['uid_next']}] Predicted next UID")
         mode = "READ-ONLY" if readonly else "READ-WRITE"
         self.send_ok(tag, f"[{mode}] SELECT completed")
 
     def status(self, tag: str, rest: str) -> None:
         parts = shlex.split(rest)
         folder = normalize_folder_name(parts[0] if parts else "INBOX")
-        messages = self.messages(folder)
-        uid_next = max([int(message["uid"]) for message in messages], default=0) + 1
-        unseen = sum(1 for message in messages if "\\Seen" not in message["flags"])
-        self.log_event("status", folder=folder, messages=len(messages), unseen=unseen)
+        if not self.folder_visible(folder):
+            self.log_event("folder_hidden", command="STATUS", folder=folder, mode=self.server.imap_folder_mode)
+            self.send_no(tag, "Folder is hidden by the current IMAP folder mode")
+            return
+        summary = self.store.imap_status_summary(self.mailbox_id, folder)
+        self.log_event("status", folder=folder, messages=summary["messages"], unseen=summary["unseen"])
         self.send_line(
             f'* STATUS {imap_quote(folder)} '
-            f"(MESSAGES {len(messages)} RECENT 0 UIDNEXT {uid_next} UIDVALIDITY 1 UNSEEN {unseen})"
+            f"(MESSAGES {summary['messages']} RECENT 0 UIDNEXT {summary['uid_next']} "
+            f"UIDVALIDITY 1 UNSEEN {summary['unseen']})"
         )
         self.send_ok(tag, "STATUS completed")
+
+    def check_mailbox(self, tag: str) -> None:
+        self.log_event("check", folder=self.selected_folder)
+        self.send_ok(tag, "CHECK completed")
 
     def search(self, tag: str, rest: str, *, uid_mode: bool) -> None:
         messages = self.messages(self.selected_folder)
@@ -344,8 +366,7 @@ class MillieImapHandler(socketserver.StreamRequestHandler):
 
     def fetch(self, tag: str, rest: str, *, uid_mode: bool) -> None:
         set_spec, item_text = split_fetch(rest)
-        messages = self.messages(self.selected_folder)
-        selected = select_messages(messages, set_spec, uid_mode=uid_mode)
+        selected = self.selected_messages_for_fetch(set_spec, uid_mode=uid_mode)
         self.log_event(
             "fetch",
             folder=self.selected_folder,
@@ -358,6 +379,31 @@ class MillieImapHandler(socketserver.StreamRequestHandler):
         for sequence, message in selected:
             self.fetch_one(sequence, message, item_text, uid_mode=uid_mode)
         self.send_ok(tag, "FETCH completed")
+
+    def selected_messages_for_fetch(
+        self,
+        set_spec: str,
+        *,
+        uid_mode: bool,
+    ) -> list[tuple[int, dict[str, Any]]]:
+        range_spec = parse_simple_message_set_range(set_spec)
+        if range_spec:
+            start, end = range_spec
+            if uid_mode:
+                return self.store.list_imap_messages_by_uid_range(
+                    self.mailbox_id,
+                    self.selected_folder,
+                    start=start,
+                    end=end,
+                )
+            return self.store.list_imap_messages_by_sequence_range(
+                self.mailbox_id,
+                self.selected_folder,
+                start=start,
+                end=end,
+            )
+        messages = self.messages(self.selected_folder)
+        return select_messages(messages, set_spec, uid_mode=uid_mode)
 
     def store_flags(self, tag: str, rest: str, *, uid_mode: bool) -> None:
         operation = parse_store_operation(rest)
@@ -494,7 +540,14 @@ class MillieImapHandler(socketserver.StreamRequestHandler):
 
     def fetch_one(self, sequence: int, message: dict[str, Any], item_text: str, *, uid_mode: bool) -> None:
         upper = item_text.upper()
-        raw = self.raw_mime_for_fetch(message)
+        raw: bytes | None = None
+
+        def raw_mime() -> bytes:
+            nonlocal raw
+            if raw is None:
+                raw = self.raw_mime_for_fetch(message)
+            return raw
+
         attrs: list[str] = []
         if uid_mode or "UID" in upper:
             attrs.append(f"UID {message['uid']}")
@@ -503,13 +556,14 @@ class MillieImapHandler(socketserver.StreamRequestHandler):
         if "INTERNALDATE" in upper:
             attrs.append(f'INTERNALDATE "{imap_date(message["internal_date"])}"')
         if "RFC822.SIZE" in upper:
-            attrs.append(f"RFC822.SIZE {len(raw)}")
+            size = int(message.get("size") or 0)
+            attrs.append(f"RFC822.SIZE {size if size else len(raw_mime())}")
         if "ENVELOPE" in upper:
-            attrs.append("ENVELOPE " + envelope(raw))
+            attrs.append("ENVELOPE " + envelope(raw_mime()))
         if "BODYSTRUCTURE" in upper:
-            attrs.append("BODYSTRUCTURE " + bodystructure(raw))
+            attrs.append("BODYSTRUCTURE " + bodystructure(raw_mime()))
 
-        literal_name, literal = fetch_literal(item_text, raw)
+        literal_name, literal = fetch_literal(item_text, raw_mime()) if fetch_needs_literal(item_text) else ("", b"")
         if literal_name:
             prefix = f"* {sequence} FETCH (" + " ".join(attrs + [f"{literal_name} {{{len(literal)}}}"])
             self.wfile.write(prefix.encode("utf-8") + b"\r\n")
@@ -519,9 +573,10 @@ class MillieImapHandler(socketserver.StreamRequestHandler):
             return
 
         if "RFC822" in upper and "RFC822.SIZE" not in upper:
-            prefix = f"* {sequence} FETCH (" + " ".join(attrs + [f"RFC822 {{{len(raw)}}}"])
+            raw_value = raw_mime()
+            prefix = f"* {sequence} FETCH (" + " ".join(attrs + [f"RFC822 {{{len(raw_value)}}}"])
             self.wfile.write(prefix.encode("utf-8") + b"\r\n")
-            self.wfile.write(raw)
+            self.wfile.write(raw_value)
             self.wfile.write(b")\r\n")
             self.wfile.flush()
             return
@@ -532,11 +587,18 @@ class MillieImapHandler(socketserver.StreamRequestHandler):
         if bool(message.get("raw_mime_quarantined")):
             return quarantined_raw_mime(message, reason="raw MIME is quarantined")
         try:
-            return self.store.get_raw_mime_by_uid(
+            raw = self.store.get_raw_mime_by_uid(
                 mailbox_id=self.mailbox_id,
                 folder_path=self.selected_folder,
                 uid=int(message["uid"]),
-            ) or b""
+            )
+            if raw is not None:
+                return raw
+            message_id = str(message.get("message_id") or "")
+            if message_id and self.store.raw_mime_is_quarantined(message_id):
+                message["raw_mime_quarantined"] = True
+                return quarantined_raw_mime(message, reason="raw MIME is quarantined")
+            return b""
         except psycopg.errors.DataCorrupted as exc:
             message_id = str(message.get("message_id") or "")
             self.store.connection.rollback()
@@ -627,12 +689,14 @@ class MillieImapServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         ssl_context: ssl.SSLContext,
         max_db_connections: int = DEFAULT_MAX_DB_CONNECTIONS,
         db_slot_timeout_seconds: int = DEFAULT_DB_SLOT_TIMEOUT_SECONDS,
+        imap_folder_mode: str = DEFAULT_IMAP_FOLDER_MODE,
     ) -> None:
         self.settings = settings
         self.implicit_tls = implicit_tls
         self.ssl_context = ssl_context
         self.connection_slots = threading.BoundedSemaphore(max(1, max_db_connections))
         self.db_slot_timeout_seconds = max(1, db_slot_timeout_seconds)
+        self.imap_folder_mode = imap_folder_mode if imap_folder_mode in IMAP_FOLDER_MODES else DEFAULT_IMAP_FOLDER_MODE
         super().__init__(server_address, handler_class)
 
     def get_request(self):
@@ -684,6 +748,34 @@ def split_set_and_folder(rest: str) -> tuple[str, str] | None:
     if len(parts) != 2:
         return None
     return parts[0].strip(), normalize_folder_name(parts[1])
+
+
+def imap_folder_visible(folder: str, *, mode: str) -> bool:
+    if mode == "all":
+        return True
+    return normalize_folder_name(folder) in COMPACT_IMAP_FOLDERS
+
+
+def parse_simple_message_set_range(value: str) -> tuple[int, int] | None:
+    text = value.strip()
+    if not re.fullmatch(r"\d+(?::\d+)?", text):
+        return None
+    if ":" not in text:
+        start = end = int(text)
+    else:
+        left, right = text.split(":", 1)
+        start = int(left)
+        end = int(right)
+    if start > end:
+        start, end = end, start
+    return start, end
+
+
+def fetch_needs_literal(item_text: str) -> bool:
+    upper = item_text.upper()
+    return "BODY[" in upper or "BODY.PEEK[" in upper or (
+        "RFC822" in upper and "RFC822.SIZE" not in upper
+    )
 
 
 def parse_store_operation(rest: str) -> StoreOperation | None:
@@ -1052,6 +1144,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_DB_SLOT_TIMEOUT_SECONDS,
         help="Seconds an IMAP client waits for a database connection slot before being rejected.",
     )
+    parser.add_argument(
+        "--imap-folder-mode",
+        choices=sorted(IMAP_FOLDER_MODES),
+        default=DEFAULT_IMAP_FOLDER_MODE,
+        help=(
+            "Folder surface exposed to IMAP clients. 'compact' limits clients to core mail "
+            "folders for mobile stability; 'all' exposes the full archive taxonomy."
+        ),
+    )
     return parser
 
 
@@ -1092,6 +1193,7 @@ def serve(args: argparse.Namespace) -> None:
         ssl_context=context,
         max_db_connections=args.max_db_connections,
         db_slot_timeout_seconds=args.db_slot_timeout,
+        imap_folder_mode=args.imap_folder_mode,
     )
     tls_server = MillieImapServer(
         (args.host, args.tls_port),
@@ -1101,6 +1203,7 @@ def serve(args: argparse.Namespace) -> None:
         ssl_context=context,
         max_db_connections=args.max_db_connections,
         db_slot_timeout_seconds=args.db_slot_timeout,
+        imap_folder_mode=args.imap_folder_mode,
     )
     threads = [
         threading.Thread(target=plain_server.serve_forever, daemon=True),
@@ -1110,6 +1213,7 @@ def serve(args: argparse.Namespace) -> None:
         thread.start()
     print(f"MILLIE IMAP plaintext listening on {args.host}:{args.plain_port}", flush=True)
     print(f"MILLIE IMAP TLS listening on {args.host}:{args.tls_port}", flush=True)
+    print(f"MILLIE IMAP folder mode: {args.imap_folder_mode}", flush=True)
     try:
         for thread in threads:
             thread.join()

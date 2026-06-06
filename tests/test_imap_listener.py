@@ -96,6 +96,19 @@ class ImapListenerTest(unittest.TestCase):
         self.assertIn("message-with-spaces", parsed["Message-ID"])
         self.assertIn("IMAP UID: 42", parsed.get_content())
 
+    def test_compact_imap_folder_mode_hides_archive_taxonomy(self) -> None:
+        self.assertTrue(imap_listener.imap_folder_visible("INBOX", mode="compact"))
+        self.assertTrue(imap_listener.imap_folder_visible("Junk", mode="compact"))
+        self.assertFalse(imap_listener.imap_folder_visible("All Mail", mode="compact"))
+        self.assertFalse(imap_listener.imap_folder_visible("Archive/Personal", mode="compact"))
+        self.assertTrue(imap_listener.imap_folder_visible("Archive/Personal", mode="all"))
+
+    def test_simple_message_set_range_parser(self) -> None:
+        self.assertEqual(imap_listener.parse_simple_message_set_range("10"), (10, 10))
+        self.assertEqual(imap_listener.parse_simple_message_set_range("20:10"), (10, 20))
+        self.assertIsNone(imap_listener.parse_simple_message_set_range("10:*"))
+        self.assertIsNone(imap_listener.parse_simple_message_set_range("1,2,3"))
+
     def test_imap_bulk_import_parses_quoted_folder_names(self) -> None:
         folder = imap_bulk_import.parse_list_response(
             b'(\\HasNoChildren \\Sent) "/" "[Gmail]/Sent Mail"'

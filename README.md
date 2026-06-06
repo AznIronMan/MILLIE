@@ -285,12 +285,12 @@ After importing samples, start the temporary IMAP listener:
 
 ```sh
 .private/venv/bin/python tools/millie_live_sample_import.py --display-name Geon
-.private/venv/bin/python tools/millie_imap_listener.py --host 0.0.0.0 --plain-port 22143 --tls-port 22993 --daemon
+.private/venv/bin/python tools/millie_imap_listener.py --host 0.0.0.0 --plain-port 22143 --tls-port 22993 --imap-folder-mode compact --daemon
 ```
 
 Credentials are written to ignored `.private/local/millie_ios_mail_credentials.txt`. The listener is a development prototype only; it is not a hardened mail server.
 
-The IMAP listener supports browsing copied messages plus mailbox-copy mutations for client testing: folder create/delete/rename/subscribe, `APPEND` uploads, flag changes, copy/move, and delete/expunge. These operations affect MILLIE's Postgres mailbox facade only. They do not mutate source IMAP accounts, Exchange mailboxes, or PST files.
+The IMAP listener supports browsing copied messages plus mailbox-copy mutations for client testing: folder create/delete/rename/subscribe, `APPEND` uploads, flag changes, copy/move, and delete/expunge. These operations affect MILLIE's Postgres mailbox facade only. They do not mutate source IMAP accounts, Exchange mailboxes, or PST files. The default compact folder mode exposes only core mail folders for mobile stability; use `--imap-folder-mode all` for full archive/taxonomy browsing.
 
 For mail clients that require an outgoing server during account setup, the temporary SMTP setup shim is available:
 

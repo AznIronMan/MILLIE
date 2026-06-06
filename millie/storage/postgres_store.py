@@ -917,6 +917,34 @@ class PostgresMailStore:
             for row in rows
         ]
 
+    def imap_status_summary(self, mailbox_id: str, folder_path: str) -> dict[str, int]:
+        folder_id = self.folder_id(mailbox_id, folder_path)
+        if not folder_id:
+            return {"messages": 0, "uid_next": 1, "unseen": 0}
+        row = self.connection.execute(
+            """
+            SELECT
+                count(*) AS message_count,
+                coalesce(max(imap_uid), 0) + 1 AS uid_next,
+                count(*) FILTER (
+                    WHERE NOT (%s = ANY(coalesce(flags, ARRAY[]::text[])))
+                ) AS unseen_count
+            FROM millie_mailbox_messages
+            WHERE mailbox_id = %s
+              AND folder_id = %s
+              AND is_expunged = FALSE
+              AND metadata_json->>'retention_hidden_from_default_views' IS DISTINCT FROM 'true'
+            """,
+            ("\\Seen", mailbox_id, folder_id),
+        ).fetchone()
+        if not row:
+            return {"messages": 0, "uid_next": 1, "unseen": 0}
+        return {
+            "messages": int(row[0] or 0),
+            "uid_next": int(row[1] or 1),
+            "unseen": int(row[2] or 0),
+        }
+
     def mailbox_by_address(self, mailbox_address: str | None = None) -> dict[str, object] | None:
         if mailbox_address:
             candidates = login_address_candidates(
@@ -4625,6 +4653,112 @@ class PostgresMailStore:
             for row in rows
         ]
 
+    def list_imap_messages_by_sequence_range(
+        self,
+        mailbox_id: str,
+        folder_path: str,
+        *,
+        start: int,
+        end: int,
+    ) -> list[tuple[int, dict[str, object]]]:
+        folder_id = self.folder_id(mailbox_id, folder_path)
+        if not folder_id:
+            return []
+        start = max(1, start)
+        end = max(start, end)
+        rows = self.connection.execute(
+            """
+            WITH selected AS MATERIALIZED (
+                SELECT
+                    mm.imap_uid,
+                    mm.flags,
+                    mm.internal_date,
+                    mm.message_id
+                FROM millie_mailbox_messages mm
+                WHERE mm.mailbox_id = %s
+                  AND mm.folder_id = %s
+                  AND mm.is_expunged = FALSE
+                  AND mm.metadata_json->>'retention_hidden_from_default_views' IS DISTINCT FROM 'true'
+                ORDER BY mm.imap_uid
+                OFFSET %s
+                LIMIT %s
+            )
+            SELECT
+                selected.imap_uid,
+                selected.flags,
+                selected.internal_date,
+                selected.message_id
+            FROM selected
+            ORDER BY selected.imap_uid
+            """,
+            (mailbox_id, folder_id, start - 1, end - start + 1),
+        ).fetchall()
+        return [
+            (sequence, self._imap_mailbox_message_row(row))
+            for sequence, row in enumerate(rows, start=start)
+        ]
+
+    def list_imap_messages_by_uid_range(
+        self,
+        mailbox_id: str,
+        folder_path: str,
+        *,
+        start: int,
+        end: int,
+    ) -> list[tuple[int, dict[str, object]]]:
+        folder_id = self.folder_id(mailbox_id, folder_path)
+        if not folder_id:
+            return []
+        start = max(1, start)
+        end = max(start, end)
+        rows = self.connection.execute(
+            """
+            WITH visible AS MATERIALIZED (
+                SELECT
+                    row_number() OVER (ORDER BY mm.imap_uid)::integer AS sequence,
+                    mm.imap_uid,
+                    mm.flags,
+                    mm.internal_date,
+                    mm.message_id
+                FROM millie_mailbox_messages mm
+                WHERE mm.mailbox_id = %s
+                  AND mm.folder_id = %s
+                  AND mm.is_expunged = FALSE
+                  AND mm.metadata_json->>'retention_hidden_from_default_views' IS DISTINCT FROM 'true'
+            ),
+            selected AS MATERIALIZED (
+                SELECT *
+                FROM visible
+                WHERE imap_uid BETWEEN %s AND %s
+            )
+            SELECT
+                selected.sequence,
+                selected.imap_uid,
+                selected.flags,
+                selected.internal_date,
+                selected.message_id
+            FROM selected
+            ORDER BY selected.imap_uid
+            """,
+            (mailbox_id, folder_id, start, end),
+        ).fetchall()
+        return [
+            (int(row[0]), self._imap_mailbox_message_row(row[1:]))
+            for row in rows
+        ]
+
+    def _imap_mailbox_message_row(self, row: object) -> dict[str, object]:
+        return {
+            "uid": int(row[0]),
+            "flags": list(row[1] or []),
+            "internal_date": row[2],
+            "message_id": row[3],
+            "subject": "",
+            "size": 0,
+            "sha256": None,
+            "raw_mime_quarantined": False,
+        }
+
     def get_raw_mime_by_message_id(self, message_id: str) -> bytes | None:
         row = self.connection.execute(
             """
@@ -4642,6 +4776,20 @@ class PostgresMailStore:
             (message_id,),
         ).fetchone()
         return bytes(row[0]) if row else None
+
+    def raw_mime_is_quarantined(self, message_id: str) -> bool:
+        row = self.connection.execute(
+            """
+            SELECT 1
+            FROM mail_message_metadata q
+            WHERE q.message_id = %s
+              AND q.metadata_key = %s
+              AND lower(q.value_text) IN ('true', '1', 'yes')
+            LIMIT 1
+            """,
+            (message_id, RAW_MIME_QUARANTINED_KEY),
+        ).fetchone()
+        return bool(row)
 
     def get_raw_mime_by_uid(
         self,

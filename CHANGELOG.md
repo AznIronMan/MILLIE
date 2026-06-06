@@ -12,6 +12,7 @@ All notable changes to MILLIE will be documented in this file.
 
 - Made IMAP and webmail raw-message reads quarantine corrupt raw MIME rows and return a safe placeholder instead of breaking client sessions.
 - Added an IMAP database connection limit to reduce pressure on the dedicated MILLIE recovery cluster during Mail app indexing.
+- Changed the IMAP listener to default to compact folder mode for mobile stability, answer `CHECK`, and serve `STATUS`/range `FETCH` requests without loading entire large archive folders.
 
 ## [1.3.6] - 2026-06-04
 
