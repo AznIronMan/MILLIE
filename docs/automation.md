@@ -11,7 +11,7 @@ Automation levels are:
 - `auto_internal`: allow approved internal MILLIE mailbox changes only.
 - `provider_write`: allow explicitly approved provider-side actions, still blocked by a second switch by default.
 
-Provider cleanup remains separate from sorting. Remote provider cleanup must use the manifest purge flow, which targets exact provider UIDs from a sync cutoff.
+Provider cleanup remains separate from sorting. Remote provider cleanup must use the manifest purge flow, which targets exact provider UIDs from either a sync cutoff or a provider-visible retention cutoff.
 
 The settings database exposes two guardrails:
 
@@ -22,7 +22,7 @@ Provider writes require both `automation_level=provider_write` and `automation_p
 
 ## Provider Write Boundary
 
-The only provider-side destructive path currently implemented is the manifest-driven remote provider purge executor. It targets exact source UIDs from `mail_remote_purge_manifest_messages`, checks UIDVALIDITY before deletion, and does not select mail that arrived after the manifest snapshot.
+The only provider-side destructive path currently implemented is the manifest-driven remote provider purge executor. It targets exact source UIDs from `mail_remote_purge_manifest_messages`, checks UIDVALIDITY before deletion, and does not select mail outside the manifest. The hourly retention cleanup builds that manifest from live provider UIDs older than the configured cutoff and verified in MILLIE before execution.
 
 Automatic browser unsubscribe execution remains disabled even when provider-write settings are enabled. Manual-assist unsubscribe checklists are the current safe path for provider unsubscribe links.
 

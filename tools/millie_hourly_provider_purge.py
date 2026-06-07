@@ -23,7 +23,7 @@ DEFAULT_ACCOUNTS = (
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Create a provider-delete manifest for source UIDs copied into MILLIE before "
+            "Create a provider-delete manifest for live provider UIDs older than "
             "a safety cutoff, dry-run it, and optionally execute it."
         )
     )
@@ -37,13 +37,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--cutoff-hours",
         type=float,
         default=24.0,
-        help="Leave source UIDs copied into MILLIE within this many hours untouched.",
+        help="Leave provider messages with INTERNALDATE within this many hours untouched.",
     )
     parser.add_argument(
         "--limit-source-uids",
         type=int,
         default=5000,
-        help="Maximum source UIDs to include per hourly manifest. Use 0 for unlimited.",
+        help="Maximum verified source UIDs to include per hourly manifest. Use 0 for unlimited.",
     )
     parser.add_argument("--manifest-prefix", default="remote-purge-hourly")
     parser.add_argument("--execute", action="store_true", help="Execute provider deletion after dry-run succeeds.")
@@ -80,13 +80,17 @@ def run_locked(args: argparse.Namespace) -> int:
 
     snapshot = [
         sys.executable,
-        "tools/millie_remote_purge_snapshot.py",
+        "tools/millie_remote_purge_visible_snapshot.py",
         "--cutoff-utc",
         cutoff.isoformat(),
         "--manifest-id",
         manifest_id,
         "--action",
         "delete",
+        "--imap-timeout",
+        str(args.imap_timeout),
+        "--batch-size",
+        str(args.batch_size),
     ]
     if args.limit_source_uids > 0:
         snapshot.extend(["--limit-source-uids", str(args.limit_source_uids)])

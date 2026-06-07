@@ -170,6 +170,17 @@ For a sync-cutoff cleanup, create a manifest from source UIDs already copied int
 
 The provider purge executor only targets exact manifest UIDs and checks folder UIDVALIDITY before deletion, so mail arriving after the manifest snapshot is not selected. Execute mode is blocked unless `automation_level=provider_write`, `automation_provider_write_enabled=true`, and `--manifest-id` are present; blocked and executed attempts are recorded in `millie_automation_audit_log`.
 
+For retention cleanup, use the provider-visible snapshot so the manifest starts from mail still visible online, filters by provider `INTERNALDATE`, and then includes only UIDs already verified in MILLIE:
+
+```sh
+.private/venv/bin/python tools/millie_remote_purge_visible_snapshot.py \
+  --cutoff-utc 2026-06-06T00:00:00+00:00 \
+  --account geoff@example.com \
+  --action delete
+```
+
+The hourly production cleanup wrapper uses this provider-visible path, leaves the last 24 hours untouched, dry-runs the exact manifest first, and only executes when the provider-write guardrails are enabled.
+
 Derived Postgres search documents can be rebuilt from recovered message, address, and metadata rows without touching raw MIME or provider state:
 
 ```sh

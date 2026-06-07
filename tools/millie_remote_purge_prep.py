@@ -7,7 +7,7 @@ import argparse
 import imaplib
 import json
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -56,6 +56,7 @@ class PurgeCandidate:
     imap_uid: str
     raw_mime_sha256: str
     source_table: str
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -386,12 +387,13 @@ def write_manifest(
 ) -> None:
     prepared_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     metadata = {
-        "prepared_by": "tools/millie_remote_purge_prep.py",
+        "prepared_by": summary.get("prepared_by") or "tools/millie_remote_purge_prep.py",
         "provider_action_not_run": True,
         "provider_purge_requires_separate_confirmation": True,
         "note": "MILLIE canonical message copies and raw MIME are protected before any provider-side action.",
         "accounts": summary["accounts"],
     }
+    metadata.update(summary.get("metadata") or {})
     unique_message_ids = sorted({candidate.message_id for candidate in candidates})
     with store.connection.transaction():
         store.connection.execute(
@@ -458,6 +460,7 @@ def write_manifest(
                             {
                                 "raw_mime_sha256": candidate.raw_mime_sha256,
                                 "source_table": candidate.source_table,
+                                **candidate.metadata,
                             }
                         ),
                     )

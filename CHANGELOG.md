@@ -16,7 +16,7 @@ All notable changes to MILLIE will be documented in this file.
 - Fixed IMAP `SEARCH` criteria handling for iOS Mail UID and sequence-set probes so the client receives bounded results instead of the full mailbox on every search.
 - Documented the production deployment target on `10.0.10.118:/srv/millie`, including systemd service ownership and the requirement to deploy runtime-affecting repo changes to production.
 - Added an IMAP `auto` folder mode so production can keep iOS/mobile clients on the compact folder set while exposing the full archive folder tree to desktop macOS Mail clients.
-- Added a guarded hourly provider cleanup runner that snapshots only source UIDs already copied into MILLIE before a 24-hour cutoff, dry-runs the exact manifest, and then deletes only those provider UIDs when provider-write guardrails are enabled.
+- Added a guarded hourly provider cleanup runner that now snapshots live provider UIDs older than the 24-hour retention cutoff, verifies each UID exists in MILLIE, dry-runs the exact manifest, and then deletes only those provider UIDs when provider-write guardrails are enabled.
 
 ## [1.3.6] - 2026-06-04
 
